@@ -1,0 +1,974 @@
+<title>How a Unitree Robot Learns to Walk</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#eef2f6;
+    --bg-raised:#e2e9ef;
+    --ink:#16202b;
+    --ink-soft:#3c4a58;
+    --muted:#5b6b78;
+    --line:#c7d1d9;
+    --accent:#d9531a;
+    --accent-ink:#ffffff;
+    --accent2:#1b7a72;
+    --code-bg:#0f1720;
+    --code-ink:#dbe9e6;
+    --shadow: 0 1px 0 rgba(22,32,43,0.05);
+  }
+  :root[data-theme="dark"]{
+    --bg:#0b1116;
+    --bg-raised:#121a21;
+    --ink:#dbe4ea;
+    --ink-soft:#aab8c4;
+    --muted:#8a99a6;
+    --line:#26333d;
+    --accent:#ff7a3d;
+    --accent-ink:#1a0d05;
+    --accent2:#4fd1c1;
+    --code-bg:#070c10;
+    --code-ink:#c9e8e2;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0b1116;
+      --bg-raised:#121a21;
+      --ink:#dbe4ea;
+      --ink-soft:#aab8c4;
+      --muted:#8a99a6;
+      --line:#26333d;
+      --accent:#ff7a3d;
+      --accent-ink:#1a0d05;
+      --accent2:#4fd1c1;
+      --code-bg:#070c10;
+      --code-ink:#c9e8e2;
+    }
+  }
+
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  @media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto;} }
+
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:Georgia,"Iowan Old Style","Palatino Linotype",Palatino,serif;
+    line-height:1.65;
+    font-size:17px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  h1,h2,h3,.eyebrow,nav,.mono,.chip,.diagram-label,code,pre,.kv,table{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+  }
+
+  h1,h2,h3{
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-weight:800;
+    letter-spacing:-0.01em;
+    text-wrap:balance;
+    color:var(--ink);
+  }
+
+  a{color:var(--accent2);}
+  a:focus-visible, button:focus-visible, summary:focus-visible{
+    outline:2px solid var(--accent);
+    outline-offset:2px;
+  }
+
+  .layout{
+    display:grid;
+    grid-template-columns: 240px minmax(0,1fr);
+    gap:0;
+    max-width:1180px;
+    margin:0 auto;
+  }
+  @media (max-width: 880px){
+    .layout{grid-template-columns: 1fr;}
+    .sidebar{position:static; height:auto; border-right:none; border-bottom:1px solid var(--line);}
+  }
+
+  .sidebar{
+    position:sticky;
+    top:0;
+    align-self:start;
+    height:100vh;
+    overflow-y:auto;
+    padding:28px 18px;
+    border-right:1px solid var(--line);
+  }
+  .sidebar .brand{
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin-bottom:18px;
+  }
+  .toc{list-style:none; margin:0; padding:0; font-size:12.5px;}
+  .toc li{margin:0;}
+  .toc a{
+    display:block;
+    padding:6px 8px;
+    border-radius:3px;
+    color:var(--ink-soft);
+    text-decoration:none;
+    letter-spacing:0.01em;
+  }
+  .toc a:hover{background:var(--bg-raised); color:var(--ink);}
+  .toc .grp{
+    margin-top:16px;
+    font-size:10.5px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--muted);
+    padding:0 8px;
+  }
+  .toc .grp:first-child{margin-top:0;}
+
+  main{padding:0 28px 120px;}
+  .content{max-width:700px; margin:0 auto;}
+
+  /* ---- hero ---- */
+  .hero{
+    max-width:700px; margin:0 auto;
+    padding:64px 0 20px;
+    border-bottom:1px solid var(--line);
+  }
+  .hero .eyebrow{
+    font-size:12px; letter-spacing:0.16em; text-transform:uppercase;
+    color:var(--accent); margin-bottom:14px;
+  }
+  .hero h1{font-size:clamp(30px,5vw,44px); line-height:1.08; margin:0 0 18px;}
+  .hero p.lede{font-size:19px; color:var(--ink-soft); max-width:56ch; margin:0 0 30px;}
+
+  .journey{
+    display:flex; align-items:center; gap:0;
+    margin:26px 0 8px;
+    flex-wrap:wrap;
+  }
+  .journey .box{
+    flex:1 1 150px;
+    border:1px solid var(--line);
+    background:var(--bg-raised);
+    border-radius:6px;
+    padding:14px 12px;
+    text-align:center;
+  }
+  .journey .box .t{font-family:system-ui,sans-serif; font-weight:800; font-size:14px;}
+  .journey .box .s{font-size:12px; color:var(--muted); margin-top:4px;}
+  .journey .arrow{
+    flex:0 0 auto; padding:0 10px; color:var(--accent2); font-size:20px;
+  }
+  @media (max-width:560px){ .journey .arrow{transform:rotate(90deg);} }
+
+  section{padding:56px 0; border-bottom:1px solid var(--line);}
+  section:last-of-type{border-bottom:none;}
+  section > .num{
+    font-size:12px; color:var(--muted); letter-spacing:0.1em; margin-bottom:6px;
+  }
+  section h2{font-size:26px; margin:0 0 18px;}
+  section h3{font-size:17px; margin:28px 0 10px; color:var(--ink);}
+  p{margin:0 0 16px; max-width:66ch;}
+  ul, ol{margin:0 0 16px; padding-left:22px;}
+  li{margin-bottom:6px;}
+
+  .lead-q{
+    font-family:system-ui,sans-serif;
+    font-weight:700;
+    font-size:15px;
+    color:var(--accent2);
+    margin:0 0 14px;
+  }
+
+  abbr.term{
+    text-decoration:none;
+    border-bottom:1.5px dotted var(--accent2);
+    cursor:help;
+    color:inherit;
+  }
+
+  .aside{
+    border-left:3px solid var(--accent);
+    background:var(--bg-raised);
+    padding:14px 18px;
+    border-radius:0 6px 6px 0;
+    font-size:15px;
+    margin:20px 0;
+  }
+  .aside .label{
+    font-family:ui-monospace,monospace; font-size:11px; letter-spacing:0.1em;
+    text-transform:uppercase; color:var(--accent); margin-bottom:6px;
+  }
+
+  /* diagram plate */
+  .plate{
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:22px;
+    margin:22px 0;
+    background:
+      repeating-linear-gradient(0deg, transparent, transparent 23px, color-mix(in srgb, var(--line) 40%, transparent) 24px),
+      repeating-linear-gradient(90deg, transparent, transparent 23px, color-mix(in srgb, var(--line) 40%, transparent) 24px),
+      var(--bg-raised);
+    overflow-x:auto;
+  }
+  .plate .cap{
+    font-size:11px; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--muted); margin-top:12px;
+  }
+
+  .flow{
+    display:flex; align-items:center; flex-wrap:wrap; gap:6px;
+    font-size:12.5px;
+  }
+  .chip{
+    border:1px solid var(--line);
+    background:var(--bg);
+    padding:7px 10px;
+    border-radius:5px;
+    white-space:nowrap;
+  }
+  .chip.hot{
+    border-color:var(--accent);
+    color:var(--accent);
+    background:color-mix(in srgb, var(--accent) 10%, var(--bg));
+    font-weight:700;
+  }
+  .flow .sep{color:var(--muted);}
+
+  /* code */
+  pre{
+    background:var(--code-bg);
+    color:var(--code-ink);
+    padding:16px 18px;
+    border-radius:8px;
+    overflow-x:auto;
+    font-size:13px;
+    line-height:1.55;
+    margin:0;
+  }
+  code{font-size:0.92em;}
+  :not(pre) > code{
+    background:var(--bg-raised);
+    padding:1px 5px;
+    border-radius:3px;
+    border:1px solid var(--line);
+  }
+  details.code-box{
+    border:1px solid var(--line);
+    border-radius:8px;
+    margin:18px 0;
+    overflow:hidden;
+    background:var(--code-bg);
+  }
+  details.code-box summary{
+    cursor:pointer;
+    list-style:none;
+    padding:11px 16px;
+    font-size:12.5px;
+    color:var(--code-ink);
+    background:color-mix(in srgb, var(--code-bg) 85%, white 4%);
+    display:flex; align-items:center; gap:8px;
+  }
+  details.code-box summary::-webkit-details-marker{display:none;}
+  details.code-box summary::before{
+    content:"▸"; color:var(--accent); transition:transform .15s;
+  }
+  details.code-box[open] summary::before{transform:rotate(90deg);}
+  details.code-box summary .file{color:var(--muted);}
+  details.code-box pre{border-radius:0; margin:0;}
+
+  table{width:100%; border-collapse:collapse; font-size:13.5px;}
+  th,td{
+    text-align:left; padding:9px 12px; border-bottom:1px solid var(--line);
+    vertical-align:top;
+  }
+  th{color:var(--muted); font-weight:600; font-size:11px; letter-spacing:0.08em; text-transform:uppercase;}
+  td.k{color:var(--accent2); white-space:nowrap; font-weight:600;}
+  .tabwrap{overflow-x:auto; margin:20px 0;}
+
+  svg text{font-family:ui-monospace,monospace;}
+
+  .pd-demo{
+    display:grid; grid-template-columns: 1fr 220px;
+    gap:20px;
+    align-items:center;
+  }
+  @media (max-width:600px){ .pd-demo{grid-template-columns:1fr;} }
+  .pd-demo canvas{
+    width:100%; background:var(--bg); border:1px solid var(--line); border-radius:8px;
+  }
+  .pd-controls{display:flex; flex-direction:column; gap:8px;}
+  .pd-controls button{
+    font-family:ui-monospace,monospace;
+    font-size:12.5px;
+    border:1px solid var(--line);
+    background:var(--bg);
+    color:var(--ink);
+    padding:10px 12px;
+    border-radius:6px;
+    cursor:pointer;
+    text-align:left;
+  }
+  .pd-controls button:hover{border-color:var(--accent2);}
+  .pd-controls button.active{
+    border-color:var(--accent); color:var(--accent);
+    background:color-mix(in srgb, var(--accent) 8%, var(--bg));
+  }
+  .pd-readout{font-size:11px; color:var(--muted); margin-top:6px;}
+
+  .robot-row{display:flex; gap:22px; flex-wrap:wrap;}
+  .robot-card{flex:1 1 200px; text-align:center;}
+  .robot-card .cap{font-size:12px; color:var(--muted); margin-top:8px;}
+  .robot-card .name{font-family:system-ui,sans-serif; font-weight:800; font-size:15px; margin-top:2px; color:var(--ink);}
+
+  .recipe{counter-reset:step; list-style:none; padding:0;}
+  .recipe li{
+    counter-increment:step;
+    position:relative;
+    padding:4px 0 18px 40px;
+    border-left:2px solid var(--line);
+    margin-left:14px;
+  }
+  .recipe li:last-child{border-left-color:transparent;}
+  .recipe li::before{
+    content:counter(step);
+    position:absolute; left:-15px; top:0;
+    width:28px; height:28px;
+    border-radius:50%;
+    background:var(--accent); color:var(--accent-ink);
+    display:flex; align-items:center; justify-content:center;
+    font-family:ui-monospace,monospace; font-size:12px; font-weight:700;
+  }
+  .recipe .file{color:var(--accent2);}
+
+  footer{
+    max-width:700px; margin:0 auto; padding:40px 0 80px;
+    color:var(--muted); font-size:13px;
+  }
+  .theme-note{font-size:11px; color:var(--muted); margin-top:4px;}
+</style>
+
+<div class="layout">
+  <nav class="sidebar" aria-label="Table of contents">
+    <div class="brand">LeggedGym-Ex (GIAR fork) — field guide</div>
+    <ul class="toc">
+      <li><a href="#top">Start</a></li>
+      <div class="grp">The hardware</div>
+      <li><a href="#robots">Meet the robots</a></li>
+      <li><a href="#motors">The motors</a></li>
+      <div class="grp">The control loop</div>
+      <li><a href="#loop">One tick of a robot's life</a></li>
+      <li><a href="#pd">PD control</a></li>
+      <div class="grp">The learning</div>
+      <li><a href="#rl">Learning to walk</a></li>
+      <li><a href="#sims">Two simulators, one policy</a></li>
+      <li><a href="#pipeline">The full pipeline</a></li>
+      <div class="grp">Reading the repo</div>
+      <li><a href="#config">Anatomy of a config</a></li>
+      <li><a href="#g1">A harder robot: G1</a></li>
+      <li><a href="#sim2real">Onto the real robot</a></li>
+      <li><a href="#diy">Build your own</a></li>
+      <div class="grp">This fork</div>
+      <li><a href="#genesis-fork">Running on Genesis instead</a></li>
+      <li><a href="#control-arch">Switching policies live</a></li>
+      <div class="grp">Reference</div>
+      <li><a href="#glossary">Glossary</a></li>
+      <li><a href="#credits">Credits &amp; license</a></li>
+    </ul>
+  </nav>
+
+  <main>
+    <div class="hero" id="top">
+      <div class="eyebrow">A field guide to unitree_rl_gym — and this Genesis-based fork</div>
+      <h1>How a Unitree robot learns to walk</h1>
+      <p class="lede">You don't need to know anything about robotics or machine learning to start. By the end of this page you'll understand — down to the real Python — how a simulated Unitree robot teaches itself to walk, how that same brain ends up moving a physical machine, and (§12–§13) how this fork lets you switch between trained policies live, safely, in a way built to work the same whether the robot is simulated or real.</p>
+
+      <div class="journey">
+        <div class="box"><div class="t">1. Simulator</div><div class="s">thousands of fake robots fall down, get up, try again</div></div>
+        <div class="arrow">→</div>
+        <div class="box"><div class="t">2. Learned brain</div><div class="s">a small neural network, frozen into one file</div></div>
+        <div class="arrow">→</div>
+        <div class="box"><div class="t">3. Real robot</div><div class="s">the same file, now driving real motors</div></div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <section id="robots">
+        <div class="num">§1 — the hardware</div>
+        <h2>Meet the robots</h2>
+        <p>This repository (<code>unitree_rl_gym</code>) supports four robots made by <strong>Unitree Robotics</strong>: one four-legged robot and three humanoids. Every joint you see below is a <abbr class="term" title="Degree of Freedom — one independently-actuated joint axis. See Glossary.">DOF</abbr> (Degree of Freedom) — one motor, one axis it can rotate around.</p>
+
+        <div class="plate">
+          <div class="robot-row">
+            <div class="robot-card">
+              <svg viewBox="0 0 160 110" width="100%" height="110" role="img" aria-label="Go2 quadruped diagram">
+                <rect x="45" y="35" width="70" height="24" rx="8" fill="none" stroke="var(--ink-soft)" stroke-width="2"/>
+                <g stroke="var(--accent2)" stroke-width="2" fill="none">
+                  <path d="M50 45 L38 65 L34 90"/>
+                  <path d="M65 59 L60 78 L58 95"/>
+                  <path d="M100 45 L112 65 L116 90"/>
+                  <path d="M110 59 L118 78 L120 95"/>
+                </g>
+                <g fill="var(--accent)">
+                  <circle cx="50" cy="45" r="3"/><circle cx="38" cy="65" r="3"/>
+                  <circle cx="65" cy="59" r="3"/><circle cx="60" cy="78" r="3"/>
+                  <circle cx="100" cy="45" r="3"/><circle cx="112" cy="65" r="3"/>
+                  <circle cx="110" cy="59" r="3"/><circle cx="118" cy="78" r="3"/>
+                </g>
+              </svg>
+              <div class="name">Go2</div>
+              <div class="cap">quadruped · 12 DOF<br>hip / thigh / calf ×4 legs</div>
+            </div>
+            <div class="robot-card">
+              <svg viewBox="0 0 100 130" width="100%" height="130" role="img" aria-label="Humanoid biped diagram, legs colored, arms greyed out">
+                <circle cx="50" cy="16" r="10" fill="none" stroke="var(--ink-soft)" stroke-width="2"/>
+                <line x1="50" y1="26" x2="50" y2="68" stroke="var(--ink-soft)" stroke-width="2"/>
+                <g stroke="#9aa7b2" stroke-width="2" fill="none" opacity="0.55">
+                  <path d="M50 34 L30 50 L22 72"/>
+                  <path d="M50 34 L70 50 L78 72"/>
+                </g>
+                <g stroke="var(--accent2)" stroke-width="2" fill="none">
+                  <path d="M50 68 L40 92 L38 118"/>
+                  <path d="M50 68 L60 92 L62 118"/>
+                </g>
+                <g fill="var(--accent)">
+                  <circle cx="50" cy="68" r="3"/><circle cx="40" cy="92" r="3"/><circle cx="38" cy="118" r="3"/>
+                  <circle cx="50" cy="68" r="3"/><circle cx="60" cy="92" r="3"/><circle cx="62" cy="118" r="3"/>
+                </g>
+              </svg>
+              <div class="name">G1 / H1 / H1-2</div>
+              <div class="cap">humanoids · 10–12 DOF <em>controlled by this policy</em><br>hip / knee / ankle per leg</div>
+            </div>
+          </div>
+          <div class="cap">Orange joints are driven by the walking policy in this repo. On the humanoids, the greyed-out arms exist on the real robot (and its full URDF) but are <strong>held at a fixed pose</strong> during walking — the policy was only trained to control legs.</div>
+        </div>
+
+        <p>Go2 is a quadruped ("robot dog"): 4 legs × 3 joints = 12 DOF, all driven by the walking policy. The humanoids are biped robots with a torso, arms, and legs — but <code>legged_gym</code> only trains the <strong>legs</strong> to walk (H1: 10 leg joints, G1/H1-2: 12 leg joints), even though the full robot has many more DOF (a full G1 URDF variant has up to 29, including arms, waist, and hands).</p>
+      </section>
+
+      <section id="motors">
+        <div class="num">§2 — the hardware</div>
+        <h2>The motors</h2>
+        <p class="lead-q">Why don't these joints use the stiff, high-ratio gear motors you'd find in a factory robot arm?</p>
+        <p>Unitree's actuators (like most modern legged robots) are <abbr class="term" title="A low gear-ratio motor mounted directly at the joint. Low friction means the joint can be pushed back by an external force (it's 'back-drivable'), instead of being rigid like a high-ratio industrial gearmotor.">quasi-direct-drive</abbr> units: an electric motor with a small gear reduction, sitting right at the joint. Because the reduction is small, the joint stays <strong>back-drivable</strong> — if the foot hits the ground unexpectedly hard, the leg can absorb it by yielding slightly, the way your knee flexes on a curb you didn't see, rather than transmitting the full shock straight through a rigid gearbox.</p>
+        <div class="aside">
+          <div class="label">Why this matters for control</div>
+          Back-drivable joints can be commanded with a soft "spring-like" law instead of a rigid one — which is exactly the PD controller in <a href="#pd">§4</a>. That's not a coincidence: the motor and the control law were designed for each other.
+        </div>
+      </section>
+
+      <section id="loop">
+        <div class="num">§3 — the control loop</div>
+        <h2>One tick of a robot's life</h2>
+        <p>Before anything else, here is the loop that runs, over and over, whether the robot is in a simulator or standing in a lab. Every section from here on is really just zooming into one box of this diagram.</p>
+
+        <div class="plate">
+          <div class="flow" id="loop-diagram">
+            <span class="chip">Sensors<br><small style="color:var(--muted)">IMU + joint encoders</small></span>
+            <span class="sep">→</span>
+            <span class="chip">Observation</span>
+            <span class="sep">→</span>
+            <span class="chip" id="loop-brain">Policy<br><small style="color:var(--muted)">the "brain"</small></span>
+            <span class="sep">→</span>
+            <span class="chip">Target joint angles</span>
+            <span class="sep">→</span>
+            <span class="chip" id="loop-pd">PD controller</span>
+            <span class="sep">→</span>
+            <span class="chip">Torques</span>
+            <span class="sep">→</span>
+            <span class="chip">Physics / motors</span>
+            <span class="sep">↺</span>
+          </div>
+          <div class="cap">This diagram reappears (with one box highlighted) throughout the page — it's the map.</div>
+        </div>
+
+        <p>The two arrows aren't the same speed. The <strong>policy</strong> "thinks" relatively slowly — about 50 times a second (every 0.02s). The <strong>PD controller</strong> reacts much faster — every 0.005s in this repo's simulator. The ratio between them (4, here) is called <abbr class="term" title="Number of fine physics/PD steps that happen per one policy inference step. decimation=4 means the PD loop runs 4× faster than the policy.">decimation</abbr>: the brain gives a target once, and the fast, dumb, reliable PD loop chases that target several times before the brain speaks again.</p>
+      </section>
+
+      <section id="pd">
+        <div class="num">§4 — the control loop</div>
+        <h2>PD control: the stubborn assistant</h2>
+        <div class="flow" style="margin-bottom:20px;"><span class="chip">Target joint angles</span><span class="sep">→</span><span class="chip hot">PD controller</span><span class="sep">→</span><span class="chip">Torques</span></div>
+
+        <p>The policy never says "push with 12 newton-metres." It says something much simpler: <em>"knee, please be at 40°."</em> Turning that wish into an actual motor torque is the PD controller's entire job — and it's dumb on purpose, which is what makes it trustworthy.</p>
+
+        <p><strong>P</strong>roportional-<strong>D</strong>erivative control, in one line:</p>
+        <div class="plate" style="text-align:center; font-size:20px;">
+          torque&nbsp;=&nbsp;<span style="color:var(--accent2)">Kp</span>&nbsp;×&nbsp;(target&nbsp;angle&nbsp;−&nbsp;current&nbsp;angle)&nbsp;−&nbsp;<span style="color:var(--accent)">Kd</span>&nbsp;×&nbsp;current&nbsp;speed
+        </div>
+        <ul>
+          <li><strong>Kp (stiffness)</strong> is a pull strength: the farther the joint is from its target, the harder it pulls back — like a spring.</li>
+          <li><strong>Kd (damping)</strong> is a brake: it resists whatever speed the joint already has — like a shock absorber — so the spring doesn't overshoot and oscillate forever.</li>
+        </ul>
+
+        <div class="pd-demo">
+          <canvas id="pdCanvas" width="420" height="260" role="img" aria-label="Animated pendulum demonstrating PD control at different Kp/Kd settings"></canvas>
+          <div class="pd-controls">
+            <button data-kp="15" data-kd="8" class="active" id="pd-good">Well tuned</button>
+            <button data-kp="4" data-kd="6">Too soft (low Kp)</button>
+            <button data-kp="45" data-kd="1">Oscillating (low Kd)</button>
+            <div class="pd-readout" id="pd-readout">Kp = 15, Kd = 8 — pulls to target smoothly, no overshoot.</div>
+          </div>
+        </div>
+        <p style="font-size:13px; color:var(--muted);">This is a single free-swinging joint, not a real leg — it's here so you can <em>see</em> what "too soft" and "oscillating" actually look like before reading the numbers below.</p>
+
+        <h3>The real code — sim and MuJoCo, side by side</h3>
+        <p>Here is the exact same law, twice: once as it runs inside Isaac Gym during training (tensors, thousands of robots at once), and once as it runs in the MuJoCo sim2sim script (plain NumPy, one robot).</p>
+
+        <details class="code-box">
+          <summary><span>_compute_torques()</span> <span class="file">legged_gym/envs/base/legged_robot.py</span></summary>
+          <pre><code>actions_scaled = actions * self.cfg.control.action_scale
+control_type = self.cfg.control.control_type
+if control_type=="P":
+    torques = self.p_gains*(actions_scaled + self.default_dof_pos - self.dof_pos) \
+              - self.d_gains*self.dof_vel
+...
+return torch.clip(torques, -self.torque_limits, self.torque_limits)</code></pre>
+        </details>
+
+        <details class="code-box">
+          <summary><span>pd_control()</span> <span class="file">deploy/deploy_mujoco/deploy_mujoco.py</span></summary>
+          <pre><code>def pd_control(target_q, q, kp, target_dq, dq, kd):
+    """Calculates torques from position commands"""
+    return (target_q - q) * kp + (target_dq - dq) * kd</code></pre>
+        </details>
+
+        <p>Note the extra ingredient: <code>action_scale</code> and <code>default_dof_pos</code>. The policy doesn't output a raw joint angle — it outputs a small correction, which gets scaled down (<code>action_scale = 0.25</code> for Go2 and G1) and added to a hand-picked resting pose (<code>default_dof_pos</code>). This keeps the policy's job "small nudges around a sane standing pose" rather than "invent a pose from nothing," which is much easier to learn.</p>
+
+        <details class="code-box">
+          <summary><span>Go2's resting pose &amp; PD gains</span> <span class="file">legged_gym/envs/go2/go2_config.py</span></summary>
+          <pre><code>default_joint_angles = {  # target angle [rad] when action = 0.0
+    'FL_hip_joint': 0.1,   'FR_hip_joint': -0.1,
+    'RL_hip_joint': 0.1,   'RR_hip_joint': -0.1,
+    'FL_thigh_joint': 0.8, 'FR_thigh_joint': 0.8,
+    'RL_thigh_joint': 1.0, 'RR_thigh_joint': 1.0,
+    'FL_calf_joint': -1.5, 'FR_calf_joint': -1.5,
+    'RL_calf_joint': -1.5, 'RR_calf_joint': -1.5,
+}
+control_type = 'P'
+stiffness = {'joint': 20.}   # Kp, N·m/rad — same gain for every joint
+damping   = {'joint': 0.5}   # Kd, N·m·s/rad
+action_scale = 0.25
+decimation = 4               # 4 PD steps per policy step</code></pre>
+        </details>
+
+        <p>The torque limits in that <code>clip()</code> call aren't chosen by hand either — they're read straight out of the robot's <abbr class="term" title="Unified Robot Description Format — an XML file describing a robot's links, joints, geometry, mass, and per-joint limits (position range, max velocity, max effort/torque). The authoritative source of what a joint is physically capable of.">URDF</abbr> file, so the simulated robot can never be commanded to do something the real motors couldn't survive.</p>
+      </section>
+
+      <section id="rl">
+        <div class="num">§5 — the learning</div>
+        <h2>Learning to walk</h2>
+        <p class="lead-q">Nobody hand-writes the walking motion. So where does it come from?</p>
+        <p>Think of it as a video game played by an athlete who starts out unable to stand, and only gets a score at the end of each attempt. The <strong>simulator</strong> is the game (you'll meet it properly in <a href="#sims">§6</a>) — physics, gravity, contact with the ground. The <strong>policy</strong> is the athlete's reflexes: a small neural network that reads the current situation (the <em>observation</em>) and outputs what to do next (the <em>action</em> — those target joint angles from §4).</p>
+
+        <ul>
+          <li><strong>Observation</strong> — everything the robot can currently sense: orientation, joint angles &amp; speeds, the velocity command it's been asked to follow, and what it did last tick.</li>
+          <li><strong>Action</strong> — one number per joint: a small offset from the resting pose (fed into the PD controller from §4).</li>
+          <li><strong>Reward</strong> — a score computed every tick: mostly "did you track the requested walking speed," with penalties for wasting torque, jerky motion, or falling.</li>
+        </ul>
+
+        <p>Training runs this loop <strong>4096 robots at once</strong>, in parallel, for millions of ticks, and gradually adjusts the network so that higher-reward behavior becomes more likely. The algorithm that does the adjusting is called <abbr class="term" title="Proximal Policy Optimization — a reinforcement-learning algorithm that updates the policy network in small, clipped steps, so a single bad batch of experience can't wreck weeks of learned behavior.">PPO</abbr> (Proximal Policy Optimization) — the one detail worth knowing is <em>proximal</em>: it always takes small, careful steps, so one unlucky batch of falls can't undo everything learned so far.</p>
+
+        <h3>The coach who isn't there on game day</h3>
+        <p>During training, a second network — the <strong>critic</strong> — watches every attempt with a clipboard of information the real robot could never sense directly (true forward velocity, exact ground friction). It only exists to help the athlete's reflexes (the <strong>actor</strong>) improve faster. Once training ends, the critic is thrown away — only the actor ships. This split is called <strong>actor-critic</strong>, and the critic's extra information is called <em>privileged observations</em> for exactly that reason.</p>
+
+        <div class="aside">
+          <div class="label">Domain randomization</div>
+          Every one of those 4096 parallel robots trains on slightly different ground friction, slightly different mass, and gets randomly shoved sideways every few seconds. The real robot, when it finally walks, isn't a special case the policy has to generalize to blindly — it's simply "imaginary robot #4097," already inside the range the policy trained across.
+        </div>
+      </section>
+
+      <section id="sims">
+        <div class="num">§6 — the learning</div>
+        <h2>Two simulators, one policy</h2>
+        <p>The "game" from §5 is played in more than one physics engine — on purpose.</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Stage</th><th>Engine</th><th>Why</th></tr>
+            <tr><td class="k">Train &amp; Play</td><td><abbr class="term" title="NVIDIA's GPU-accelerated rigid-body physics simulator (PhysX-based). Runs thousands of robot copies in parallel on one GPU, which is what makes RL training over millions of ticks feasible in hours instead of years.">Isaac Gym</abbr></td><td>GPU-parallel — thousands of robots physically simulated at once, fast enough to train in hours.</td></tr>
+            <tr><td class="k">Sim2Sim</td><td>MuJoCo</td><td>A second opinion from a <em>different</em> physics engine. If a policy only works in Isaac Gym, it likely memorized that engine's specific numerical quirks rather than learning real physics — MuJoCo catches that before risking hardware.</td></tr>
+            <tr><td class="k">Sim2Real</td><td>the real robot</td><td>The final and only test that actually matters.</td></tr>
+          </table>
+        </div>
+        <p>Isaac Gym reads <abbr class="term" title="Unified Robot Description Format — XML robot description, used by Isaac Gym.">URDF</abbr> files; MuJoCo reads its own format, <abbr class="term" title="MuJoCo's native XML robot-description format (files like scene.xml). Describes the same robot geometry as a URDF, in MuJoCo's own schema.">MJCF</abbr> (files like <code>scene.xml</code>). Both describe the same physical Go2 or G1 — just for two different simulators.</p>
+      </section>
+
+      <section id="pipeline">
+        <div class="num">§7 — the learning</div>
+        <h2>The full pipeline</h2>
+        <p>Four commands, four stages, each one's output feeding the next:</p>
+
+        <div class="plate">
+          <div class="flow">
+            <span class="chip hot">Train</span><span class="sep">→</span>
+            <span class="chip hot">Play</span><span class="sep">→</span>
+            <span class="chip hot">Sim2Sim</span><span class="sep">→</span>
+            <span class="chip hot">Sim2Real</span>
+          </div>
+        </div>
+
+        <div class="tabwrap">
+          <table>
+            <tr><th>Stage</th><th>Command</th><th>Produces</th></tr>
+            <tr><td class="k">Train</td><td><code>python legged_gym/scripts/train.py --task=go2</code></td><td>checkpoints in <code>logs/&lt;exp&gt;/model_&lt;iter&gt;.pt</code></td></tr>
+            <tr><td class="k">Play</td><td><code>python legged_gym/scripts/play.py --task=go2</code></td><td>visual check + exported <code>policy_1.pt</code> (TorchScript)</td></tr>
+            <tr><td class="k">Sim2Sim</td><td><code>python deploy/deploy_mujoco/deploy_mujoco.py g1.yaml</code></td><td>the exported policy walking in MuJoCo, no GPU needed</td></tr>
+            <tr><td class="k">Sim2Real</td><td><code>python deploy/deploy_real/deploy_real.py {net_if} {config}</code></td><td>the same policy walking the physical robot</td></tr>
+          </table>
+        </div>
+
+        <p>The hinge between "Play" and everything after it is <abbr class="term" title="Exporting a trained PyTorch network into a self-contained file that can run without the original training code, GPU, or framework. Just weights + the forward pass, frozen.">TorchScript</abbr> export: the trained network gets frozen into one portable file, loadable with <code>torch.jit.load(...)</code> by the MuJoCo script, the real-robot Python script, and even a C++ program — none of which need Isaac Gym, rsl_rl, or a GPU installed.</p>
+      </section>
+
+      <section id="config">
+        <div class="num">§8 — reading the repo</div>
+        <h2>Anatomy of a config: Go2</h2>
+        <p>Every robot in this repo is defined almost entirely by one Python config file. Here's Go2's, in full, mapped back to what you've already learned:</p>
+
+        <details class="code-box">
+          <summary><span>GO2RoughCfg</span> <span class="file">legged_gym/envs/go2/go2_config.py</span></summary>
+          <pre><code>class init_state(LeggedRobotCfg.init_state):
+    pos = [0.0, 0.0, 0.42]
+    default_joint_angles = { ... }     # → §4, the PD "home" pose
+
+class control(LeggedRobotCfg.control):
+    control_type = 'P'
+    stiffness = {'joint': 20.}          # → §4, Kp
+    damping   = {'joint': 0.5}          # → §4, Kd
+    action_scale = 0.25
+    decimation = 4                      # → §3, brain-speed vs PD-speed
+
+class asset(LeggedRobotCfg.asset):
+    file = '{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/urdf/go2.urdf'
+    foot_name = "foot"
+    penalize_contacts_on = ["thigh", "calf"]
+    terminate_after_contacts_on = ["base"]
+
+class rewards(LeggedRobotCfg.rewards):
+    class scales:
+        torques = -0.0002        # small bribe: don't waste energy
+        dof_pos_limits = -10.0   # big bribe: never approach joint limits</code></pre>
+        </details>
+
+        <p>That last block — <code>rewards.scales</code> — is worth dwelling on. It's not documentation, it's the actual reward function: <code>legged_robot.py</code> looks for a method named <code>_reward_torques</code>, <code>_reward_dof_pos_limits</code>, and so on, and adds up <code>scale × value</code> for every name it finds. Writing a good reward function is closer to <strong>bribing</strong> the robot than programming it — reward walking-speed tracking highly, and gently fine everything you don't want (wasted torque, joints near their mechanical limit, feet dragging).</p>
+
+        <details class="code-box">
+          <summary><span>The full built-in bribe list</span> <span class="file">legged_gym/envs/base/legged_robot_config.py</span></summary>
+          <pre><code>class scales:
+    tracking_lin_vel = 1.0    # + reward for matching requested forward/side speed
+    tracking_ang_vel = 0.5    # + reward for matching requested turn rate
+    lin_vel_z    = -2.0       # fine for bobbing up/down
+    torques      = -0.00001   # fine for using more torque than necessary
+    dof_acc      = -2.5e-7    # fine for jerky joint accelerations
+    feet_air_time = 1.0       # + reward for a natural, not-shuffling stride
+    collision    = -1.0       # fine for non-foot body parts touching things
+    action_rate  = -0.01      # fine for changing its mind abruptly tick-to-tick</code></pre>
+        </details>
+      </section>
+
+      <section id="g1">
+        <div class="num">§9 — reading the repo</div>
+        <h2>A harder robot: G1</h2>
+        <p>G1 is a humanoid, and its config shows two ideas Go2 didn't need.</p>
+
+        <h3>Per-joint-group PD gains</h3>
+        <p>Go2 used one Kp/Kd for every joint. A humanoid's hip, knee, and ankle behave differently enough that G1 tunes each group separately:</p>
+        <details class="code-box">
+          <summary><span>G1's PD gains</span> <span class="file">legged_gym/envs/g1/g1_config.py</span></summary>
+          <pre><code>stiffness = {'hip_yaw': 100, 'hip_roll': 100, 'hip_pitch': 100,
+             'knee': 150, 'ankle': 40}     # N·m/rad
+damping   = {'hip_yaw': 2,   'hip_roll': 2,   'hip_pitch': 2,
+             'knee': 4,   'ankle': 2}       # N·m·s/rad</code></pre>
+        </details>
+        <p>Notice the knee is both stiffer (150) and more damped (4) than the ankle (40, 2) — it carries more load and needs to resist buckling harder than a lightly-loaded ankle does.</p>
+
+        <h3>The gait-phase clock</h3>
+        <p>A quadruped can sort of feel out a stable rhythm through raw sensor feedback alone. Bipeds benefit from an explicit sense of <em>rhythm</em> — otherwise the network has no way to know "is now a swing-leg moment or a stance-leg moment" from a single instantaneous snapshot. So G1 (and H1/H1-2) hand the policy an extra pair of numbers every tick: <code>sin(2π·phase)</code> and <code>cos(2π·phase)</code>, where <code>phase</code> cycles smoothly from 0 to 1 every 0.8 seconds — like a metronome ticking for a dance, silently counting "left foot's beat... right foot's beat..." so the network can learn a rhythmic gait instead of a jittery one.</p>
+        <details class="code-box">
+          <summary><span>The phase clock</span> <span class="file">legged_gym/envs/g1/g1_env.py</span></summary>
+          <pre><code>period = 0.8
+self.phase = (self.episode_length_buf * self.dt) % period / period
+self.phase_left  = self.phase
+self.phase_right = (self.phase + offset) % 1
+sin_phase = torch.sin(2 * np.pi * self.phase)
+cos_phase = torch.cos(2 * np.pi * self.phase)
+# ... appended onto the observation vector, alongside joint angles etc.</code></pre>
+        </details>
+        <p>The same file also adds new reward terms not present in the base robot — <code>_reward_contact</code>, <code>_reward_feet_swing_height</code>, <code>_reward_alive</code> — by simply defining new <code>_reward_*</code> methods and referencing them in <code>rewards.scales</code>, the same auto-discovery mechanism from §8.</p>
+      </section>
+
+      <section id="sim2real">
+        <div class="num">§10 — reading the repo</div>
+        <h2>Onto the real robot</h2>
+        <p>The exported policy from §7 gets loaded by <code>deploy/deploy_real/deploy_real.py</code>, which talks to the robot over the network using Unitree's own SDK, <code>unitree_sdk2py</code>. Underneath, it uses <abbr class="term" title="Data Distribution Service — a publish/subscribe network protocol. Unitree's SDK uses it to send joint commands and receive sensor state over Ethernet between your control computer and the robot's onboard computer.">DDS</abbr> (Data Distribution Service) — messages are published on a topic <code>rt/lowcmd</code> (your commands out) and read back from <code>rt/lowstate</code> (the robot's sensors in), over a plain Ethernet connection.</p>
+
+        <p>Each command message carries, per joint: <code>q</code> (target angle), <code>qd</code> (target speed), <code>kp</code>, <code>kd</code>, and <code>tau</code> (feed-forward torque) — the exact same PD quantities from §4. The real motor controllers run the PD law themselves, in firmware, at a rate faster than the network can reach them.</p>
+
+        <div class="plate">
+          <div class="flow">
+            <span class="chip">Zero torque<br><small style="color:var(--muted)">limp, waiting for start</small></span><span class="sep">→</span>
+            <span class="chip">Move to default<br><small style="color:var(--muted)">ramp to standing pose, 2s</small></span><span class="sep">→</span>
+            <span class="chip">Hold<br><small style="color:var(--muted)">waiting for go-ahead</small></span><span class="sep">→</span>
+            <span class="chip hot">Run<br><small>policy loop, 50Hz</small></span>
+          </div>
+          <div class="cap">The real deployment script is a small state machine, gated by explicit remote-control button presses between each stage.</div>
+        </div>
+
+        <div class="aside">
+          <div class="label">What if it falls?</div>
+          Every stage is operator-gated by a physical remote — nothing runs unattended. New robots are typically first tested suspended in a harness. If anything goes wrong, letting go of the controls drops the joints back to zero torque (limp) rather than fighting the fall.
+        </div>
+
+        <h3>Two loose ends solved on real hardware</h3>
+        <ul>
+          <li><strong>Arms &amp; waist:</strong> the policy only ever learned to control legs (§1). On the real humanoid, the untrained joints (arms, waist) are simply held at a fixed target angle with their own stiffer PD gains, driven independently of the walking policy.</li>
+          <li><strong>IMU placement:</strong> H1 and H1-2 mount their <abbr class="term" title="Inertial Measurement Unit — a sensor combining a gyroscope and accelerometer, giving orientation and angular velocity. Stands in for a full-body pose estimate on real hardware.">IMU</abbr> on the torso rather than the pelvis, so the deploy script applies a small rotation (using the measured waist-yaw angle) to express orientation in the frame the policy was actually trained on.</li>
+        </ul>
+      </section>
+
+      <section id="diy">
+        <div class="num">§11 — reading the repo</div>
+        <h2>Build your own example</h2>
+        <p>Every piece above composes into a recipe. To bring up a new robot or task:</p>
+        <ol class="recipe">
+          <li>Add the robot's geometry: a <span class="file">URDF</span> under <code>resources/robots/&lt;robot&gt;/</code> (and an <span class="file">MJCF</span> <code>.xml</code> too, if you'll sim2sim it in MuJoCo).</li>
+          <li>Write <code class="file">legged_gym/envs/&lt;robot&gt;/&lt;robot&gt;_config.py</code>: subclass <code>LeggedRobotCfg</code> and <code>LeggedRobotCfgPPO</code>, set <code>asset.file</code>, <code>init_state.default_joint_angles</code> (names must match the URDF), <code>control.stiffness/damping/action_scale</code>, and your <code>rewards.scales</code> bribe list.</li>
+          <li><em>Optional:</em> subclass <code>LeggedRobot</code> in <code>&lt;robot&gt;_env.py</code> if you need new observations (like G1's gait-phase clock) or new <code>_reward_*</code> methods — they're auto-discovered by name.</li>
+          <li>Register it: one line in <code>legged_gym/envs/__init__.py</code> — <code>task_registry.register("&lt;name&gt;", EnvClass, RobotCfg(), RobotCfgPPO())</code>.</li>
+          <li>Train: <code>python legged_gym/scripts/train.py --task=&lt;name&gt;</code>, then check progress with <code>play.py</code> once you have a checkpoint.</li>
+          <li>Export &amp; validate: <code>play.py</code> writes a TorchScript policy; write a matching YAML under <code>deploy/deploy_mujoco/configs/</code> (policy path, per-joint kp/kd, default angles) and run it in MuJoCo before ever touching hardware.</li>
+        </ol>
+        <div class="aside">
+          <div class="label">A cheap first experiment</div>
+          You don't need a new robot to learn something. Take an existing config — say <code>go2_config.py</code> — change one number in <code>rewards.scales</code> (double the <code>torques</code> penalty, for instance), retrain, and watch <code>play.py</code>. You'll see, directly, how the "bribe list" from §8 shapes the gait.
+        </div>
+      </section>
+
+      <section id="genesis-fork">
+        <div class="num">§12 — this fork</div>
+        <h2>Running on Genesis instead</h2>
+        <p>Everything above describes <code>unitree_rl_gym</code> itself, which trains exclusively in <abbr class="term" title="NVIDIA's GPU-accelerated physics simulator, Linux + NVIDIA GPU only.">Isaac Gym</abbr> — Linux and an NVIDIA GPU, no exceptions. This fork (built and tested entirely on an Apple Silicon Mac) instead runs on <a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a>, a physics engine that also targets Metal on Apple Silicon, via <a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a> — a separate open-source project that ports <code>legged_gym</code>'s training framework onto Genesis (and Isaac Sim) while keeping the same config/task-registry conventions this page already walked through.</p>
+
+        <div class="tabwrap">
+          <table>
+            <tr><th>What</th><th>unitree_rl_gym</th><th>this fork</th></tr>
+            <tr><td class="k">Simulator</td><td>Isaac Gym</td><td>Genesis (<code>gs.metal</code> backend on Apple Silicon, falls back to CPU)</td></tr>
+            <tr><td class="k">Hardware needed to train</td><td>Linux + NVIDIA GPU</td><td>none — a laptop is enough</td></tr>
+            <tr><td class="k">G1 config</td><td><code>legged_gym/envs/g1/g1_config.py</code></td><td>same shape (12 actions, 47 obs) — the same pretrained checkpoint loads and walks in both</td></tr>
+          </table>
+        </div>
+
+        <p>We trained a G1 walking policy from scratch this way — 1800 <abbr class="term" title="Proximal Policy Optimization, the RL training algorithm.">PPO</abbr> iterations, 64 parallel environments, all on CPU. It's a real, if modest, walking gait — nowhere near the polish of a full training run (this repo's own defaults train for 10,000 iterations), but genuinely learned, not scripted. We then confirmed something more useful: <strong><code>unitree_rl_gym</code>'s own shipped, fully-trained checkpoint</strong> (<code>deploy/pre_train/g1/motion.pt</code>) loads and walks correctly in this Genesis fork too — same URDF, same joint order, same PD gains — and stays upright at its target height (~0.78m) for hundreds of steps, dramatically more stable than anything trainable locally in a few minutes. That pretrained checkpoint became the reference "stable" policy for everything in the next section.</p>
+
+        <div class="aside">
+          <div class="label">A fine-tuned variant, not an independent one</div>
+          We also produced a second policy by <strong>resuming training from that stable checkpoint's weights</strong> (not from scratch) under a reward that penalizes torque and joint velocity far more heavily — a genuinely more "cautious" gait, descended from the stable one rather than an unrelated policy that happens to share the same input/output shape.
+        </div>
+      </section>
+
+      <section id="control-arch">
+        <div class="num">§13 — this fork</div>
+        <h2>Switching policies live</h2>
+        <p>Having two policies that both control the same G1 raises an obvious question: can you change which one is driving the robot <em>while it's running</em> — in the simulator, and eventually on the real robot — without restarting anything? This section is the short version; the repo's <a href="https://github.com/josetabuyo/LeggedGym-Ex#4-architecture" target="_blank" rel="noopener">root README</a> has the full design write-up.</p>
+
+        <p class="lead-q">Three things go wrong if you just reassign which network gets called each tick:</p>
+        <ul>
+          <li>The old policy's <abbr class="term" title="The LSTM's running memory of recent observations.">LSTM hidden state</abbr> doesn't belong to the new policy — it must be reset, not carried over.</li>
+          <li>A sudden change in target angle is a sudden torque spike through the PD controller (§4) — fine in sim, potentially damaging on real hardware.</li>
+          <li>"Who decided to switch" (a human, an autonomous rule, eventually an LLM) is a different question from "is this actually a safe instant to switch" — and you don't want that safety judgment re-implemented differently by every possible caller.</li>
+        </ul>
+
+        <div class="plate">
+          <div class="flow" style="flex-direction:column; align-items:flex-start; gap:10px;">
+            <div class="flow"><span class="chip">Human (web UI)</span><span class="chip">Autonomous Selector</span><span class="chip">(future) LLM</span></div>
+            <div style="align-self:center; color:var(--muted); font-size:18px;">↓ all call the exact same method ↓</div>
+            <div class="flow"><span class="chip hot">ControlService.request_switch(name)</span></div>
+            <div style="align-self:center; color:var(--muted); font-size:18px;">↓</div>
+            <div class="flow"><span class="chip">PolicySupervisor<br><small style="color:var(--muted)">owns policies, cross-fades the swap</small></span><span class="chip">SafetyGovernor<br><small style="color:var(--muted)">the only "yes, switch now"</small></span></div>
+            <div style="align-self:center; color:var(--muted); font-size:18px;">↓</div>
+            <div class="flow"><span class="chip">RobotAdapter</span><span class="sep">→</span><span class="chip">SimAdapter (Genesis)</span><span class="sep">/</span><span class="chip">RealAdapter (real G1, untested)</span></div>
+          </div>
+          <div class="cap">legged_gym/control/ — one call surface, regardless of who's calling or what's underneath.</div>
+        </div>
+
+        <p>The key design choice: instead of a hard cut, <code>PolicySupervisor</code> cross-fades — blends the outgoing and incoming policy's actions linearly over ~15 ticks — so the PD controller sees a gradually-moving target. And the decision "is this instant safe to switch" lives in exactly one place, <code>SafetyGovernor</code>, checking the same upright/fallen signal (<code>projected_gravity</code>) this repo already uses to end a training episode when a robot falls (§8).</p>
+
+        <details class="code-box">
+          <summary><span>The actual swap, cross-faded</span> <span class="file">legged_gym/control/supervisor.py</span></summary>
+          <pre><code>def confirm_pending_switch(self) -> bool:
+    # Called ONLY by SafetyGovernor, once it judges this instant safe.
+    new_policy = self.policies[self.pending_name]
+    new_policy.backend.reset()          # the new policy's LSTM starts clean
+    self._ramp_from = self.active       # keep the outgoing policy around briefly
+    self.active_name = self.pending_name
+    self._ramp_remaining = self.ramp_ticks
+    return True
+
+def step(self, obs):
+    new_action = self.active.backend.step(obs)
+    if self._ramp_remaining <= 0:
+        return new_action
+    old_action = self._ramp_from.backend.step(obs)
+    alpha = 1.0 - (self._ramp_remaining / self.ramp_ticks)   # 0 -> 1 across the ramp
+    action = (1.0 - alpha) * old_action + alpha * new_action  # cross-fade, not a hard cut
+    self._ramp_remaining -= 1
+    return action</code></pre>
+        </details>
+
+        <p>Try it yourself:</p>
+        <details class="code-box">
+          <summary><span>Run the live demo</span> <span class="file">legged_gym/scripts/swap_experiment.py</span></summary>
+          <pre><code>python legged_gym/scripts/swap_experiment.py \
+    --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
+    --policy cautious:logs/g1_cautious/&lt;run_name&gt;/exported/policy_lstm_1.pt \
+    --active stable
+# open http://localhost:9006 — Restart / Pause / per-policy switch buttons,
+# a live "active policy" label, running against Genesis via viser (a web-based
+# 3D viewer — Genesis's own native window has a rendering bug on this Mac/asset
+# combination, so viser is what actually works here).</code></pre>
+        </details>
+
+        <div class="aside">
+          <div class="label">Why not just adopt ROS 2 / <code>ros2_control</code>?</div>
+          <code>ros2_control</code>'s <code>controller_manager</code> solves almost exactly this problem, and <a href="https://github.com/legubiao/quadruped_ros2_control" target="_blank" rel="noopener">legubiao/quadruped_ros2_control</a> is real prior art doing it for legged robots specifically. For a pure Python/PyTorch/Genesis project built for quick local iteration on a Mac, adopting all of ROS 2 today would add a lot of toolchain cost for the benefit — so this fork borrows the <em>pattern</em> (named, swappable, lifecycle-staged controllers behind an abstract hardware interface) without the dependency, and deliberately names its lifecycle states (<code>INACTIVE</code>/<code>READY</code>/<code>ACTIVE</code>/<code>FAULT</code>) to match <code>ros2_control</code>'s own vocabulary, in case a real bridge is worth building later.
+        </div>
+
+        <p>What's genuinely unfinished, honestly stated: <code>deploy_real/real_adapter.py</code> (the real-hardware version of this) is ported carefully against <code>unitree_rl_gym</code>'s own deploy code but is <strong>untested</strong> — this fork was built with no physical G1 and no <code>unitree_sdk2py</code> installed. The physical button-gated safety sequence and the autonomous <code>Selector</code> (today just a tilt-threshold rule; a learned gating network is the active research direction — see RPG and SkillBlender in the README) are both left as the clearly-marked next steps.</p>
+      </section>
+
+      <section id="glossary">
+        <div class="num">§14 — reference</div>
+        <h2>Glossary</h2>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Term</th><th>Meaning</th></tr>
+            <tr><td class="k">DOF</td><td>Degree of Freedom — one independently-actuated joint axis. <a href="#robots">§1</a></td></tr>
+            <tr><td class="k">Quasi-direct-drive</td><td>A low-gear-ratio actuator mounted at the joint; stays back-drivable (can yield to external force) instead of rigid. <a href="#motors">§2</a></td></tr>
+            <tr><td class="k">Decimation</td><td>How many fast physics/PD steps happen per one (slower) policy inference step. <a href="#loop">§3</a></td></tr>
+            <tr><td class="k">PD control</td><td>Proportional-Derivative control: torque = Kp×(target − current) − Kd×(velocity). <a href="#pd">§4</a></td></tr>
+            <tr><td class="k">Kp / stiffness</td><td>The proportional gain — how hard the joint pulls toward its target. <a href="#pd">§4</a></td></tr>
+            <tr><td class="k">Kd / damping</td><td>The derivative gain — resists current velocity, prevents overshoot/oscillation. <a href="#pd">§4</a></td></tr>
+            <tr><td class="k">URDF</td><td>Unified Robot Description Format — XML file defining a robot's links, joints, and physical limits. Used by Isaac Gym. <a href="#pd">§4</a></td></tr>
+            <tr><td class="k">MJCF</td><td>MuJoCo's own XML robot-description format. <a href="#sims">§6</a></td></tr>
+            <tr><td class="k">Observation / Action</td><td>What the policy senses each tick, and what it outputs (target joint offsets). <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">Reward</td><td>The per-tick score the policy is trained to maximize. <a href="#config">§8</a></td></tr>
+            <tr><td class="k">PPO</td><td>Proximal Policy Optimization — the RL algorithm used to train the policy, in small careful steps. <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">Actor-critic</td><td>Two networks during training: the actor (kept, becomes the policy) and the critic (discarded, only helps training). <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">Privileged observation</td><td>Extra ground-truth info fed only to the critic — things the real robot can't sense directly. <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">Domain randomization</td><td>Randomizing physics (friction, mass, pushes) across the training population so the policy generalizes to the real robot. <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">Isaac Gym</td><td>NVIDIA's GPU-parallel physics simulator, used for training. <a href="#sims">§6</a></td></tr>
+            <tr><td class="k">Sim2Sim</td><td>Re-running a trained policy in a second simulator (MuJoCo) as a sanity check. <a href="#sims">§6</a></td></tr>
+            <tr><td class="k">Sim2Real</td><td>Deploying a simulator-trained policy onto the physical robot. <a href="#sim2real">§10</a></td></tr>
+            <tr><td class="k">TorchScript</td><td>A frozen, portable export of a trained PyTorch network, runnable without the training stack. <a href="#pipeline">§7</a></td></tr>
+            <tr><td class="k">Gait-phase clock</td><td>A sin/cos signal marking where in the stride cycle each leg currently is. <a href="#g1">§9</a></td></tr>
+            <tr><td class="k">IMU</td><td>Inertial Measurement Unit — gyroscope + accelerometer, gives orientation and angular velocity. <a href="#sim2real">§10</a></td></tr>
+            <tr><td class="k">DDS</td><td>Data Distribution Service — the pub/sub network protocol used to talk to the real robot. <a href="#sim2real">§10</a></td></tr>
+            <tr><td class="k">Genesis</td><td>A physics simulator that (unlike Isaac Gym) also targets Apple Silicon via a Metal backend — what this fork trains on. <a href="#genesis-fork">§12</a></td></tr>
+            <tr><td class="k">RobotAdapter</td><td>The one interface separating "how do I talk to this specific robot" from everything else — SimAdapter (Genesis) and RealAdapter (real G1) both implement it. <a href="#control-arch">§13</a></td></tr>
+            <tr><td class="k">PolicySupervisor</td><td>Owns the loaded policies and performs the actual switch, cross-fading the output action instead of cutting hard. <a href="#control-arch">§13</a></td></tr>
+            <tr><td class="k">SafetyGovernor</td><td>The one place that decides "is this instant safe to act on a pending policy switch." <a href="#control-arch">§13</a></td></tr>
+            <tr><td class="k">Selector</td><td>Proposes autonomous policy switches (a simple tilt-threshold rule today; a learned gating network is the researched next step). <a href="#control-arch">§13</a></td></tr>
+            <tr><td class="k">Cross-fade / ramp</td><td>Blending the outgoing and incoming policy's actions linearly over several ticks on a switch, instead of jumping the target instantly. <a href="#control-arch">§13</a></td></tr>
+            <tr><td class="k">Lifecycle (INACTIVE/READY/ACTIVE/FAULT)</td><td>The state vocabulary an adapter reports, borrowed on purpose from ROS 2's <code>ros2_control</code> naming. <a href="#control-arch">§13</a></td></tr>
+          </table>
+        </div>
+      </section>
+
+      <section id="credits" style="border-bottom:none;">
+        <div class="num">§15 — reference</div>
+        <h2>Credits &amp; license</h2>
+        <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/LeggedGym-Ex" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
+      </section>
+
+    </div>
+
+    <footer>
+      This page explains both the original <code>unitree_rl_gym</code> repository (§1–§11) and what this specific fork adds on top — running on Genesis instead of Isaac Gym, and a control architecture for switching between trained policies (§12–§13). Every file path and code excerpt above points at a real file in one of those two repos.
+    </footer>
+  </main>
+</div>
+
+<script>
+(function(){
+  var canvas = document.getElementById('pdCanvas');
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  var pivot = {x: W/2, y: 40};
+  var length = 150;
+
+  var state = { angle: 0.6, vel: 0, target: 0.6, kp: 15, kd: 8 };
+  var lastSwitch = 0;
+  var running = true;
+
+  function setPreset(kp, kd, btn, label){
+    state.kp = kp; state.kd = kd;
+    document.querySelectorAll('.pd-controls button').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+    document.getElementById('pd-readout').textContent = label;
+  }
+
+  document.getElementById('pd-good').addEventListener('click', function(e){
+    setPreset(15, 8, e.target, 'Kp = 15, Kd = 8 — pulls to target smoothly, no overshoot.');
+  });
+  document.querySelectorAll('.pd-controls button')[1].addEventListener('click', function(e){
+    setPreset(4, 6, e.target, 'Kp = 4, Kd = 6 — too weak: never quite reaches the target.');
+  });
+  document.querySelectorAll('.pd-controls button')[2].addEventListener('click', function(e){
+    setPreset(45, 1, e.target, 'Kp = 45, Kd = 1 — strong pull, almost no brake: swings past target and rings.');
+  });
+
+  var prefersReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function step(dt){
+    if (performance.now() - lastSwitch > 1600){
+      state.target = -state.target;
+      lastSwitch = performance.now();
+    }
+    var torque = state.kp * (state.target - state.angle) - state.kd * state.vel;
+    var accel = torque; // unit "inertia" for demo purposes
+    state.vel += accel * dt;
+    state.vel *= 0.999;
+    state.angle += state.vel * dt;
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+    var css = getComputedStyle(document.documentElement);
+    var ink = css.getPropertyValue('--ink-soft') || '#3c4a58';
+    var accent = css.getPropertyValue('--accent') || '#d9531a';
+    var accent2 = css.getPropertyValue('--accent2') || '#1b7a72';
+    var line = css.getPropertyValue('--line') || '#c7d1d9';
+
+    // target ghost
+    var tx = pivot.x + Math.sin(state.target) * length;
+    var ty = pivot.y + Math.cos(state.target) * length;
+    ctx.setLineDash([4,5]);
+    ctx.strokeStyle = line;
+    ctx.beginPath(); ctx.moveTo(pivot.x, pivot.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(tx, ty, 5, 0, 7); ctx.strokeStyle = accent2; ctx.stroke();
+
+    // pendulum
+    var x = pivot.x + Math.sin(state.angle) * length;
+    var y = pivot.y + Math.cos(state.angle) * length;
+    ctx.strokeStyle = ink; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(pivot.x, pivot.y); ctx.lineTo(x, y); ctx.stroke();
+
+    ctx.beginPath(); ctx.arc(pivot.x, pivot.y, 4, 0, 7); ctx.fillStyle = ink; ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 11, 0, 7); ctx.fillStyle = accent; ctx.fill();
+  }
+
+  var last = performance.now();
+  function loop(now){
+    var dt = Math.min((now - last)/1000, 0.033);
+    last = now;
+    for (var i=0;i<4;i++) step(dt/4);
+    draw();
+    requestAnimationFrame(loop);
+  }
+  draw();
+  requestAnimationFrame(loop);
+})();
+</script>
