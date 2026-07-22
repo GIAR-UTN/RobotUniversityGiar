@@ -9,6 +9,9 @@ class G1RoughCfg(G1Flat12DofCommonCfg):
         num_privileged_obs = 50
         num_actions = 12
 
+    class sim(G1Flat12DofCommonCfg.sim):
+        substeps = 4  # was 1 — raised to avoid NaN contact-force blowups on early random-policy falls (CPU/Metal backend)
+
     class domain_rand(G1Flat12DofCommonCfg.domain_rand):
         randomize_friction = True
         friction_range = [0.1, 1.25]
@@ -60,3 +63,25 @@ class G1RoughCfgPPO(LeggedRobotCfgPPO):
         max_iterations = 10000
         run_name = ''
         experiment_name = 'g1'
+
+
+class G1CautiousCfg(G1RoughCfg):
+    """Swap-experiment variant: same 12 actions / 47 obs, same PD gains, same default pose —
+    only the reward weights differ, biasing toward a slower, more energy-conserving gait
+    instead of G1RoughCfg's default. Intended to be TorchScript-swappable with the g1 policy
+    at inference time, since observation/action shapes match exactly."""
+    class rewards(G1RoughCfg.rewards):
+        class scales(G1RoughCfg.rewards.scales):
+            tracking_lin_vel = 0.5       # was 1.0 — less eager to chase commanded speed
+            dof_acc = -2.5e-6            # was -2.5e-7 — 10x more averse to jerky joints
+            dof_vel = -1e-2              # was -1e-3 — 10x more averse to fast joints
+            action_rate = -0.1           # was -0.01 — 10x more averse to changing its mind
+            torques = -0.0002            # not penalized at all in G1RoughCfg — added here
+
+
+class G1CautiousCfgPPO(G1RoughCfgPPO):
+    class runner(G1RoughCfgPPO.runner):
+        policy_class_name = "ActorCriticRecurrent"
+        max_iterations = 10000
+        run_name = ''
+        experiment_name = 'g1_cautious'

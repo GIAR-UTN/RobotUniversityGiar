@@ -60,3 +60,9 @@ wandb
 build
 *debug*
 resources/terrains/*.stl
+
+# GIAR fork additions
+.venv/
+plot.png
+*.onnx
+outputs/

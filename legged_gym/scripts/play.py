@@ -252,6 +252,14 @@ def export_policy(alg_runner, path: str, args, env_cfg, train_cfg, task_type):
     elif task_type == "dreamwaq":
         exporter = PolicyExporterWaQ(alg_runner.alg.actor_critic)
         exporter.export(path, env_cfg, args.export_onnx, train_cfg)
+    elif getattr(alg_runner.alg.actor_critic, "is_recurrent", False):
+        # e.g. G1/H1's ActorCriticRecurrent (LSTM): the plain PolicyExporter only grabs
+        # actor_critic.actor (the post-LSTM MLP), silently dropping the LSTM itself, which
+        # produces a jit module expecting a 64-dim input instead of the real 47-dim obs.
+        # PolicyExporterLSTM (already defined in helpers.py, just never dispatched to here)
+        # exports the LSTM + MLP together and expects (obs, hidden_state, cell_state).
+        exporter = PolicyExporterLSTM(alg_runner.alg.actor_critic)
+        exporter.export(path)
     else:
         exporter = PolicyExporter(alg_runner.alg.actor_critic)
         exporter.export(path, env_cfg, args.export_onnx, train_cfg)
@@ -288,8 +296,13 @@ def play(args):
     policy = ppo_runner.get_inference_policy(device=env.device)
     
     # export policy as a jit module (used to run it from C++ or python)
-    path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, 
-                            train_cfg.runner.load_run, 'exported')
+    # train_cfg.runner.load_run stays an unresolved sentinel (-1 = "latest") even after
+    # make_alg_runner() resolves it internally, so re-resolve it here via get_load_path()
+    # instead of joining the raw int into a path (that raised a TypeError).
+    log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
+    resolved_run_dir = os.path.dirname(get_load_path(log_root, load_run=train_cfg.runner.load_run,
+                                                      checkpoint=train_cfg.runner.checkpoint))
+    path = os.path.join(resolved_run_dir, 'exported')
     export_policy(ppo_runner, path, args, env_cfg, train_cfg, task_type)
     
     viser_viewer = None
