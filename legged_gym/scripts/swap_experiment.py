@@ -52,6 +52,11 @@ def main():
                               "combo — viser (web viewer) is the reliable way to actually watch this run.")
     parser.add_argument('--speed', type=float, default=0.35,
                          help="playback speed multiplier (1.0 = real-time 50Hz control rate)")
+    parser.add_argument('--docs_port', type=int, default=None,
+                         help="if set, adds a link in the viser panel to a docs server assumed "
+                              "running at http://localhost:<docs_port>/ (e.g. `python -m http.server "
+                              "<docs_port>` run from the docs/ directory) — viser itself only serves "
+                              "its own 3D viewer, not arbitrary static files like docs/index.html.")
     cli = parser.parse_args()
 
     policy_paths = parse_policy_args(cli.policy_specs)
@@ -94,6 +99,11 @@ def main():
         print(f"Viser web viewer started at http://localhost:{cli.viser_port}")
 
         policy_label = viser_viewer.server.gui.add_markdown("### Active policy: —", order=-100)
+
+        if cli.docs_port is not None:
+            viser_viewer.server.gui.add_markdown(
+                f"[📖 Read the docs](http://localhost:{cli.docs_port}/)", order=-99,
+            )
 
         restart_button = viser_viewer.server.gui.add_button(
             "Restart",
