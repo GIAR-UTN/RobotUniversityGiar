@@ -8,8 +8,11 @@
 
 let ws = null;
 let latestStatus = null;
+let lastStatusJSON = null; // dedupe key — status() pushes at ~10Hz whether or not anything changed
 let msgId = 1;
 let keymap = {};
+let keyByPolicy = {}; // policy name -> bound key, precomputed once at boot (not per render)
+let renderedPolicyNames = null; // policies list actually painted into the DOM right now
 let panelFocused = true; // page loads with the panel implicitly "focused"
 
 const $ = (sel) => document.querySelector(sel);
@@ -37,7 +40,15 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.method === 'status') {
-      applyStatus(msg.result);
+      // status() pushes at ~10Hz REGARDLESS of whether anything changed —
+      // most ticks are identical to the last one. Skip all DOM work on a
+      // dupe: this loop is what keeps the page usable even when the host
+      // is under heavy CPU/memory pressure (see HANDOFF_control_web.md).
+      const json = ev.data;
+      if (json !== lastStatusJSON) {
+        lastStatusJSON = json;
+        applyStatus(msg.result);
+      }
     } else if ('error' in msg) {
       console.error('ControlService error:', msg.error);
     }
@@ -50,9 +61,7 @@ function policyButtonRow(name, active) {
   const btn = document.createElement('button');
   btn.className = 'policy-btn' + (name === active ? ' active' : '');
   btn.textContent = name;
-  const key = Object.keys(keymap).find(
-    (k) => keymap[k] && keymap[k].action === 'switch' && keymap[k].policy === name
-  );
+  const key = keyByPolicy[name];
   if (key) {
     const kbd = document.createElement('kbd');
     kbd.textContent = key;
@@ -72,9 +81,17 @@ function applyStatus(status) {
   if (status.paused) text += ' (paused)';
   activeLabel.innerHTML = `<span id="conn-dot" class="${connDot.className}"></span>${text}`;
 
-  policyList.innerHTML = '';
-  for (const name of status.policies || []) {
-    policyList.appendChild(policyButtonRow(name, status.active));
+  // The policy list itself rarely changes (only when --policy set or the
+  // active/pending name changes) — rebuilding it from scratch every push
+  // is wasted DOM churn, so only touch it when the visible set changed.
+  const names = status.policies || [];
+  const namesKey = names.join(' ') + ' ' + status.active;
+  if (namesKey !== renderedPolicyNames) {
+    renderedPolicyNames = namesKey;
+    policyList.innerHTML = '';
+    for (const name of names) {
+      policyList.appendChild(policyButtonRow(name, status.active));
+    }
   }
 
   $('#btn-pause').textContent = status.paused ? 'Resume' : 'Pause';
@@ -170,6 +187,10 @@ async function boot() {
   keymap = Object.fromEntries(
     Object.entries(km).filter(([k, v]) => v && typeof v === 'object' && !k.startsWith('_'))
   );
+  keyByPolicy = {};
+  for (const [key, binding] of Object.entries(keymap)) {
+    if (binding.action === 'switch' && binding.policy) keyByPolicy[binding.policy] = key;
+  }
 
   const simView = $('#view-sim');
   const iframe = document.createElement('iframe');

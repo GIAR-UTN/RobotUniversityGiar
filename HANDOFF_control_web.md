@@ -312,6 +312,18 @@ wrapper stays trivial.
   anyone still passing it, and 9007 stays claimed by the pre-existing standalone demo left running from a
   prior session (not touched this session — it's a live process someone may still be watching).
 
+**Post-merge incident: browser tab froze ("Page Unresponsive") on live demo.** Root cause was NOT the new
+code — `ps`/`vm_stat` at the time showed severe host contention (load average ~18 on the dev machine, ~5
+concurrent `claude` sessions, an unrelated CPU-bound process at ~200%, dozens of Chrome renderer processes,
+memory compressor working hard). A WebGL-heavy `viser` tab is the first thing to stall under that kind of
+pressure. That said, `web/app.js` had a real inefficiency worth fixing regardless: it was rebuilding the
+policy-list DOM and re-running keymap lookups on every ~10Hz `status()` push, even when nothing had changed
+(which is most pushes, since the sim is usually in a steady state) — this is now deduped (raw JSON string
+compared before doing any work; the policy-list DOM is only rebuilt when the policy set or active name
+actually changes; keymap→policy lookup is precomputed once at boot instead of per render). Doesn't fix host
+overload, but removes an avoidable, continuous source of main-thread work on top of it. If this recurs with a
+quiet host, that would point back at the app instead.
+
 **Fable review, post-Stage-A:** an independent review of `transport.py` + the `swap_experiment.py` wiring
 found the threading design sound (no bypass of `SafetyGovernor`, no cousin of the old one-time-boolean estop
 bug, estop correctly prioritized within a batch and unblockable by other queued commands) but caught three
