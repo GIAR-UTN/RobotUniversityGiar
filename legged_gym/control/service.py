@@ -49,6 +49,16 @@ class ControlService:
         s = self.supervisor.status
         s["paused"] = self.paused
         s["safety_tripped"] = self.safety.tripped
+        # Every user-selectable policy name — "damping" is the safety
+        # fallback skill, not a switch target, so it's excluded the same
+        # way swap_experiment.py's viser panel already excludes it.
+        s["policies"] = [name for name in self.supervisor.policies if name != "damping"]
+        # Adapter-declared, not UI-hardcoded — see SimAdapter/RealAdapter's
+        # backend_name/capabilities class attributes. Lets a control web
+        # show the same panel for sim and real, graying out what the
+        # current backend can't do (e.g. "restart" on real hardware).
+        s["backend"] = getattr(self.adapter, "backend_name", "sim")
+        s["capabilities"] = getattr(self.adapter, "capabilities", {})
         return s
 
     def pause(self) -> None:

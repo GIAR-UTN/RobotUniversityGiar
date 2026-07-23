@@ -77,6 +77,16 @@ python legged_gym/scripts/swap_experiment.py \
 
 `--headless` runs a short scripted smoke test instead (no browser needed) — useful for CI or a quick sanity check that everything still imports and steps correctly after a change.
 
+Add `--control_port <PORT>` to also start the unified control web (see §4a below):
+
+```bash
+python legged_gym/scripts/swap_experiment.py \
+    --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
+    --policy cautious:logs/g1_cautious/<run_name>/exported/policy_lstm_1.pt \
+    --active stable --control_port 9013
+# then open http://localhost:9013
+```
+
 ---
 
 ## 3. The problem this fork's architecture solves
@@ -137,6 +147,16 @@ Say you have two trained policies for the same robot — say, a normal walk and 
 - **`selector.py`** — `Selector.propose(state) -> Optional[name]` is the pluggable seam for autonomous behavior. Today it's a simple threshold rule (`TiltRecoverySelector`). The 2025-2026 research direction for this specifically on Unitree G1 (see RPG, arXiv:2604.21355; SkillBlender, arXiv:2506.09366) is a small learned gating network doing continuous blending instead of discrete rule-based switching — that's a drop-in replacement behind the same one-method interface, not a redesign.
 - **`service.py`** — `ControlService` is the call surface. Today, `viser`'s button callbacks call it in-process (`legged_gym/scripts/swap_experiment.py`). The identical class, wrapped in a thin WebSocket/JSON-RPC layer, is what would let an external process (a real robot with no display attached, or a remote web app) drive the same thing later — the transport is a detail; the interface (`switch` / `status` / `pause` / `estop`) doesn't change.
 
+### 4a. The unified control web
+
+`legged_gym/control/transport.py` (`ControlServer`) wraps `ControlService` in a JSON-over-WebSocket transport (FastAPI + uvicorn), exposing the exact same five methods — `request_switch` / `status` / `pause` / `resume` / `estop` — to any external client at `ws://<host>:<port>/ws`. Started via `--control_port` on `swap_experiment.py` (see above); a plain Python `websockets` client or `websocat` can drive it with no browser at all.
+
+Unless `--headless` is also set, the same port also serves `web/index.html`: a single, build-step-free HTML/JS/CSS page (same philosophy as `docs/index.html` — no npm, no bundler, read it and run it) with three regions:
+
+- **A tabbed view area** — Docs (this repo's didactic write-up, iframed), Simulator (the `viser` 3D viewer, iframed), and a Real-robot tab that's present but disabled until `ControlService.status()["backend"]` reports `"real"` instead of `"sim"` — the same panel and controls are meant to keep working once real hardware exists (see §5), only the view and backend change.
+- **A persistent controls panel**, visible regardless of which tab is active: the 🟢/🟡/🔴 active-policy indicator (mirroring `viser`'s own label), one button per loaded policy, Pause/Resume, Restart, and a large E-STOP button — all driven purely by `status()` pushes over the same WebSocket, ~10 times a second.
+- **Keyboard shortcuts**, defined in `web/keymap.json` (edit the file to change bindings — there's no in-page rebind UI in v1) and dispatched through the identical WebSocket send path the buttons use. They only fire while the controls panel — not the `viser` iframe — has DOM focus, because a cross-origin iframe cannot forward `keydown` events to the host page; the panel shows a visible hint and re-arms on click when that happens. The mouse E-STOP button is unaffected by this and always works, since it's a click rather than a keystroke — treat it as the primary stop mechanism, keyboard `Esc` as a convenience on top of it.
+
 ### Why not just adopt ROS 2 / `ros2_control`?
 
 This is a legitimate question — `ros2_control`'s `controller_manager` solves almost exactly this problem (multiple named "controllers," switchable at runtime, backend-abstracted between sim and real), and there's real prior art doing exactly this for legged robots: [`legubiao/quadruped_ros2_control`](https://github.com/legubiao/quadruped_ros2_control) runs multiple controller types across MuJoCo, Gazebo, and a real Unitree Go2. It's worth reading if you want the "grown-up," ROS-ecosystem version of this idea.
@@ -150,7 +170,7 @@ For *this* fork, adopting full ROS 2 today would mean bolting a colcon workspace
 - **`SimAdapter`**: working, tested, is what the `viser` demo runs on.
 - **`RealAdapter`** (`deploy_real/real_adapter.py`): ported carefully against unitree_rl_gym's own `deploy_real.py` (observation building, action → target-joint-position math, motor index mapping) — but the physical button-gated state machine (`zero_torque_state` → `move_to_default_pos` → `default_pos_state`) and the CRC/publish step are left as documented `NotImplementedError`s with exact porting instructions, because they cannot be written *or verified* without a real robot and unitree_sdk2py installed, neither of which existed in the environment this fork was built in. **Treat this file as a reviewed starting point, not proven code**, and re-verify every threshold in `safety.py` against your specific robot before trusting it near hardware.
 - **`Selector`**: only the simple rule-based `TiltRecoverySelector` exists, and it has no hysteresis — it re-proposes every tick, so a live autonomous selector alongside a human operator will currently override a manual switch on the very next tick. A learned gating/blending network (the active 2025-2026 research direction — see §4) is the natural next step, and only requires implementing the same one-method `propose()` interface; a deadband/override-priority rule is the smaller near-term fix.
-- **No networked transport yet**: `ControlService` is only driven in-process today. A WebSocket/JSON-RPC bridge for controlling a real, display-less robot from an external web app is the natural next piece — the interface it would expose already exists (`switch`/`status`/`pause`/`estop`); it just needs a transport wrapper.
+- **Networked transport + unified control web exist** (`legged_gym/control/transport.py`, `web/` — see §4a): a JSON-over-WebSocket bridge and a build-step-free browser UI, both driven purely through `ControlService`, nothing new bypasses it.
 - **`ObsSpec` enforcement is a warning, not a hard stop**: `PolicySupervisor` checks the incoming observation's shape against each policy's declared spec and warns on mismatch, but doesn't refuse to proceed — every policy you load side-by-side today must genuinely share one observation space (which is true for `stable`/`cautious`/`damping` above, but won't automatically be true for an arbitrary new skill).
 - **Episode-reset doesn't reset policy hidden states**: `SimAdapter.send_action()` ignores the env's own `dones` signal (used for RL training's episode termination). Fine for this demo — `SafetyGovernor` already reacts to a fall directly via `projected_gravity` — but a hidden state that should have been cleared on an env-internal reset currently isn't; worth fixing before using this for anything resembling an evaluation run.
 - **CPU-only tested**: policy backends default to `device='cpu'` (parameterized, not hardcoded, but nothing here has been run against a CUDA env) — the whole point of this fork is Genesis on a GPU-less Mac, so this hasn't mattered yet.

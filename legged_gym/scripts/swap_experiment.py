@@ -18,6 +18,9 @@ Usage:
 """
 import argparse
 import time
+from pathlib import Path
+
+from fastapi.staticfiles import StaticFiles
 
 from legged_gym import *
 from legged_gym.envs import *
@@ -28,6 +31,7 @@ from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
     load_policy, damping_policy,
 )
+from legged_gym.control.transport import ControlServer
 
 
 def parse_policy_args(policy_args):
@@ -53,10 +57,19 @@ def main():
     parser.add_argument('--speed', type=float, default=0.35,
                          help="playback speed multiplier (1.0 = real-time 50Hz control rate)")
     parser.add_argument('--docs_port', type=int, default=None,
-                         help="if set, adds a link in the viser panel to a docs server assumed "
-                              "running at http://localhost:<docs_port>/ (e.g. `python -m http.server "
-                              "<docs_port>` run from the docs/ directory) — viser itself only serves "
-                              "its own 3D viewer, not arbitrary static files like docs/index.html.")
+                         help="DEPRECATED — no-op if --control_port is set (the unified control web at "
+                              "--control_port now serves docs/ itself; see web/index.html's Docs tab). "
+                              "Only takes effect standalone, without --control_port: adds a link in the "
+                              "viser panel to a docs server assumed running at http://localhost:<docs_port>/ "
+                              "(e.g. `python -m http.server <docs_port>` run from the docs/ directory).")
+    parser.add_argument('--control_port', type=int, default=None,
+                         help="if set, starts a networked ControlServer (JSON-over-WebSocket at /ws, see "
+                              "legged_gym/control/transport.py) on this port, exposing request_switch/"
+                              "status/pause/resume/estop to external clients — the same five calls the "
+                              "viser GUI buttons already make in-process. Unless --headless, this port "
+                              "also serves the unified control web (web/index.html: Docs/Simulator tabs "
+                              "+ persistent controls panel + keyboard shortcuts) at http://localhost:"
+                              "<control_port>/, superseding --docs_port.")
     cli = parser.parse_args()
 
     policy_paths = parse_policy_args(cli.policy_specs)
@@ -91,6 +104,10 @@ def main():
     safety = SafetyGovernor(supervisor, damping_policy_name="damping")
     service = ControlService(adapter, supervisor, safety, selector=None)
 
+    control_server = None
+    if cli.control_port is not None:
+        control_server = ControlServer(service, port=cli.control_port)
+
     viser_viewer = None
     policy_label = None
 
@@ -100,7 +117,29 @@ def main():
 
         policy_label = viser_viewer.server.gui.add_markdown("### Active policy: —", order=-100)
 
-        if cli.docs_port is not None:
+        if control_server is not None:
+            # Mount the unified control web (Docs/Simulator tabs + controls
+            # panel + keyboard shortcuts — web/index.html) onto the SAME
+            # FastAPI app/port as the /ws transport, per HANDOFF_control_web.md
+            # §3-B: one process, one port, same-origin WS (no CORS). This
+            # retires --docs_port's separate http.server for anyone using
+            # --control_port. Routes must be added before serve_in_thread().
+            repo_root = Path(__file__).resolve().parents[2]
+
+            @control_server.app.get("/config")
+            def _web_config():
+                return {"viser_port": cli.viser_port}
+
+            control_server.app.mount(
+                "/docs", StaticFiles(directory=str(repo_root / "docs"), html=True), name="docs",
+            )
+            control_server.app.mount(
+                "/", StaticFiles(directory=str(repo_root / "web"), html=True), name="web",
+            )
+            viser_viewer.server.gui.add_markdown(
+                f"[🖥 Open unified control web](http://localhost:{cli.control_port}/)", order=-99,
+            )
+        elif cli.docs_port is not None:
             viser_viewer.server.gui.add_markdown(
                 f"[📖 Read the docs](http://localhost:{cli.docs_port}/)", order=-99,
             )
@@ -146,6 +185,15 @@ def main():
     else:
         restart_requested = {"flag": False}
 
+    if control_server is not None:
+        # Routes/mounts (if any — see the `if not cli.headless` block above)
+        # must already be on control_server.app before this call.
+        control_server.serve_in_thread()
+        listening_at = f"ControlServer listening at ws://localhost:{cli.control_port}/ws"
+        if not cli.headless:
+            listening_at += f" — unified control web at http://localhost:{cli.control_port}/"
+        print(listening_at)
+
     frame_dt = (1 / 60.0) / max(cli.speed, 0.01)
 
     def update_label():
@@ -173,6 +221,8 @@ def main():
         obs = adapter.get_observations()
         switched = False
         for i in range(80):
+            if control_server is not None:
+                control_server.drain_commands()
             if i == 40 and not switched and other is not None:
                 print(f"[autonomous] requesting switch to '{other}' at step {i}")
                 service.request_switch(other)
@@ -180,6 +230,8 @@ def main():
             action = service.tick(obs)
             adapter.send_action(action)
             obs = adapter.get_observations()
+            if control_server is not None:
+                control_server.publish_status(service.status())
             if i % 20 == 0:
                 print(f"step {i:3d} | {service.status()}")
         print("Headless smoke test done.")
@@ -193,6 +245,9 @@ def main():
     while True:
         t_start = time.perf_counter()
 
+        if control_server is not None:
+            control_server.drain_commands()
+
         if restart_requested["flag"]:
             restart_requested["flag"] = False
             adapter.reset()
@@ -205,6 +260,9 @@ def main():
             obs = adapter.get_observations()
             if viser_viewer is not None:
                 viser_viewer.update_from_simulator(env, 0)
+
+        if control_server is not None:
+            control_server.publish_status(service.status())
 
         update_label()
 

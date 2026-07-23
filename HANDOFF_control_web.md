@@ -276,6 +276,56 @@ wrapper stays trivial.
 
 ---
 
+## 4a. Open questions — answered (this session)
+
+1. **Viser iframes cleanly.** Spiked with a 5-line host page against the already-running `swap_experiment.py`
+  instance on 9006: no `X-Frame-Options`/CSP block, the scene rendered (robot + ground loaded a beat after
+  connect), and mouse-drag camera orbit worked normally through the iframe. The one real finding: `keydown`
+  fired on the host document while the iframe canvas has focus does **not** reach the host page (confirmed —
+  clicking the host body then pressing a key incremented a host-page counter; clicking the iframe canvas then
+  pressing a key did not). Verdict: iframe, not pop-out-tab — the click-to-focus + visible-focus-state
+  mitigation from §3-B is necessary and, per the Fable review below, sufficient as long as the mouse E-STOP
+  button is treated as the primary stop path (a click, not a keystroke, so it's unaffected by iframe focus).
+2. **Same process, via FastAPI — confirmed with the user.** `fastapi`/`uvicorn` were already resolvable from
+  system Python (added to the project's `.venv` and to `pyproject.toml`'s core deps). Went further than the
+  original recommendation: rather than running Stage A's transport as a bare `websockets.serve` and adding a
+  *second* FastAPI server for Stage B's static files (which a Fable review flagged as exactly the kind of
+  duplication to avoid), `ControlServer` itself was rehosted on FastAPI + uvicorn, exposing `/ws`. `self.app`
+  is a plain `FastAPI` instance; Stage B mounts `docs/` and `web/` onto that same app/port before
+  `serve_in_thread()` is called. One process, one port, same-origin WS — no protocol change for external
+  clients (a bare `websockets` client connects to a FastAPI `/ws` route exactly as it would to a standalone
+  `websockets.serve` server).
+3. **Keymap: JSON-only for v1** (user's explicit choice) — `web/keymap.json`, no in-page rebind UI. Edit the
+  file directly to change bindings.
+4. **Stage C shape: backend + capability flags + disabled tab only** (user's explicit choice, matches the
+  recommendation) — no `--fake_real` stub this session. `ControlService.status()` now reports `"backend"`
+  (`"sim"`/`"real"`, adapter-declared via a `backend_name` class attribute on `SimAdapter`/`RealAdapter`) and
+  `"capabilities"` (currently just `{"restart": bool}` — real hardware has no instant reset). The web panel's
+  Real-robot tab reads `backend` to gray itself in/out; nothing UI-hardcoded.
+5. **`set_command` — out of scope this session** (user's explicit choice). Arrow keys are present but bound
+  to `null` in `web/keymap.json`, with a comment explaining why, so the reservation is visible without
+  anything being implemented.
+6. **Ports:** `las ports audit`/`claim`/`release` used throughout for every port opened during spikes and
+  verification (9012 static-spike server, 9013–9021 various transport/e2e checks — all released after use).
+  `--docs_port`'s separate `http.server` is superseded by the unified web server when `--control_port` is set
+  (docs are mounted at `/docs` on the same port); the flag is kept as a documented no-op in that case for
+  anyone still passing it, and 9007 stays claimed by the pre-existing standalone demo left running from a
+  prior session (not touched this session — it's a live process someone may still be watching).
+
+**Fable review, post-Stage-A:** an independent review of `transport.py` + the `swap_experiment.py` wiring
+found the threading design sound (no bypass of `SafetyGovernor`, no cousin of the old one-time-boolean estop
+bug, estop correctly prioritized within a batch and unblockable by other queued commands) but caught three
+real bugs before Stage B started: (1) a non-dict JSON message (e.g. a bare `5` or `[1]`) would have been
+queued and crashed the sim thread on `.get()` — fixed by rejecting non-dict payloads on the socket thread
+before enqueueing; (2) `serve_in_thread()` claimed "listening" without checking the bind actually succeeded —
+a port collision died silently in the daemon thread while every reply was then dropped — fixed by polling
+`uvicorn.Server.started` with a timeout and raising if the thread died or timed out; (3) the estop-priority
+test asserted an unordered set of reply ids, which wouldn't have failed even with the sort key reversed —
+fixed to assert reply order and that a switch queued after estop is refused. All three are covered by new
+test cases in `tests/test_control_transport.py` (6 tests total, all passing).
+
+---
+
 ## 5. What NOT to do (lessons already paid for)
 
 - **Never bypass `SafetyGovernor`**, even "just in the UI layer". Only it confirms switches; only

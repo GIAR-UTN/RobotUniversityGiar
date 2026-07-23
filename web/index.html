@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LeggedGym-Ex — Control Web</title>
+<style>
+  :root{
+    --bg:#eef2f6;
+    --bg-raised:#e2e9ef;
+    --ink:#16202b;
+    --ink-soft:#3c4a58;
+    --muted:#5b6b78;
+    --line:#c7d1d9;
+    --accent:#d9531a;
+    --accent-ink:#ffffff;
+    --accent2:#1b7a72;
+    --danger:#c0392b;
+    --shadow: 0 1px 0 rgba(22,32,43,0.05);
+  }
+  :root[data-theme="dark"]{
+    --bg:#0b1116;
+    --bg-raised:#121a21;
+    --ink:#dbe4ea;
+    --ink-soft:#aab8c4;
+    --muted:#8a99a6;
+    --line:#26333d;
+    --accent:#ff7a3d;
+    --accent-ink:#1a0d05;
+    --accent2:#4fd1c1;
+    --danger:#ff5c4d;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#0b1116;
+      --bg-raised:#121a21;
+      --ink:#dbe4ea;
+      --ink-soft:#aab8c4;
+      --muted:#8a99a6;
+      --line:#26333d;
+      --accent:#ff7a3d;
+      --accent-ink:#1a0d05;
+      --accent2:#4fd1c1;
+      --danger:#ff5c4d;
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:var(--bg); color:var(--ink);
+    font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    display:flex; flex-direction:column;
+  }
+  header{
+    display:flex; align-items:center; gap:1.25rem;
+    padding:.6rem 1rem; border-bottom:1px solid var(--line);
+    background:var(--bg-raised);
+  }
+  header h1{font-size:.95rem; margin:0; font-weight:600; white-space:nowrap;}
+  nav{display:flex; gap:.25rem;}
+  nav button{
+    border:1px solid transparent; background:none; color:var(--muted);
+    padding:.4rem .8rem; border-radius:6px; cursor:pointer; font:inherit;
+  }
+  nav button.active{background:var(--bg); color:var(--ink); border-color:var(--line); font-weight:600;}
+  nav button:disabled{opacity:.45; cursor:not-allowed;}
+
+  main{flex:1; display:flex; min-height:0;}
+  #views{flex:1; position:relative; min-width:0;}
+  .view{position:absolute; inset:0; display:none;}
+  .view.active{display:block;}
+  .view iframe{width:100%; height:100%; border:0;}
+  .placeholder{
+    display:flex; align-items:center; justify-content:center; height:100%;
+    color:var(--muted); text-align:center; padding:2rem;
+  }
+
+  #panel{
+    width:280px; flex:none; border-left:1px solid var(--line); background:var(--bg-raised);
+    padding:.9rem; overflow-y:auto; outline:none;
+  }
+  #panel.focused{box-shadow: inset 0 0 0 2px var(--accent2);}
+  #panel h2{font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:1rem 0 .4rem;}
+  #panel h2:first-child{margin-top:0;}
+  #focus-hint{
+    font-size:.78rem; color:var(--muted); border:1px dashed var(--line); border-radius:6px;
+    padding:.5rem; margin-bottom:.75rem; cursor:pointer;
+  }
+  #panel.focused #focus-hint{display:none;}
+
+  #active-label{font-size:1rem; font-weight:600; margin-bottom:.75rem;}
+  #conn-dot{display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:.4rem;}
+  #conn-dot.ok{background:var(--accent2);}
+  #conn-dot.bad{background:var(--danger);}
+
+  .policy-btn, .action-btn{
+    display:block; width:100%; text-align:left; margin-bottom:.4rem;
+    padding:.5rem .6rem; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--ink); cursor:pointer; font:inherit;
+  }
+  .policy-btn.active{border-color:var(--accent2); font-weight:600;}
+  .policy-btn kbd, .action-btn kbd{
+    float:right; font-size:.72rem; color:var(--muted); border:1px solid var(--line);
+    border-radius:4px; padding:0 .3rem;
+  }
+
+  #estop{
+    width:100%; margin-top:.5rem; padding:.7rem; border-radius:8px; border:none;
+    background:var(--danger); color:#fff; font-weight:700; letter-spacing:.03em;
+    cursor:pointer; font-size:.95rem;
+  }
+  #estop:active{transform:translateY(1px);}
+
+  footer{padding:.35rem 1rem; font-size:.72rem; color:var(--muted); border-top:1px solid var(--line);}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>LeggedGym-Ex — Control Web</h1>
+  <nav id="tabs">
+    <button data-view="docs" class="active">Docs</button>
+    <button data-view="sim">Simulator</button>
+    <button data-view="real" disabled title="requires hardware">Real robot</button>
+  </nav>
+</header>
+
+<main>
+  <div id="views">
+    <div class="view active" id="view-docs"><iframe src="/docs/index.html"></iframe></div>
+    <div class="view" id="view-sim"></div>
+    <div class="view" id="view-real">
+      <div class="placeholder" id="real-placeholder">Real-robot view unavailable — see reason below.</div>
+    </div>
+  </div>
+
+  <div id="panel" tabindex="0">
+    <div id="focus-hint">Keyboard shortcuts are inactive while the Simulator view has focus (an iframe can't forward key events to this page). Click anywhere in this panel to re-arm them. The E-STOP button below always works regardless of focus.</div>
+
+    <h2>Status</h2>
+    <div id="active-label"><span id="conn-dot"></span>—</div>
+
+    <h2>Policies</h2>
+    <div id="policy-list"></div>
+
+    <h2>Controls</h2>
+    <button class="action-btn" id="btn-pause">Pause <kbd>p</kbd></button>
+    <button class="action-btn" id="btn-restart">Restart <kbd>r</kbd></button>
+    <button id="estop">E - S T O P <kbd style="border-color:#fff;color:#fff;">Esc</kbd></button>
+  </div>
+</main>
+
+<footer id="footer">connecting…</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

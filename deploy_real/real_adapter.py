@@ -67,6 +67,13 @@ class RealAdapter:
 
     num_envs = 1  # a real robot is always exactly one instance
 
+    # See SimAdapter's matching attributes in legged_gym/control/adapter.py —
+    # read by ControlService.status() so a UI can gray out "restart" (a real
+    # robot has no instant reset; it needs the physical button-gated startup
+    # sequence — see the NotImplementedError sections below).
+    backend_name = "real"
+    capabilities = {"restart": False}
+
     def __init__(self, config, net_interface: str):
         # Imported here, not at module level — see module docstring.
         from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber, ChannelFactoryInitialize

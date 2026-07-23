@@ -1,0 +1,14 @@
+{
+  "_comment": "Default keyboard shortcuts for the unified control web (see web/app.js). Actions reference policies BY NAME, not by index — names come from ControlService.status() at runtime, so this file survives whatever --policy set swap_experiment.py was started with (an unknown name shows as unbound, not an error). Edit this file directly to change v1 defaults; there is no in-page rebind UI yet.",
+  "1": {"action": "switch", "policy": "stable"},
+  "2": {"action": "switch", "policy": "cautious"},
+  "p": {"action": "pause_toggle"},
+  "r": {"action": "restart"},
+  "Escape": {"action": "estop"},
+
+  "_reserved_comment": "Arrow keys are intentionally unbound in v1 — reserved for a future set_command(vx, vy, yaw) velocity-control method, which needs its own safety/limits design and explicit sign-off before it's added (see HANDOFF_control_web.md open question 5).",
+  "ArrowUp": null,
+  "ArrowDown": null,
+  "ArrowLeft": null,
+  "ArrowRight": null
+}

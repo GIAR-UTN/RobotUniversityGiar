@@ -83,6 +83,12 @@ class SimAdapter:
     tensors and env.step()/env.reset(), which both backends populate the
     same way)."""
 
+    # Read by ControlService.status() (see service.py) so a UI can show
+    # which backend is driving the robot and gray out controls the current
+    # backend doesn't support — e.g. RealAdapter has no instant "restart".
+    backend_name = "sim"
+    capabilities = {"restart": True}
+
     def __init__(self, env):
         self.env = env
         self.num_envs = env.num_envs

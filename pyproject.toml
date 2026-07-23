@@ -16,7 +16,9 @@ dependencies = [
                 'pygame',
                 'trimesh',
                 'rich-argparse',
-                'viser'
+                'viser',
+                'fastapi',
+                'uvicorn'
 ]
 
 [project.optional-dependencies]
