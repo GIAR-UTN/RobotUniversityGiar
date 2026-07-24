@@ -679,7 +679,7 @@ def act(self, observations):
             <tr><td class="k">Sim2Real</td><td>the real robot</td><td>The final and only test that actually matters.</td></tr>
           </table>
         </div>
-        <p>Isaac Gym reads <abbr class="term" title="Unified Robot Description Format — XML robot description, used by Isaac Gym.">URDF</abbr> files; MuJoCo reads its own format, <abbr class="term" title="MuJoCo's native XML robot-description format (files like scene.xml). Describes the same robot geometry as a URDF, in MuJoCo's own schema.">MJCF</abbr> (files like <code>scene.xml</code>). Both describe the same physical Go2 or G1 — just for two different simulators.</p>
+        <p>Isaac Gym reads <abbr class="term" title="Unified Robot Description Format — XML robot description, used by Isaac Gym.">URDF</abbr> (Unified Robot Description Format) files; MuJoCo reads its own format, <abbr class="term" title="MuJoCo XML Configuration Format — MuJoCo's native XML robot-description schema. Describes the same robot geometry as a URDF, just in MuJoCo's own vocabulary.">MJCF</abbr> (MuJoCo XML Configuration Format — files like <code>scene.xml</code>). Both describe the same physical Go2 or G1 — just for two different simulators.</p>
       </section>
 
       <section id="pipeline">
@@ -990,7 +990,7 @@ def step(self, obs):
             <tr><td class="k">Kp / stiffness</td><td>The proportional gain — how hard the joint pulls toward its target. <a href="#pd">§4</a></td></tr>
             <tr><td class="k">Kd / damping</td><td>The derivative gain — resists current velocity, prevents overshoot/oscillation. <a href="#pd">§4</a></td></tr>
             <tr><td class="k">URDF</td><td>Unified Robot Description Format — XML file defining a robot's links, joints, and physical limits. Used by Isaac Gym. <a href="#pd">§4</a></td></tr>
-            <tr><td class="k">MJCF</td><td>MuJoCo's own XML robot-description format. <a href="#sims">§6</a></td></tr>
+            <tr><td class="k">MJCF</td><td>MuJoCo XML Configuration Format — MuJoCo's own XML robot-description format. <a href="#sims">§6</a></td></tr>
             <tr><td class="k">Observation / Action</td><td>What the policy senses each tick, and what it outputs (target joint offsets). <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Reward</td><td>The per-tick score the policy is trained to maximize. <a href="#config">§8</a></td></tr>
             <tr><td class="k">PPO</td><td>Proximal Policy Optimization — the RL algorithm used to train the policy, in small careful steps. <a href="#rl">§5</a></td></tr>
