@@ -295,6 +295,7 @@
     align-items:center;
   }
   @media (max-width:600px){ .pd-demo{grid-template-columns:1fr;} }
+  @media (max-width:640px){ .net-diagram{grid-template-columns:1fr !important;} .net-diagram > div:nth-child(2){margin-top:22px;} }
   .pd-demo canvas{
     width:100%; background:var(--bg); border:1px solid var(--line); border-radius:8px;
   }
@@ -571,6 +572,64 @@ decimation = 4               # 4 PD steps per policy step</code></pre>
 
         <p>Training runs this loop <strong>4096 robots at once</strong>, in parallel, for millions of ticks, and gradually adjusts the network so that higher-reward behavior becomes more likely. The algorithm that does the adjusting is called <abbr class="term" title="Proximal Policy Optimization — a reinforcement-learning algorithm that updates the policy network in small, clipped steps, so a single bad batch of experience can't wreck weeks of learned behavior.">PPO</abbr> (Proximal Policy Optimization) — the one detail worth knowing is <em>proximal</em>: it always takes small, careful steps, so one unlucky batch of falls can't undo everything learned so far.</p>
 
+        <h3>Not just weights — a policy with a memory</h3>
+        <p>The network trained for G1 isn't a plain feedforward <abbr class="term" title="Multi-Layer Perceptron — the simplest kind of neural network: a stack of fully-connected layers, with no memory of previous inputs. Reacts only to what it's shown this instant.">MLP</abbr> (Multi-Layer Perceptron — a stack of plain fully-connected layers with no memory of earlier ticks). It's a small <abbr class="term" title="Long Short-Term Memory — a recurrent neural network that carries a hidden state from one tick to the next, instead of only reacting to the current instant.">LSTM</abbr> (Long Short-Term Memory — a recurrent network that carries a running "memory" from one tick to the next) with 64 hidden units, followed by one small MLP layer (32 units) that turns that memory into the final action. The LSTM earns its keep because walking is a <em>sequential</em> problem — "am I mid-swing or mid-stance" isn't always recoverable from a single instantaneous snapshot of joint angles alone; a short memory of the last few ticks helps the policy disambiguate what a static observation can't.</p>
+
+        <div class="plate">
+          <div class="net-diagram" style="display:grid; grid-template-columns:1fr 1fr; gap:0 28px;">
+            <div style="text-align:center; font-family:system-ui,sans-serif; font-weight:700; font-size:12px; color:var(--accent2); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:10px;">Actor — ships, drives the robot</div>
+            <div style="text-align:center; font-family:system-ui,sans-serif; font-weight:700; font-size:12px; color:var(--muted); letter-spacing:0.08em; text-transform:uppercase; margin-bottom:10px;">Critic — training only, discarded after</div>
+
+            <div class="flow" style="flex-direction:column; align-items:center; gap:6px;">
+              <span class="chip">Observation<br><small style="color:var(--muted)">47 numbers this tick</small></span>
+              <span class="sep">↓</span>
+              <span class="chip hot">LSTM<br><small>64-unit memory, carried tick-to-tick</small></span>
+              <span class="sep">↓</span>
+              <span class="chip">MLP<br><small style="color:var(--muted)">1 layer, 32 units</small></span>
+              <span class="sep">↓</span>
+              <span class="chip">Action<br><small style="color:var(--muted)">12 numbers — one per leg joint</small></span>
+            </div>
+
+            <div class="flow" style="flex-direction:column; align-items:center; gap:6px; opacity:0.65;">
+              <span class="chip">Observation + privileged data<br><small style="color:var(--muted)">50 numbers (the 3 extra: see below)</small></span>
+              <span class="sep">↓</span>
+              <span class="chip">LSTM<br><small style="color:var(--muted)">64-unit memory</small></span>
+              <span class="sep">↓</span>
+              <span class="chip">MLP<br><small style="color:var(--muted)">1 layer, 32 units</small></span>
+              <span class="sep">↓</span>
+              <span class="chip">Value estimate<br><small style="color:var(--muted)">1 number, thrown away after training</small></span>
+            </div>
+          </div>
+          <div class="cap">Same architecture, two independently-trained copies. The critic is fed 3 extra "privileged" numbers the actor never sees — see "What the brain can't see about itself" in §9.</div>
+        </div>
+
+        <details class="code-box">
+          <summary><span>Policy architecture &amp; PPO hyperparameters</span> <span class="file">legged_gym/envs/g1/g1_config.py</span></summary>
+          <pre><code>class policy:
+    rnn_type = 'lstm'
+    rnn_hidden_size = 64
+    rnn_num_layers = 1
+    actor_hidden_dims = [32]      # one small layer after the LSTM
+    critic_hidden_dims = [32]
+    activation = 'elu'
+    init_noise_std = 0.8          # initial exploration noise (std-dev)
+
+class algorithm:                  # PPO, from rsl_rl
+    clip_param = 0.2
+    entropy_coef = 0.01
+    num_learning_epochs = 5
+    num_mini_batches = 4
+    learning_rate = 1.e-3          # adaptive — adjusted by measured KL divergence
+    gamma = 0.99                    # discount factor: how much future reward matters vs. immediate reward
+    lam = 0.95                     # GAE lambda
+    max_grad_norm = 1.0
+
+class runner:
+    num_steps_per_env = 24         # rollout length collected before each update
+    max_iterations = 10000</code></pre>
+        </details>
+        <p>One "rollout, then update" cycle: run 24 ticks across every parallel environment → estimate how much better each action was than the average action in that state, using <abbr class="term" title="Generalized Advantage Estimation — a way of estimating how much better an action was than average, trading off bias and variance via the λ (lambda) parameter.">GAE</abbr> (Generalized Advantage Estimation — the <code>gamma</code>/<code>lam</code> pair above control it) → update the network for 5 epochs over 4 mini-batches of that same batch of experience → discard it and collect a fresh rollout. The <code>clip_param</code> line is literally what makes PPO <em>proximal</em> ("Proximal Policy Optimization," §5): it caps how far a single update is allowed to move the policy's behavior, measured via <abbr class="term" title="Kullback-Leibler divergence — a standard measure of how different two probability distributions are. Here, how much the just-updated policy's behavior has drifted from the policy before the update.">KL divergence</abbr> (Kullback-Leibler divergence, a measure of how much the policy's behavior just shifted), so one batch of unlucky falls can't erase weeks of otherwise-good learning.</p>
+
         <h3>The coach who isn't there on game day</h3>
         <p>During training, a second network — the <strong>critic</strong> — watches every attempt with a clipboard of information the real robot could never sense directly (true forward velocity, exact ground friction). It only exists to help the athlete's reflexes (the <strong>actor</strong>) improve faster. Once training ends, the critic is thrown away — only the actor ships. This split is called <strong>actor-critic</strong>, and the critic's extra information is called <em>privileged observations</em> for exactly that reason.</p>
 
@@ -697,6 +756,37 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
 # ... appended onto the observation vector, alongside joint angles etc.</code></pre>
         </details>
         <p>The same file also adds new reward terms not present in the base robot — <code>_reward_contact</code>, <code>_reward_feet_swing_height</code>, <code>_reward_alive</code> — by simply defining new <code>_reward_*</code> methods and referencing them in <code>rewards.scales</code>, the same auto-discovery mechanism from §8.</p>
+
+        <h3>G1's full reward function</h3>
+        <p>Every row below is a separate <code>_reward_*</code> method, multiplied by its weight and summed every tick (§8):</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Term</th><th>Weight</th><th>What it's for</th></tr>
+            <tr><td class="k">tracking_lin_vel</td><td>+1.0</td><td>match the commanded forward/side speed</td></tr>
+            <tr><td class="k">tracking_ang_vel</td><td>+0.5</td><td>match the commanded turn rate</td></tr>
+            <tr><td class="k">alive</td><td>+0.15</td><td>flat bonus for still being upright, every tick</td></tr>
+            <tr><td class="k">contact</td><td>+0.18</td><td>foot contact pattern matches the phase clock, above</td></tr>
+            <tr><td class="k">lin_vel_z</td><td>−2.0</td><td>don't bob up and down</td></tr>
+            <tr><td class="k">ang_vel_xy</td><td>−0.05</td><td>don't roll or pitch</td></tr>
+            <tr><td class="k">orientation</td><td>−1.0</td><td>don't lean</td></tr>
+            <tr><td class="k">base_height</td><td>−10.0</td><td>keep torso height near 0.78m</td></tr>
+            <tr><td class="k">hip_pos</td><td>−1.0</td><td>keep hip yaw/roll near zero</td></tr>
+            <tr><td class="k">contact_no_vel</td><td>−0.2</td><td>a planted foot shouldn't slide</td></tr>
+            <tr><td class="k">feet_swing_height</td><td>−20.0</td><td>the swinging foot should clear ~8cm</td></tr>
+            <tr><td class="k">dof_pos_limits</td><td>−5.0</td><td>stay away from mechanical joint limits</td></tr>
+            <tr><td class="k">dof_acc / dof_vel</td><td>−2.5e-7 / −1e-3</td><td>smoothness — don't accelerate or move joints more than needed</td></tr>
+            <tr><td class="k">action_rate</td><td>−0.01</td><td>don't change your mind abruptly tick-to-tick</td></tr>
+          </table>
+        </div>
+
+        <p>Two engineering details worth knowing, because they're the kind of thing that's invisible until a policy fails in a specific, confusing way:</p>
+        <ul>
+          <li><strong>Only positive rewards.</strong> After every term above is summed, the total is clipped to never go below zero before it's used to update the network (<code>only_positive_rewards = True</code>). Without this, a reward function this dense — mostly small, ever-present penalties — gives a struggling policy a perverse shortcut: end the episode immediately (fall on purpose) to stop accumulating penalty, rather than push through and actually learn to walk. Clipping the total at zero removes that shortcut's payoff.</li>
+          <li><strong>The <code>cautious</code> variant (§12–§13) is this same table, re-weighted — not a different reward function.</strong> Switching to it changes four numbers: gentler speed tracking (<code>tracking_lin_vel</code> 1.0→0.5), a new <code>torques</code> penalty not present at all above, and roughly 10× harsher penalties on <code>dof_acc</code>, <code>dof_vel</code>, and <code>action_rate</code>. Same bribe list, different priorities — which is also why it could be produced by <em>resuming</em> training from the stable checkpoint's weights (§12) rather than starting over.</li>
+        </ul>
+
+        <h3>What the "brain" can't see about itself</h3>
+        <p>Look closely at the observation vector and something is deliberately missing: the robot's own <strong>linear velocity</strong> — how fast the torso is actually moving through the world — is fed only to the <em>critic</em> from §5's "coach" analogy, never to the actor that actually controls the robot (<code>num_privileged_obs = 50</code> vs. <code>num_observations = 47</code> — that extra 3-dimensional gap <em>is</em> the linear velocity vector). This isn't an oversight; it's the actor-critic split from §5, made concrete. A simulator can report your exact velocity through the world at every instant for free; a real robot mostly can't, not without noisy, drifting state estimation. So the actor — the network that ships — is trained to walk using only what a real robot could plausibly know about itself: joint state, orientation (via gravity direction), and its own recent action. The critic, which exists only during training and gets thrown away afterward, is allowed to "cheat" with that ground-truth velocity, because a better-informed coach makes the athlete's training itself faster and more stable — without ever letting the athlete lean on that same crutch during the actual performance.</p>
       </section>
 
       <section id="sim2real">
@@ -759,6 +849,27 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
             <tr><td class="k">G1 config</td><td><code>legged_gym/envs/g1/g1_config.py</code></td><td>same shape (12 actions, 47 obs) — the same pretrained checkpoint loads and walks in both</td></tr>
           </table>
         </div>
+
+        <h3>Two clocks, one policy: how Genesis actually steps a tick</h3>
+        <p>§3 introduced <em>decimation</em> — the ratio between how often the policy "thinks" and how often the low-level control loop runs. Here is exactly what that looks like inside <code>GenesisSimulator</code>, this fork's translation layer between a policy's action and real physics:</p>
+        <div class="plate">
+          <div class="flow">
+            <span class="chip">policy decides once<br><small style="color:var(--muted)">50Hz — every 0.02s</small></span>
+            <span class="sep">→</span>
+            <span class="chip hot">4×: recompute PD torque, step physics<br><small>200Hz — every 0.005s</small></span>
+          </div>
+          <div class="cap">The neural network speaks once; the PD loop (§4) and Genesis's physics solver each run four times before it speaks again.</div>
+        </div>
+        <details class="code-box">
+          <summary><span>The decimation loop</span> <span class="file">legged_gym/simulator/genesis_simulator.py</span></summary>
+          <pre><code>def step(self, actions):
+    for _ in range(self.cfg.control.decimation):   # 4, here
+        self.torques = self._compute_torques(actions)  # same PD law as §4
+        self._scene.step()                              # Genesis advances physics 0.005s
+    self.post_physics_step()                            # read state back, once</code></pre>
+        </details>
+        <p>The reason to run the PD loop faster than the network needs to "think" is the same reason a thermostat doesn't wait for a committee meeting to turn the furnace on: a dumb, fast, reliable local loop reacting to the last known target is more stable than forcing the comparatively slow neural network to make every single physics-rate decision itself.</p>
+        <p>One more Genesis-specific number, tuned for a very concrete failure mode: <code>substeps = 4</code> — extra contact-solver iterations <em>within</em> each of those physics steps, raised from Genesis's default specifically for G1 after early training (with a still-random, untrained policy) produced contact forces violent enough to blow up into <code>NaN</code>s (Not-a-Number — the numerical error state a computer produces when a calculation divides by zero or overflows; once one appears, it poisons every downstream computation) on frequent, hard early falls. More solver iterations per step means a more accurate — if slightly slower — resolution of exactly those violent, high-force contacts: the kind that only shows up when a robot the size of G1 face-plants from standing height, over and over, thousands of times, before it learns not to.</p>
 
         <p>We trained a G1 walking policy from scratch this way — 1800 <abbr class="term" title="Proximal Policy Optimization, the RL training algorithm.">PPO</abbr> iterations, 64 parallel environments, all on CPU. It's a real, if modest, walking gait — nowhere near the polish of a full training run (this repo's own defaults train for 10,000 iterations), but genuinely learned, not scripted. We then confirmed something more useful: <strong><code>unitree_rl_gym</code>'s own shipped, fully-trained checkpoint</strong> (<code>deploy/pre_train/g1/motion.pt</code>) loads and walks correctly in this Genesis fork too — same URDF, same joint order, same PD gains — and stays upright at its target height (~0.78m) for hundreds of steps, dramatically more stable than anything trainable locally in a few minutes. That pretrained checkpoint became the reference "stable" policy for everything in the next section.</p>
 
@@ -855,6 +966,8 @@ def step(self, obs):
             <tr><td class="k">Observation / Action</td><td>What the policy senses each tick, and what it outputs (target joint offsets). <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Reward</td><td>The per-tick score the policy is trained to maximize. <a href="#config">§8</a></td></tr>
             <tr><td class="k">PPO</td><td>Proximal Policy Optimization — the RL algorithm used to train the policy, in small careful steps. <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">LSTM</td><td>Long Short-Term Memory — a recurrent network that carries a hidden state between ticks, giving the policy a short memory instead of reacting to a single instant. <a href="#rl">§5</a></td></tr>
+            <tr><td class="k">GAE</td><td>Generalized Advantage Estimation — how PPO estimates "how much better than average was this action," trading off bias and variance via λ. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Actor-critic</td><td>Two networks during training: the actor (kept, becomes the policy) and the critic (discarded, only helps training). <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Privileged observation</td><td>Extra ground-truth info fed only to the critic — things the real robot can't sense directly. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Domain randomization</td><td>Randomizing physics (friction, mass, pushes) across the training population so the policy generalizes to the real robot. <a href="#rl">§5</a></td></tr>
