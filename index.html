@@ -630,6 +630,34 @@ class runner:
         </details>
         <p>One "rollout, then update" cycle: run 24 ticks across every parallel environment → estimate how much better each action was than the average action in that state, using <abbr class="term" title="Generalized Advantage Estimation — a way of estimating how much better an action was than average, trading off bias and variance via the λ (lambda) parameter.">GAE</abbr> (Generalized Advantage Estimation — the <code>gamma</code>/<code>lam</code> pair above control it) → update the network for 5 epochs over 4 mini-batches of that same batch of experience → discard it and collect a fresh rollout. The <code>clip_param</code> line is literally what makes PPO <em>proximal</em> ("Proximal Policy Optimization," §5): it caps how far a single update is allowed to move the policy's behavior, measured via <abbr class="term" title="Kullback-Leibler divergence — a standard measure of how different two probability distributions are. Here, how much the just-updated policy's behavior has drifted from the policy before the update.">KL divergence</abbr> (Kullback-Leibler divergence, a measure of how much the policy's behavior just shifted), so one batch of unlucky falls can't erase weeks of otherwise-good learning.</p>
 
+        <h3>Where the randomness actually comes from</h3>
+        <p><code>init_noise_std</code> and <code>entropy_coef</code> look like they do the same job — both sound like "how much randomness." They don't. Only one of them injects the randomness that makes 4096 identical copies of the same network behave differently; the other one is a brake that keeps that randomness from disappearing too early.</p>
+
+        <details class="code-box">
+          <summary><span>Where the action actually comes from</span> <span class="file">rsl_rl/modules/actor_critic.py</span></summary>
+          <pre><code>self.std: nn.Parameter = nn.Parameter(init_noise_std * torch.ones(num_actions))
+...
+def update_distribution(self, observations):
+    mean = self.actor(observations)                    # ← comes from the network
+    self.distribution = Normal(mean, mean*0. + self.std)  # ← self.std does NOT come from the network
+
+def act(self, observations):
+    self.update_distribution(observations)
+    return self.distribution.sample()                    # ← the actual dice roll</code></pre>
+        </details>
+
+        <p>The network doesn't output a joint angle directly. Every tick, it outputs the <strong>center</strong> (<code>mean</code>) of a bell curve — a <a href="https://en.wikipedia.org/wiki/Normal_distribution" target="_blank" rel="noopener">Normal (Gaussian) distribution</a> — and the action that actually gets executed is a number <em>sampled</em> from that bell, not the center itself. The two halves of that bell come from two completely different places:</p>
+        <ul>
+          <li><strong>The center (<code>mean</code>)</strong> is a real forward pass through the LSTM+MLP from earlier in this section, computed from the current observation. It's different for every one of the 4096 parallel robots because each one is in a different pose right now — but by itself, this step has no randomness in it at all.</li>
+          <li><strong>The width (<code>self.std</code>)</strong> — how wide that bell is, i.e. how much the sampled action is allowed to wander from the center — is <em>not</em> computed from the observation, and doesn't come from the network's forward pass either. It's a separate, free-standing learnable parameter (12 numbers, one per joint), starting at <code>init_noise_std = 0.8</code>, shared identically by all 4096 environments at any given moment of training. It only changes when training updates it — usually shrinking over time, as the policy gets more confident and needs to explore less.</li>
+          <li><strong>The dice roll (<code>.sample()</code>)</strong> is where the actual randomness enters: PyTorch draws one random number from that bell curve, independently for every environment, every tick. That's the concrete mechanism behind "4096 robots, same weights, different outcomes" — alongside the domain randomization (different friction/mass/pushes per environment) already mentioned above.</li>
+        </ul>
+
+        <div class="aside">
+          <div class="label">So what does <code>entropy_coef</code> actually do, then?</div>
+          It doesn't generate any randomness itself — it's a brake on how fast <em>training</em> is allowed to shrink <code>self.std</code>. PPO's real loss function is <code>surrogate_loss + value_loss_coef × value_loss <strong>− entropy_coef × entropy</strong></code> (<code>rsl_rl/algorithms/ppo.py</code>) — <em>entropy</em> here just means "how wide is the current bell curve." Subtracting <code>entropy_coef × entropy</code> from something the optimizer is trying to minimize is a small, standing incentive to <em>keep</em> that width from collapsing to zero too quickly, so the policy doesn't prematurely decide "I always do exactly this" before it's actually explored enough to know that's a good idea. At <code>0.01</code>, it's a gentle nudge, not the main exploration mechanism — <code>init_noise_std</code> is.
+        </div>
+
         <h3>The coach who isn't there on game day</h3>
         <p>During training, a second network — the <strong>critic</strong> — watches every attempt with a clipboard of information the real robot could never sense directly (true forward velocity, exact ground friction). It only exists to help the athlete's reflexes (the <strong>actor</strong>) improve faster. Once training ends, the critic is thrown away — only the actor ships. This split is called <strong>actor-critic</strong>, and the critic's extra information is called <em>privileged observations</em> for exactly that reason.</p>
 
