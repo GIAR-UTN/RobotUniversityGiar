@@ -44,14 +44,16 @@ let commandRanges = null; // {vx:[lo,hi], vy:[lo,hi], yaw:[lo,hi]} from /config 
 // and app.js mouse-look comment ("yaw+ means turn left").
 
 // ---- WASD + mouse-look "cruise" movement ----
-// Holding a movement key accelerates that axis toward whichever end of its
-// trained range the key points at, using frame-rate-independent exponential
-// decay (GTA-style build-up on press). Releasing the key does NOT return it
-// to zero — it freezes at whatever value was reached (cruise control, not a
-// brake pedal); the backend already holds the last set_command until told
-// otherwise (see SimAdapter._apply_manual_command), so no extra "hold" logic
-// is needed server-side.
+// GTA-style analog feel from digital keyboard input: holding a movement key
+// accelerates that axis toward whichever end of its trained range the key
+// points at; releasing it decelerates smoothly back to zero, like letting
+// go of the stick/gas rather than holding a set speed. Both use frame-rate-
+// independent exponential decay so the feel is identical regardless of
+// refresh rate. Only active in manual mode — while "Random Movement" is on,
+// the server drives these axes itself and the HUDs are a read-only display
+// (see the `auto` check in frame() and applyStatus()).
 const ACCEL_RATE = 6.0; // 1/s — approach rate toward a held target (higher = snappier build-up)
+const DECEL_RATE = 4.0; // 1/s — coast-down rate toward zero after release
 let lastFrameT = null;
 let lastSendT = 0;
 let cmdDirty = false;
@@ -155,9 +157,10 @@ function applyStatus(status) {
     realPlaceholder.textContent = `Real-robot view unavailable: current backend is "${status.backend}".`;
   }
 
+  let auto = false;
   if (status.random_events) {
     chkPush.checked = status.random_events.push_robots;
-    const auto = status.random_events.auto_commands;
+    auto = status.random_events.auto_commands;
     chkAutoCmd.checked = auto;
     // While auto, the HUDs are a read-only display of what the sim is doing
     // on its own; while manual, they're live input controls. Either way,
@@ -166,11 +169,11 @@ function applyStatus(status) {
   }
   // Only sync FROM the server when nothing is actively driving the command
   // right now — otherwise this would fight a held key, an in-progress drag,
-  // or the mouse-look pad with a ~100ms-stale echo of what we just sent.
-  // This sync is intentionally immediate (no damping) — only held-key
-  // ramping gets the exponential smoothing; direct drag and server echo
-  // must both feel 1:1, with no added lag.
-  const activelyDriving = draggingCommand || heldMoveKeys.size > 0 || mouseLookActive;
+  // the mouse-look pad, or (in manual mode) the local decel-to-zero coast
+  // with a ~100ms-stale echo of what we just sent. This sync is
+  // intentionally immediate (no damping) — direct drag and server echo
+  // must both feel 1:1, with no added lag; only accel/decel get smoothing.
+  const activelyDriving = draggingCommand || heldMoveKeys.size > 0 || mouseLookActive || (!auto && !isSettled());
   if (status.command && !activelyDriving) {
     cruiseVx = status.command.vx;
     cruiseVy = status.command.vy;
@@ -304,12 +307,21 @@ function heldDirection(axis) {
   return Math.max(-1, Math.min(1, unit));
 }
 
-function smoothAxis(current, dir, range, dt) {
-  if (dir === 0 || !range) return current; // FREEZE — cruise, not brake (unchanged intent)
+function smoothAxis(current, dir, range, dt, decelRate) {
+  if (dir === 0 || !range) {
+    // Released — coast smoothly down to a stop, GTA-style, instead of
+    // freezing at whatever value was reached.
+    if (Math.abs(current) < 1e-3) return 0;
+    return current * Math.exp(-decelRate * dt);
+  }
   const target = dir > 0 ? range[1] : range[0];
   const next = target + (current - target) * Math.exp(-ACCEL_RATE * dt);
   const snapped = Math.abs(next - target) < 1e-3 ? target : next;
   return dir > 0 ? Math.min(snapped, range[1]) : Math.max(snapped, range[0]);
+}
+
+function isSettled() {
+  return Math.abs(cruiseVx) < 1e-3 && Math.abs(cruiseVy) < 1e-3 && Math.abs(cruiseYaw) < 1e-3;
 }
 
 function frame(now) {
@@ -317,13 +329,16 @@ function frame(now) {
   const dt = Math.min(0.05, (now - lastFrameT) / 1000);
   lastFrameT = now;
 
-  const dvx = heldDirection('vx');
-  const dvy = heldDirection('vy');
-  const dyaw = heldDirection('yaw');
-  if (dvx || dvy || dyaw) {
-    const nvx = smoothAxis(cruiseVx, dvx, commandRanges?.vx, dt);
-    const nvy = smoothAxis(cruiseVy, dvy, commandRanges?.vy, dt);
-    const nyaw = smoothAxis(cruiseYaw, dyaw, commandRanges?.yaw, dt);
+  // While "Random Movement" is on, the server drives these axes itself and
+  // the HUDs are a read-only display (see applyStatus) — don't fight it
+  // with local accel/decel.
+  if (latestStatus?.random_events?.auto_commands !== true) {
+    const dvx = heldDirection('vx');
+    const dvy = heldDirection('vy');
+    const dyaw = heldDirection('yaw');
+    const nvx = smoothAxis(cruiseVx, dvx, commandRanges?.vx, dt, DECEL_RATE);
+    const nvy = smoothAxis(cruiseVy, dvy, commandRanges?.vy, dt, DECEL_RATE);
+    const nyaw = smoothAxis(cruiseYaw, dyaw, commandRanges?.yaw, dt, DECEL_RATE);
     if (nvx !== cruiseVx || nvy !== cruiseVy || nyaw !== cruiseYaw) {
       cruiseVx = nvx; cruiseVy = nvy; cruiseYaw = nyaw; cmdDirty = true;
     }
@@ -497,9 +512,9 @@ window.addEventListener('blur', () => {
     }
     // Focus stayed in this document (e.g. the OS switched to another app
     // entirely) — we can't recapture that, so any physical keyup for a
-    // currently-held key would be missed. Cruise mode freezes on a
-    // DELIBERATE release, but this isn't one — the safe move is to zero
-    // out here, not guess that "keep cruising" is still what's wanted.
+    // currently-held key would be missed and the normal decel-on-release
+    // (see frame()/smoothAxis) would never kick in. Zero out immediately
+    // instead of leaving it stuck at speed with nothing to stop it.
     if (keysArmed && !document.hasFocus() && heldMoveKeys.size > 0) {
       heldMoveKeys.forEach((key) => setKeycapActive(key, false));
       heldMoveKeys.clear();
@@ -559,10 +574,9 @@ document.addEventListener('keyup', (e) => {
   setKeycapActive(e.key, false);
   const binding = keymap[e.key];
   if (!binding || binding.action !== 'move') return;
-  // Deliberately no re-send here: releasing a key just stops ramping that
-  // axis (it drops out of heldMoveKeys, so the next frame's heldDirection()
-  // for it is 0) — cruise, not brake. The backend already holds the last
-  // set_command until told otherwise.
+  // No explicit decel kick needed here: releasing a key just drops it from
+  // heldMoveKeys, so the next frame's heldDirection() for that axis is 0
+  // and smoothAxis() takes over, coasting it back to zero on its own.
   heldMoveKeys.delete(e.key);
 });
 
