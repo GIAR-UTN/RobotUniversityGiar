@@ -275,7 +275,6 @@ $('#btn-pause').addEventListener('click', () => {
   send(latestStatus?.paused ? 'resume' : 'pause');
 });
 $('#btn-restart').addEventListener('click', () => send('restart'));
-$('#estop').addEventListener('click', () => send('estop'));
 
 // ---- stimuli: random events + manual velocity command ----
 
@@ -453,7 +452,7 @@ bindDialHud(hudYaw, 'yaw');
 // Pointer Lock would hide the cursor and capture ALL mouse input, which
 // breaks clicking every other button in this panel, doesn't work over the
 // cross-origin Simulator iframe, and is force-released by the browser on
-// Escape (our E-STOP key) in a way pages can't override. Pointer Capture on
+// Escape in a way pages can't override. Pointer Capture on
 // a small dedicated pad gets 90% of the "mouse look" feel — drag past the
 // pad's edges and movement keeps being tracked — with none of that risk,
 // and it's just a mousemove listener: no cost to render speed, and nothing
@@ -497,9 +496,7 @@ lookPad.addEventListener('pointercancel', endMouseLook);
 // keydown/keyup. Rather than requiring the user to re-arm shortcuts
 // manually, we detect that and immediately steal focus back (see the
 // window blur handler below), since viser doesn't need keyboard focus for
-// its mouse-driven orbit controls. The E-STOP *button* is still the one
-// control that always works regardless of any of this, since it's a
-// click, not a keystroke.
+// its mouse-driven orbit controls.
 
 window.addEventListener('blur', () => {
   // Standard trick for detecting "focus moved into an iframe" from the
@@ -534,13 +531,12 @@ function dispatchKeyAction(key) {
   if (binding.action === 'switch') send('request_switch', { name: binding.policy });
   else if (binding.action === 'pause_toggle') send(latestStatus?.paused ? 'resume' : 'pause');
   else if (binding.action === 'restart') $('#btn-restart').click();
-  else if (binding.action === 'estop') send('estop');
 }
 
 function setKeycapActive(key, active) {
-  // Escape appears twice (the Keyboard section's cluster AND the E-STOP
-  // button's own badge) — light up every matching keycap, not just the
-  // first one in DOM order.
+  // Multiple keycaps can share the same data-key (e.g. W and ArrowUp both
+  // map to vx) — light up every matching keycap, not just the first one
+  // in DOM order.
   document.querySelectorAll(`.keycap[data-key="${CSS.escape(key)}"]`).forEach((cap) => {
     cap.classList.toggle('active', active);
   });
@@ -700,9 +696,7 @@ function initPopovers() {
   document.addEventListener('click', (e) => {
     if (openPopover && !e.target.closest('.help-popover') && !e.target.closest('.help-btn')) closePopover();
   });
-  // capture:true so a popover closes immediately on Escape, but this never
-  // calls stopPropagation() — E-STOP is safety-critical and must fire on
-  // every Escape press regardless of popover state, even the first one.
+  // capture:true so a popover closes immediately on Escape.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openPopover) closePopover();
   }, true);

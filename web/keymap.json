@@ -4,7 +4,6 @@
   "2": {"action": "switch", "policy": "cautious"},
   "p": {"action": "pause_toggle"},
   "r": {"action": "restart"},
-  "Escape": {"action": "estop"},
 
   "w": {"action": "move", "axis": "vx", "sign": 1},
   "s": {"action": "move", "axis": "vx", "sign": -1},
