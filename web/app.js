@@ -24,31 +24,38 @@ const policyList = $('#policy-list');
 
 const chkPush = $('#chk-push');
 const chkAutoCmd = $('#chk-auto-cmd');
-const sliderVx = $('#slider-vx');
-const sliderVy = $('#slider-vy');
-const sliderYaw = $('#slider-yaw');
-let draggingCommand = false; // true while the user has a command slider grabbed —
-                              // suppresses syncing slider position FROM status()
-                              // pushes so the drag doesn't fight the server echo
+const hudVx = $('.hud-vx');
+const hudVy = $('.hud-vy');
+const hudYaw = $('.hud-yaw');
+let draggingCommand = false; // true while the user has a command HUD grabbed —
+                              // suppresses syncing FROM status() pushes so the
+                              // drag doesn't fight the server echo
 
 let commandRanges = null; // {vx:[lo,hi], vy:[lo,hi], yaw:[lo,hi]} from /config — the
                            // exact envelope this policy was trained across (see
                            // SimAdapter.set_command); ramping/mouse-look never drive
                            // past these bounds
 
+// Sign→direction conventions (body frame, ROS REP-103: x fwd, y left, z up):
+//   +vx = forward (w),  +vy = strafe LEFT (a),  +yaw = turn LEFT/CCW (ArrowLeft)
+// HUD fills: vx up=+, vy left=+, yaw CCW=+. Verified against keymap.json signs
+// and app.js mouse-look comment ("yaw+ means turn left").
+
 // ---- WASD + mouse-look "cruise" movement ----
-// Holding a movement key ramps that axis by RAMP_STEP_FRACTION of its trained
-// range every RAMP_INTERVAL_MS, toward whichever end of the range the key
-// points at. Releasing the key does NOT return it to zero — it freezes at
-// whatever value was reached (cruise control, not a brake pedal), by simply
-// no longer being included in the ramp; the backend already holds the last
-// set_command until told otherwise (see SimAdapter._apply_manual_command),
-// so no extra "hold" logic is needed server-side.
-const RAMP_STEP_FRACTION = 0.10;
-const RAMP_INTERVAL_MS = 120;
+// Holding a movement key accelerates that axis toward whichever end of its
+// trained range the key points at, using frame-rate-independent exponential
+// decay (GTA-style build-up on press). Releasing the key does NOT return it
+// to zero — it freezes at whatever value was reached (cruise control, not a
+// brake pedal); the backend already holds the last set_command until told
+// otherwise (see SimAdapter._apply_manual_command), so no extra "hold" logic
+// is needed server-side.
+const ACCEL_RATE = 6.0; // 1/s — approach rate toward a held target (higher = snappier build-up)
+let lastFrameT = null;
+let lastSendT = 0;
+let cmdDirty = false;
 const heldMoveKeys = new Set(); // keys currently held down, not tapped
 let cruiseVx = 0, cruiseVy = 0, cruiseYaw = 0; // the single source of truth for
-                                                // the manual command — sliders,
+                                                // the manual command — HUDs,
                                                 // WASD, and mouse-look all read
                                                 // and write these same three
 let mouseLookActive = false;
@@ -91,12 +98,15 @@ function connect() {
 function policyButtonRow(name, active) {
   const btn = document.createElement('button');
   btn.className = 'policy-btn' + (name === active ? ' active' : '');
-  btn.textContent = name;
+  const label = document.createElement('span');
+  label.textContent = name;
+  btn.appendChild(label);
   const key = keyByPolicy[name];
   if (key) {
-    const kbd = document.createElement('kbd');
-    kbd.textContent = key;
-    btn.appendChild(kbd);
+    const cap = document.createElement('span');
+    cap.className = 'keycap';
+    cap.textContent = key;
+    btn.appendChild(cap);
   }
   btn.onclick = () => send('request_switch', { name });
   return btn;
@@ -125,7 +135,7 @@ function applyStatus(status) {
     }
   }
 
-  $('#btn-pause').textContent = status.paused ? 'Resume' : 'Pause';
+  $('#btn-pause').firstChild.textContent = status.paused ? 'Resume ' : 'Pause ';
 
   const restartAvailable = status.capabilities?.restart !== false;
   const restartBtn = $('#btn-restart');
@@ -147,14 +157,17 @@ function applyStatus(status) {
     chkPush.checked = status.random_events.push_robots;
     const auto = status.random_events.auto_commands;
     chkAutoCmd.checked = auto;
-    // While auto, the sliders are a read-only display of what the sim is
-    // doing on its own; while manual, they're live input controls. Either
-    // way, don't stomp on a slider the user currently has grabbed.
-    [sliderVx, sliderVy, sliderYaw].forEach((el) => { el.disabled = auto; });
+    // While auto, the HUDs are a read-only display of what the sim is doing
+    // on its own; while manual, they're live input controls. Either way,
+    // don't stomp on a HUD the user currently has grabbed.
+    [hudVx, hudVy, hudYaw].forEach((el) => { el.classList.toggle('disabled', auto); });
   }
   // Only sync FROM the server when nothing is actively driving the command
   // right now — otherwise this would fight a held key, an in-progress drag,
   // or the mouse-look pad with a ~100ms-stale echo of what we just sent.
+  // This sync is intentionally immediate (no damping) — only held-key
+  // ramping gets the exponential smoothing; direct drag and server echo
+  // must both feel 1:1, with no added lag.
   const activelyDriving = draggingCommand || heldMoveKeys.size > 0 || mouseLookActive;
   if (status.command && !activelyDriving) {
     cruiseVx = status.command.vx;
@@ -164,10 +177,70 @@ function applyStatus(status) {
   }
 }
 
+// ---- HUD rendering ----
+
+function axisScale(range) {
+  if (!commandRanges || !range) return 1;
+  return Math.max(Math.abs(range[0]), Math.abs(range[1])) || 1;
+}
+
+function setHudVx(value) {
+  const t = Math.max(-1, Math.min(1, value / axisScale(commandRanges?.vx)));
+  const fill = hudVx.querySelector('.hud-fill-v');
+  if (t >= 0) {
+    fill.style.bottom = '50%';
+    fill.style.top = (50 - t * 50) + '%';
+    fill.style.background = 'var(--accent)';
+  } else {
+    fill.style.top = '50%';
+    fill.style.bottom = (50 - Math.abs(t) * 50) + '%';
+    fill.style.background = 'var(--accent2)';
+  }
+}
+
+function setHudVy(value) {
+  const t = Math.max(-1, Math.min(1, value / axisScale(commandRanges?.vy)));
+  const fill = hudVy.querySelector('.hud-fill-h');
+  // +vy = LEFT (see sign-convention comment above) — positive fills leftward.
+  if (t >= 0) {
+    fill.style.right = '50%';
+    fill.style.left = (50 - t * 50) + '%';
+    fill.style.background = 'var(--accent)';
+  } else {
+    fill.style.left = '50%';
+    fill.style.right = (50 - Math.abs(t) * 50) + '%';
+    fill.style.background = 'var(--accent2)';
+  }
+}
+
+function polarToCartesian(cx, cy, r, angleDeg) {
+  const a = (angleDeg - 90) * Math.PI / 180; // -90 so 0deg = straight up (12 o'clock)
+  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+}
+
+function describeArc(cx, cy, r, startDeg, endDeg) {
+  const start = polarToCartesian(cx, cy, r, endDeg);
+  const end = polarToCartesian(cx, cy, r, startDeg);
+  const largeArc = Math.abs(endDeg - startDeg) <= 180 ? 0 : 1;
+  const sweep = endDeg > startDeg ? 1 : 0;
+  return `M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} ${sweep} ${end.x} ${end.y}`;
+}
+
+function setHudYaw(value) {
+  const t = Math.max(-1, Math.min(1, value / axisScale(commandRanges?.yaw)));
+  // +yaw = turn LEFT/CCW; SVG rotate() is clockwise-positive, so negate.
+  const deg = -t * 135;
+  const needle = hudYaw.querySelector('.dial-needle');
+  const arc = hudYaw.querySelector('.dial-arc');
+  needle.setAttribute('transform', `rotate(${deg} 50 50)`);
+  arc.setAttribute('d', describeArc(50, 50, 42, 0, deg));
+  arc.style.stroke = t > 0 ? 'var(--accent)' : 'var(--accent2)';
+}
+
 function updateCommandUI() {
-  sliderVx.value = cruiseVx;
-  sliderVy.value = cruiseVy;
-  sliderYaw.value = cruiseYaw;
+  setHudVx(cruiseVx);
+  setHudVy(cruiseVy);
+  setHudYaw(cruiseYaw);
   $('#val-vx').textContent = cruiseVx.toFixed(2);
   $('#val-vy').textContent = cruiseVy.toFixed(2);
   $('#val-yaw').textContent = cruiseYaw.toFixed(2);
@@ -180,6 +253,9 @@ function selectView(name) {
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.remove('active'));
   $(`#view-${name}`).classList.add('active');
   document.querySelector(`#tabs button[data-view="${name}"]`).classList.add('active');
+  // The control sidebar only makes sense while looking at the Simulator —
+  // Docs and Real-robot get the full viewport width instead.
+  document.body.classList.toggle('sim-active', name === 'sim');
 }
 
 document.querySelectorAll('#tabs button').forEach((btn) => {
@@ -224,50 +300,135 @@ function heldDirection(axis) {
   return Math.max(-1, Math.min(1, unit));
 }
 
-function rampAxisValue(current, dir, range) {
-  if (dir === 0 || !range) return current; // not held on this axis — frozen, not zeroed
+function smoothAxis(current, dir, range, dt) {
+  if (dir === 0 || !range) return current; // FREEZE — cruise, not brake (unchanged intent)
   const target = dir > 0 ? range[1] : range[0];
-  const step = dir * RAMP_STEP_FRACTION * Math.abs(target);
-  const next = current + step;
-  return dir > 0 ? Math.min(next, range[1]) : Math.max(next, range[0]);
+  const next = target + (current - target) * Math.exp(-ACCEL_RATE * dt);
+  const snapped = Math.abs(next - target) < 1e-3 ? target : next;
+  return dir > 0 ? Math.min(snapped, range[1]) : Math.max(snapped, range[0]);
 }
 
-function rampTick() {
-  const dirVx = heldDirection('vx');
-  const dirVy = heldDirection('vy');
-  const dirYaw = heldDirection('yaw');
-  if (dirVx === 0 && dirVy === 0 && dirYaw === 0) return; // nothing held — stay frozen, nothing to send
-  cruiseVx = rampAxisValue(cruiseVx, dirVx, commandRanges?.vx);
-  cruiseVy = rampAxisValue(cruiseVy, dirVy, commandRanges?.vy);
-  cruiseYaw = rampAxisValue(cruiseYaw, dirYaw, commandRanges?.yaw);
-  sendCruiseCommand();
-}
+function frame(now) {
+  if (lastFrameT === null) lastFrameT = now;
+  const dt = Math.min(0.05, (now - lastFrameT) / 1000);
+  lastFrameT = now;
 
-setInterval(rampTick, RAMP_INTERVAL_MS);
+  const dvx = heldDirection('vx');
+  const dvy = heldDirection('vy');
+  const dyaw = heldDirection('yaw');
+  if (dvx || dvy || dyaw) {
+    const nvx = smoothAxis(cruiseVx, dvx, commandRanges?.vx, dt);
+    const nvy = smoothAxis(cruiseVy, dvy, commandRanges?.vy, dt);
+    const nyaw = smoothAxis(cruiseYaw, dyaw, commandRanges?.yaw, dt);
+    if (nvx !== cruiseVx || nvy !== cruiseVy || nyaw !== cruiseYaw) {
+      cruiseVx = nvx; cruiseVy = nvy; cruiseYaw = nyaw; cmdDirty = true;
+    }
+  }
+  // Visuals stay fluid every frame; actual WS sends stay throttled to ~10Hz
+  // (matching the previous fixed-interval cadence) so we don't flood the
+  // socket at 60fps.
+  if (cmdDirty && now - lastSendT >= 100) {
+    sendCruiseCommand();
+    cmdDirty = false;
+    lastSendT = now;
+  } else if (cmdDirty) {
+    updateCommandUI();
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
 
 chkPush.addEventListener('change', () => {
   send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked });
 });
 chkAutoCmd.addEventListener('change', () => {
   send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked });
-  // Going manual right now should take the sliders' CURRENT position as the
+  // Going manual right now should take the HUDs' CURRENT position as the
   // first command, rather than waiting for the user to nudge one first.
   if (!chkAutoCmd.checked) sendCruiseCommand();
 });
 
-const sliderAxis = { 'slider-vx': 'vx', 'slider-vy': 'vy', 'slider-yaw': 'yaw' };
-[sliderVx, sliderVy, sliderYaw].forEach((el) => {
-  el.addEventListener('pointerdown', () => { draggingCommand = true; });
-  el.addEventListener('pointerup', () => { draggingCommand = false; });
-  el.addEventListener('input', () => {
-    const v = parseFloat(el.value);
-    const axis = sliderAxis[el.id];
-    if (axis === 'vx') cruiseVx = v;
-    else if (axis === 'vy') cruiseVy = v;
-    else if (axis === 'yaw') cruiseYaw = v;
+// ---- directional HUD indicators: drag-to-set ----
+
+function bindVerticalHud(hud, axis) {
+  const track = hud.querySelector('.hud-track-v');
+  let pointerId = null;
+  const setFromEvent = (e) => {
+    const rect = track.getBoundingClientRect();
+    const centerY = rect.top + rect.height / 2;
+    const t = Math.max(-1, Math.min(1, (centerY - e.clientY) / (rect.height / 2)));
+    const scale = axisScale(commandRanges?.[axis]);
+    const value = clampToRange(t * scale, commandRanges?.[axis]);
+    if (axis === 'vx') cruiseVx = value; else if (axis === 'vy') cruiseVy = value; else cruiseYaw = value;
+    engageManualIfNeeded();
     sendCruiseCommand();
+  };
+  track.addEventListener('pointerdown', (e) => {
+    if (hud.classList.contains('disabled')) return;
+    draggingCommand = true; pointerId = e.pointerId;
+    track.setPointerCapture(e.pointerId);
+    setFromEvent(e);
   });
-});
+  track.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
+  track.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+}
+
+function bindHorizontalHud(hud, axis) {
+  const track = hud.querySelector('.hud-track-h');
+  let pointerId = null;
+  const setFromEvent = (e) => {
+    const rect = track.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    // Pointer left of center => positive t => LEFT (matches +vy = LEFT).
+    const t = Math.max(-1, Math.min(1, (centerX - e.clientX) / (rect.width / 2)));
+    const scale = axisScale(commandRanges?.[axis]);
+    const value = clampToRange(t * scale, commandRanges?.[axis]);
+    if (axis === 'vx') cruiseVx = value; else if (axis === 'vy') cruiseVy = value; else cruiseYaw = value;
+    engageManualIfNeeded();
+    sendCruiseCommand();
+  };
+  track.addEventListener('pointerdown', (e) => {
+    if (hud.classList.contains('disabled')) return;
+    draggingCommand = true; pointerId = e.pointerId;
+    track.setPointerCapture(e.pointerId);
+    setFromEvent(e);
+  });
+  track.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
+  track.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+}
+
+function bindDialHud(hud, axis) {
+  const svg = hud.querySelector('.hud-dial');
+  let pointerId = null;
+  const setFromEvent = (e) => {
+    const rect = svg.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const dx = e.clientX - cx;
+    const dy = e.clientY - cy;
+    // 0deg at top (12 o'clock), positive clockwise — same convention as setHudYaw's `deg`.
+    let angle = Math.atan2(dx, -dy) * 180 / Math.PI;
+    angle = Math.max(-135, Math.min(135, angle));
+    const t = Math.max(-1, Math.min(1, -angle / 135));
+    const scale = axisScale(commandRanges?.[axis]);
+    const value = clampToRange(t * scale, commandRanges?.[axis]);
+    cruiseYaw = value;
+    engageManualIfNeeded();
+    sendCruiseCommand();
+  };
+  svg.addEventListener('pointerdown', (e) => {
+    if (hud.classList.contains('disabled')) return;
+    draggingCommand = true; pointerId = e.pointerId;
+    svg.setPointerCapture(e.pointerId);
+    setFromEvent(e);
+  });
+  svg.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
+  svg.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+}
+
+bindVerticalHud(hudVx, 'vx');
+bindHorizontalHud(hudVy, 'vy');
+bindDialHud(hudYaw, 'yaw');
 
 // ---- mouse look (yaw) — click-and-drag, NOT Pointer Lock ----
 // Pointer Lock would hide the cursor and capture ALL mouse input, which
@@ -325,6 +486,7 @@ function setPanelFocused(focused) {
     // release, but this isn't one — we've lost the ability to track it, so
     // the safe move is to zero out here, not guess that "keep cruising" is
     // still what the user wants.
+    heldMoveKeys.forEach((key) => setKeycapActive(key, false));
     heldMoveKeys.clear();
     cruiseVx = 0;
     cruiseVy = 0;
@@ -347,32 +509,181 @@ window.addEventListener('blur', () => {
   }, 0);
 });
 
+// Shared by real keydown/keyup and keycap click/pointer handlers, so the
+// action-dispatch logic exists in exactly one place.
+function dispatchKeyAction(key) {
+  const binding = keymap[key];
+  if (!binding) return;
+  if (binding.action === 'switch') send('request_switch', { name: binding.policy });
+  else if (binding.action === 'pause_toggle') send(latestStatus?.paused ? 'resume' : 'pause');
+  else if (binding.action === 'restart') $('#btn-restart').click();
+  else if (binding.action === 'estop') send('estop');
+}
+
+function setKeycapActive(key, active) {
+  const cap = document.querySelector(`.keycap[data-key="${CSS.escape(key)}"]`);
+  if (cap) cap.classList.toggle('active', active);
+}
+
 document.addEventListener('keydown', (e) => {
   if (!panelFocused) return;
   const binding = keymap[e.key];
   if (!binding) return;
   e.preventDefault();
+  setKeycapActive(e.key, true);
   if (binding.action === 'move') {
     if (heldMoveKeys.has(e.key)) return; // ignore OS key-repeat, already engaged
     heldMoveKeys.add(e.key);
     engageManualIfNeeded();
-    rampTick(); // immediate feedback instead of waiting up to RAMP_INTERVAL_MS
+    // No immediate rampTick() call here — the rAF loop (frame()) picks up a
+    // newly-held key within ~16ms on its own, so a manual kick isn't needed.
+  } else {
+    dispatchKeyAction(e.key);
   }
-  else if (binding.action === 'switch') send('request_switch', { name: binding.policy });
-  else if (binding.action === 'pause_toggle') send(latestStatus?.paused ? 'resume' : 'pause');
-  else if (binding.action === 'restart') $('#btn-restart').click();
-  else if (binding.action === 'estop') send('estop');
 });
 
 document.addEventListener('keyup', (e) => {
+  setKeycapActive(e.key, false);
   const binding = keymap[e.key];
   if (!binding || binding.action !== 'move') return;
   // Deliberately no re-send here: releasing a key just stops ramping that
-  // axis (it drops out of heldMoveKeys, so the next rampTick's
-  // heldDirection() for it is 0) — cruise, not brake. The backend already
-  // holds the last set_command until told otherwise.
+  // axis (it drops out of heldMoveKeys, so the next frame's heldDirection()
+  // for it is 0) — cruise, not brake. The backend already holds the last
+  // set_command until told otherwise.
   heldMoveKeys.delete(e.key);
 });
+
+// ---- keycap click/pointer: clicking an on-screen key acts like pressing it ----
+// Bound from boot() once `keymap` has actually been fetched — data-key
+// lookups against an empty keymap would silently bind nothing.
+
+function bindKeycapActions() {
+  document.querySelectorAll('.keycap[data-key]').forEach((cap) => {
+    const key = cap.dataset.key;
+    const binding = keymap[key];
+    if (!binding) return;
+    if (binding.action === 'move') {
+      cap.addEventListener('pointerdown', () => {
+        cap.classList.add('active');
+        heldMoveKeys.add(key);
+        engageManualIfNeeded();
+      });
+      const release = () => {
+        cap.classList.remove('active');
+        heldMoveKeys.delete(key);
+      };
+      cap.addEventListener('pointerup', release);
+      cap.addEventListener('pointerleave', release);
+    } else {
+      cap.addEventListener('click', () => dispatchKeyAction(key));
+    }
+  });
+}
+
+// ---- draggable panel sections (reorder + persist) ----
+
+const PANEL_ORDER_KEY = 'giar.panelOrder.v1';
+let dragState = null;
+
+function onHandleDown(e) {
+  const handle = e.currentTarget;
+  const section = handle.closest('.panel-section');
+  handle.setPointerCapture(e.pointerId);
+  dragState = { section, pointerId: e.pointerId };
+  section.classList.add('dragging');
+  document.addEventListener('pointermove', onHandleMove);
+  document.addEventListener('pointerup', onHandleUp, { once: true });
+}
+
+function onHandleMove(e) {
+  if (!dragState) return;
+  const { section } = dragState;
+  const siblings = [...panel.querySelectorAll('.panel-section:not(.dragging)')];
+  for (const sib of siblings) {
+    const r = sib.getBoundingClientRect();
+    const mid = r.top + r.height / 2;
+    if (e.clientY < mid && (sib.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      panel.insertBefore(section, sib);
+      break;
+    }
+    if (e.clientY > mid && (section.compareDocumentPosition(sib) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      panel.insertBefore(section, sib.nextSibling);
+      break;
+    }
+  }
+}
+
+function onHandleUp() {
+  dragState.section.classList.remove('dragging');
+  document.removeEventListener('pointermove', onHandleMove);
+  savePanelOrder();
+  dragState = null;
+}
+
+function initSectionDrag() {
+  document.querySelectorAll('.drag-handle').forEach((handle) => {
+    handle.addEventListener('pointerdown', onHandleDown);
+  });
+}
+
+function savePanelOrder() {
+  const order = [...panel.querySelectorAll('.panel-section')].map((s) => s.dataset.section);
+  localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(order));
+}
+
+function restorePanelOrder() {
+  const raw = localStorage.getItem(PANEL_ORDER_KEY);
+  if (!raw) return;
+  let order;
+  try { order = JSON.parse(raw); } catch { return; }
+  order.forEach((name) => {
+    const s = panel.querySelector(`.panel-section[data-section="${name}"]`);
+    if (s) panel.appendChild(s);
+  });
+}
+
+// ---- dismissible help popovers ----
+
+let openPopover = null;
+
+function togglePopover(btn) {
+  const pop = btn.parentElement.querySelector('.help-popover');
+  if (openPopover === pop) { closePopover(); return; }
+  if (openPopover) closePopover();
+  pop.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+  openPopover = pop;
+  openPopover._btn = btn;
+}
+
+function closePopover() {
+  if (!openPopover) return;
+  openPopover.hidden = true;
+  openPopover._btn.setAttribute('aria-expanded', 'false');
+  openPopover = null;
+}
+
+function initPopovers() {
+  document.querySelectorAll('.help-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePopover(btn);
+      // stopPropagation above would otherwise also block the panel's own
+      // click→focus listener from bubbling up to it — re-arm explicitly.
+      panel.focus();
+      setPanelFocused(true);
+    });
+  });
+  document.addEventListener('click', (e) => {
+    if (openPopover && !e.target.closest('.help-popover') && !e.target.closest('.help-btn')) closePopover();
+  });
+  // capture:true so a popover closes immediately on Escape, but this never
+  // calls stopPropagation() — E-STOP is safety-critical and must fire on
+  // every Escape press regardless of popover state, even the first one.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && openPopover) closePopover();
+  }, true);
+}
 
 // ---- boot ----
 
@@ -394,16 +705,17 @@ async function boot() {
   iframe.src = `http://localhost:${config.viser_port}/`;
   simView.appendChild(iframe);
 
-  // Clamp the sliders (and, via commandRanges, the arrow keys) to the exact
+  // Clamp the HUDs (and, via commandRanges, the arrow keys) to the exact
   // velocity envelope this policy was trained across (env_cfg.commands.ranges
   // — see SimAdapter.set_command), not an arbitrary UI guess.
   if (config.command_ranges) {
     commandRanges = config.command_ranges;
-    const setRange = (el, [lo, hi]) => { el.min = lo; el.max = hi; };
-    setRange(sliderVx, config.command_ranges.vx);
-    setRange(sliderVy, config.command_ranges.vy);
-    setRange(sliderYaw, config.command_ranges.yaw);
   }
+
+  bindKeycapActions();
+  initSectionDrag();
+  restorePanelOrder();
+  initPopovers();
 
   connect();
   setPanelFocused(true);
