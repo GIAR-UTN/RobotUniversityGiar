@@ -1,5 +1,5 @@
 {
-  "_comment": "Default keyboard shortcuts for the unified control web (see web/app.js). 'switch' actions reference policies BY NAME, not by index — names come from ControlService.status() at runtime, so this file survives whatever --policy set swap_experiment.py was started with (an unknown name shows as unbound, not an error). 'move' actions are HELD, not tapped — WASD-style: press and hold to ramp velocity up (~10% of the trained range per tick), release to FREEZE at whatever value was reached (cruise, not brake — see app.js's rampTick()). 'axis' is 'vx' (forward/back), 'vy' (strafe left/right), or 'yaw' (turn); 'sign' is +1 or -1 and picks which end of that axis's trained range (command_ranges from /config) the key ramps toward. Yaw can also be driven by click-and-drag mouse look (see the Mouse look pad in the panel) — both work together. Edit this file directly to change v1 defaults; there is no in-page rebind UI yet.",
+  "_comment": "Default keyboard shortcuts for the unified control web (see web/app.js). 'switch' actions reference policies BY NAME, not by index — names come from ControlService.status() at runtime, so this file survives whatever --policy set swap_experiment.py was started with (an unknown name shows as unbound, not an error). 'move' actions are HELD, not tapped — WASD-style: press and hold to accelerate toward the trained range's bound, release to decelerate smoothly back to zero (see app.js's frame()/smoothAxis()). 'axis' is 'vx' (forward/back), 'vy' (strafe left/right), or 'yaw' (turn); 'sign' is +1 or -1 and picks which end of that axis's trained range (command_ranges from /config) the key drives toward. ArrowUp/ArrowDown are aliases for w/s (same vx axis); ArrowLeft/ArrowRight drive yaw and can also be driven by click-and-drag mouse look (see the Mouse look pad in the panel) — both work together. Edit this file directly to change v1 defaults; there is no in-page rebind UI yet.",
   "1": {"action": "switch", "policy": "stable"},
   "2": {"action": "switch", "policy": "cautious"},
   "p": {"action": "pause_toggle"},
@@ -8,6 +8,8 @@
 
   "w": {"action": "move", "axis": "vx", "sign": 1},
   "s": {"action": "move", "axis": "vx", "sign": -1},
+  "ArrowUp": {"action": "move", "axis": "vx", "sign": 1},
+  "ArrowDown": {"action": "move", "axis": "vx", "sign": -1},
   "a": {"action": "move", "axis": "vy", "sign": 1},
   "d": {"action": "move", "axis": "vy", "sign": -1},
   "ArrowLeft": {"action": "move", "axis": "yaw", "sign": 1},

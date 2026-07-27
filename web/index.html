@@ -261,13 +261,17 @@
       <div class="section-body">
         <div class="kbd-map">
           <div class="kbd-cluster" data-label="Move">
-            <div class="kbd-row"><span class="keycap" data-key="w">W</span></div>
+            <div class="kbd-row">
+              <span class="keycap" data-key="w">W</span>
+              <span class="keycap wide" data-key="ArrowUp">&#8593;</span>
+            </div>
             <div class="kbd-row">
               <span class="keycap" data-key="a">A</span>
               <span class="keycap" data-key="s">S</span>
+              <span class="keycap wide" data-key="ArrowDown">&#8595;</span>
               <span class="keycap" data-key="d">D</span>
             </div>
-            <span class="kbd-caption">W/S fwd&middot;back &middot; A/D strafe</span>
+            <span class="kbd-caption">W/S/&#8593;/&#8595; fwd&middot;back &middot; A/D strafe</span>
           </div>
           <div class="kbd-cluster" data-label="Turn">
             <div class="kbd-row">
@@ -316,7 +320,7 @@
         <h2>Command</h2>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Drag any indicator, use W/A/S/D and &#8592;/&#8594;, or the mouse-look pad to set the velocity command. +X forward, +Y left, +Yaw turns left.</p>
+          <p>Drag any indicator, use W/A/S/D and all four arrow keys (&#8593;/&#8595; are aliases for W/S), or the mouse-look pad to set the velocity command. +X forward, +Y left, +Yaw turns left.</p>
         </div>
       </div>
       <div class="section-body">
