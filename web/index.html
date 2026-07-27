@@ -88,21 +88,16 @@
     color:var(--muted); text-align:center; padding:2rem;
   }
 
-  /* Sidebar only mounts while the Simulator tab is active — Docs/Real robot
-     get the full viewport width; see selectView() in app.js. */
+  /* Sidebar + keyboard shortcuts are active while Simulator or Real-robot is
+     the current tab — Docs gets the full viewport width and no shortcuts;
+     see selectView() in app.js. */
   #panel{ display:none; }
-  body.sim-active #panel{ display:block; }
+  body.controls-active #panel{ display:block; }
   #panel{
     width:280px; flex:none; border-left:1px solid var(--line); background:var(--bg-raised);
     padding:.9rem; overflow-y:auto; overflow-x:hidden; outline:none;
   }
-  #panel.focused{box-shadow: inset 0 0 0 2px var(--accent2);}
   #panel h2{font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0;}
-  #focus-hint{
-    font-size:.78rem; color:var(--muted); border:1px dashed var(--line); border-radius:6px;
-    padding:.5rem; margin-bottom:.75rem; cursor:pointer;
-  }
-  #panel.focused #focus-hint{display:none;}
 
   #status-block{margin-bottom:.9rem;}
   #status-block h2{margin-bottom:.4rem;}
@@ -241,8 +236,6 @@
   </div>
 
   <div id="panel" tabindex="0">
-    <div id="focus-hint">Keyboard shortcuts are inactive while the Simulator view has focus (an iframe can't forward key events to this page). Click anywhere in this panel to re-arm them. The E-STOP button below always works regardless of focus.</div>
-
     <div id="status-block">
       <h2>Status</h2>
       <div id="active-label"><span id="conn-dot"></span>—</div>

@@ -13,7 +13,9 @@ let msgId = 1;
 let keymap = {};
 let keyByPolicy = {}; // policy name -> bound key, precomputed once at boot (not per render)
 let renderedPolicyNames = null; // policies list actually painted into the DOM right now
-let panelFocused = true; // page loads with the panel implicitly "focused"
+let keysArmed = false; // true while the Simulator/Real-robot tab is active —
+                        // keyboard shortcuts always work in that mode, and
+                        // never while reading Docs; see selectView() below
 
 const $ = (sel) => document.querySelector(sel);
 const panel = $('#panel');
@@ -253,9 +255,11 @@ function selectView(name) {
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.remove('active'));
   $(`#view-${name}`).classList.add('active');
   document.querySelector(`#tabs button[data-view="${name}"]`).classList.add('active');
-  // The control sidebar only makes sense while looking at the Simulator —
-  // Docs and Real-robot get the full viewport width instead.
-  document.body.classList.toggle('sim-active', name === 'sim');
+  // The control sidebar (and its keyboard shortcuts) only make sense while
+  // actively driving the robot — Simulator or Real-robot — not while
+  // reading Docs, which gets the full viewport width instead.
+  keysArmed = name === 'sim' || name === 'real';
+  document.body.classList.toggle('controls-active', keysArmed);
 }
 
 document.querySelectorAll('#tabs button').forEach((btn) => {
@@ -470,42 +474,40 @@ lookPad.addEventListener('pointerup', endMouseLook);
 lookPad.addEventListener('pointercancel', endMouseLook);
 
 // ---- keyboard shortcuts ----
-// Only bound while the controls panel (not the cross-origin Simulator
-// iframe) has DOM focus — the iframe cannot forward keydown to us, and
-// there's no way to force it to relinquish focus from here. The E-STOP
-// *button* above is the one control that always works regardless of focus,
-// since it's a click, not a keystroke — treat it as the primary estop path.
+// Gated on `keysArmed` (Simulator/Real-robot tab active), NOT on DOM focus —
+// shortcuts must always work in that mode, per design, without the user
+// having to click back into the sidebar first. The one wrinkle: a
+// cross-origin iframe (the Simulator/Real-robot view) can steal actual
+// browser focus when clicked, and then it — not this page — receives
+// keydown/keyup. Rather than requiring the user to re-arm shortcuts
+// manually, we detect that and immediately steal focus back (see the
+// window blur handler below), since viser doesn't need keyboard focus for
+// its mouse-driven orbit controls. The E-STOP *button* is still the one
+// control that always works regardless of any of this, since it's a
+// click, not a keystroke.
 
-function setPanelFocused(focused) {
-  panelFocused = focused;
-  panel.classList.toggle('focused', focused);
-  if (!focused && heldMoveKeys.size > 0) {
-    // Focus can move to the iframe WHILE a key is physically still held —
-    // the resulting keyup then goes to the iframe, not to us, so we'd never
-    // find out it was released. Cruise mode freezes on a DELIBERATE
-    // release, but this isn't one — we've lost the ability to track it, so
-    // the safe move is to zero out here, not guess that "keep cruising" is
-    // still what the user wants.
-    heldMoveKeys.forEach((key) => setKeycapActive(key, false));
-    heldMoveKeys.clear();
-    cruiseVx = 0;
-    cruiseVy = 0;
-    cruiseYaw = 0;
-    sendCruiseCommand();
-  }
-}
-
-panel.addEventListener('click', () => { panel.focus(); setPanelFocused(true); });
-panel.addEventListener('focusin', () => setPanelFocused(true));
-
-const simIframeHolder = $('#view-sim');
 window.addEventListener('blur', () => {
   // Standard trick for detecting "focus moved into an iframe" from the
-  // parent page — see app.js module comment / HANDOFF_control_web.md §3-B
-  // "Keyboard shortcuts" for why this is necessary and what it can't do.
+  // parent page — see HANDOFF_control_web.md §3-B "Keyboard shortcuts".
   setTimeout(() => {
-    const simIframe = simIframeHolder.querySelector('iframe');
-    if (simIframe && document.activeElement === simIframe) setPanelFocused(false);
+    const active = document.activeElement;
+    if (active && active.tagName === 'IFRAME') {
+      if (keysArmed) panel.focus(); // steal focus back so shortcuts stay live
+      return;
+    }
+    // Focus stayed in this document (e.g. the OS switched to another app
+    // entirely) — we can't recapture that, so any physical keyup for a
+    // currently-held key would be missed. Cruise mode freezes on a
+    // DELIBERATE release, but this isn't one — the safe move is to zero
+    // out here, not guess that "keep cruising" is still what's wanted.
+    if (keysArmed && !document.hasFocus() && heldMoveKeys.size > 0) {
+      heldMoveKeys.forEach((key) => setKeycapActive(key, false));
+      heldMoveKeys.clear();
+      cruiseVx = 0;
+      cruiseVy = 0;
+      cruiseYaw = 0;
+      sendCruiseCommand();
+    }
   }, 0);
 });
 
@@ -526,7 +528,7 @@ function setKeycapActive(key, active) {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (!panelFocused) return;
+  if (!keysArmed) return;
   const binding = keymap[e.key];
   if (!binding) return;
   e.preventDefault();
@@ -668,10 +670,6 @@ function initPopovers() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       togglePopover(btn);
-      // stopPropagation above would otherwise also block the panel's own
-      // click→focus listener from bubbling up to it — re-arm explicitly.
-      panel.focus();
-      setPanelFocused(true);
     });
   });
   document.addEventListener('click', (e) => {
@@ -718,7 +716,8 @@ async function boot() {
   initPopovers();
 
   connect();
-  setPanelFocused(true);
+  // keysArmed starts false (Docs is the default tab) and flips on whenever
+  // the Simulator/Real-robot tab is selected — see selectView().
 }
 
 boot();
