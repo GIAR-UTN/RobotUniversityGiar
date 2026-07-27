@@ -111,6 +111,41 @@
   }
   #estop:active{transform:translateY(1px);}
 
+  #keys-legend{
+    display:grid; grid-template-columns:1fr 1fr; gap:.35rem .6rem;
+    margin-bottom:.9rem; font-size:.78rem; color:var(--ink-soft);
+  }
+  .key-row{display:flex; align-items:center; gap:.4rem;}
+  .key-combo{display:inline-flex; gap:2px;}
+  .key-combo kbd{
+    font-family:ui-monospace,monospace; font-size:.7rem; min-width:1.1rem; text-align:center;
+    border:1px solid var(--line); border-radius:4px; padding:1px 4px;
+    background:var(--bg); color:var(--ink);
+  }
+
+  .hint-small{font-size:.75rem; color:var(--muted); margin:0 0 .6rem;}
+  .hint-inline{font-weight:400; font-size:.7rem; color:var(--muted); text-transform:none; letter-spacing:0;}
+
+  #look-pad{
+    height:56px; border:1px dashed var(--line); border-radius:8px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:.78rem; color:var(--muted); cursor:ew-resize;
+    -webkit-user-select:none; user-select:none; touch-action:none;
+  }
+  #look-pad.active{border-color:var(--accent2); color:var(--ink); border-style:solid;}
+  .toggle-row{
+    display:flex; align-items:center; gap:.45rem; font-size:.85rem;
+    margin-bottom:.4rem; cursor:pointer; user-select:none;
+  }
+  .cmd-row{margin-bottom:.6rem;}
+  .cmd-row label{
+    display:flex; justify-content:space-between; font-size:.78rem;
+    color:var(--ink-soft); margin-bottom:.2rem;
+  }
+  .cmd-row label span{font-family:ui-monospace,monospace; color:var(--ink);}
+  .cmd-row input[type="range"]{width:100%;}
+  .cmd-row input[type="range"]:disabled{opacity:.4;}
+
   footer{padding:.35rem 1rem; font-size:.72rem; color:var(--muted); border-top:1px solid var(--line);}
 </style>
 </head>
@@ -137,6 +172,18 @@
   <div id="panel" tabindex="0">
     <div id="focus-hint">Keyboard shortcuts are inactive while the Simulator view has focus (an iframe can't forward key events to this page). Click anywhere in this panel to re-arm them. The E-STOP button below always works regardless of focus.</div>
 
+    <h2>Keys</h2>
+    <div id="keys-legend">
+      <div class="key-row"><span class="key-combo"><kbd>w</kbd><kbd>s</kbd></span> speed</div>
+      <div class="key-row"><span class="key-combo"><kbd>a</kbd><kbd>d</kbd></span> strafe</div>
+      <div class="key-row"><span class="key-combo"><kbd>&#8592;</kbd><kbd>&#8594;</kbd></span> turn</div>
+      <div class="key-row"><span class="key-combo"><kbd>1</kbd><kbd>2</kbd></span> switch policy</div>
+      <div class="key-row"><span class="key-combo"><kbd>p</kbd></span> pause</div>
+      <div class="key-row"><span class="key-combo"><kbd>r</kbd></span> restart</div>
+      <div class="key-row"><span class="key-combo"><kbd>esc</kbd></span> E-STOP</div>
+    </div>
+    <div class="hint-small">Hold to ramp up, release to hold that speed/turn (cruise, not brake) — press the opposite key or <kbd>esc</kbd> to change it.</div>
+
     <h2>Status</h2>
     <div id="active-label"><span id="conn-dot"></span>—</div>
 
@@ -147,6 +194,27 @@
     <button class="action-btn" id="btn-pause">Pause <kbd>p</kbd></button>
     <button class="action-btn" id="btn-restart">Restart <kbd>r</kbd></button>
     <button id="estop">E - S T O P <kbd style="border-color:#fff;color:#fff;">Esc</kbd></button>
+
+    <h2>Stimuli</h2>
+    <div class="hint-small">Training runs this policy through random shoves and a velocity command that changes on its own. Turn both off below to drive it deliberately instead — like a real operator would, not like a training run.</div>
+    <label class="toggle-row"><input type="checkbox" id="chk-push"> Random pushes</label>
+    <label class="toggle-row"><input type="checkbox" id="chk-auto-cmd"> Auto velocity commands</label>
+
+    <div class="cmd-row">
+      <label>Linear X (m/s) <span id="val-vx">0.0</span></label>
+      <input type="range" id="slider-vx" min="-1" max="1" step="0.05" value="0" disabled>
+    </div>
+    <div class="cmd-row">
+      <label>Linear Y (m/s) <span id="val-vy">0.0</span></label>
+      <input type="range" id="slider-vy" min="-1" max="1" step="0.05" value="0" disabled>
+    </div>
+    <div class="cmd-row">
+      <label>Yaw (rad/s) <span id="val-yaw">0.0</span></label>
+      <input type="range" id="slider-yaw" min="-1" max="1" step="0.05" value="0" disabled>
+    </div>
+
+    <h2>Mouse look <span class="hint-inline">(optional, same as ←/→)</span></h2>
+    <div id="look-pad">click + drag to turn</div>
   </div>
 </main>
 

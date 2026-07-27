@@ -39,6 +39,13 @@ class ControlService:
         self.safety = safety
         self.selector = selector
         self.paused = False
+        # Restart only *records* intent, same shape as PolicySupervisor's
+        # request_switch — the sim loop owns `obs` (the raw observation
+        # tensor fed to policies) and must refresh it right after the reset,
+        # so the actual adapter.reset()/safety.reset() calls stay in
+        # swap_experiment.py's loop rather than here. See restart()'s
+        # docstring.
+        self.restart_requested = False
 
     # ---- the "human or autonomous, same call" surface ----
 
@@ -59,6 +66,14 @@ class ControlService:
         # current backend can't do (e.g. "restart" on real hardware).
         s["backend"] = getattr(self.adapter, "backend_name", "sim")
         s["capabilities"] = getattr(self.adapter, "capabilities", {})
+        # Optional — only SimAdapter exposes these today (see adapter.py's
+        # command/random_events properties). Absent entirely for adapters
+        # that don't support manual velocity/stimulus control.
+        if hasattr(self.adapter, "command"):
+            vx, vy, yaw = self.adapter.command
+            s["command"] = {"vx": vx, "vy": vy, "yaw": yaw}
+        if hasattr(self.adapter, "random_events"):
+            s["random_events"] = self.adapter.random_events
         return s
 
     def pause(self) -> None:
@@ -66,6 +81,34 @@ class ControlService:
 
     def resume(self) -> None:
         self.paused = False
+
+    def restart(self) -> None:
+        """Requests a reset to the default standing pose, keeping the
+        currently active policy. Only records intent (mirrors
+        PolicySupervisor.request_switch) — see __init__'s note on why the
+        actual reset happens in the sim loop, not here."""
+        self.restart_requested = True
+
+    def set_command(self, vx: float, vy: float, yaw: float) -> None:
+        """Directly commands a target walking velocity (m/s, m/s, rad/s),
+        overriding whatever domain-randomization command resampling would
+        otherwise pick — see SimAdapter.set_command for the clamping and
+        heading_command interaction. Raises if the current adapter doesn't
+        support manual commands (e.g. a not-yet-built RealAdapter path)."""
+        set_command_fn = getattr(self.adapter, "set_command", None)
+        if set_command_fn is None:
+            raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_command")
+        set_command_fn(vx, vy, yaw)
+
+    def set_random_events(self, push_robots: bool, auto_commands: bool) -> None:
+        """Independently toggles random pushes and command auto-resampling
+        — see SimAdapter.set_random_events. Turning both off is what lets
+        you drive the robot deliberately instead of watching it react to
+        the same randomized stressors used during training."""
+        fn = getattr(self.adapter, "set_random_events", None)
+        if fn is None:
+            raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_random_events")
+        fn(push_robots, auto_commands)
 
     def estop(self) -> None:
         """Emergency stop. Trips safety (which forces the damping fallback —

@@ -4,11 +4,13 @@ SafetyGovernor, ControlService — see that package's README for the full
 design writeup).
 
 This script is the "supervised from a web UI, in simulation" corner of the
-control architecture. The viser GUI buttons below call ControlService
-methods directly, in-process — the same methods an autonomous Selector loop
-or, eventually, a networked bridge to a real robot would call. Nothing here
-is simulator-specific except the SimAdapter construction; everything from
-"which policy is active" down is backend-agnostic.
+control architecture. All robot control (policy switching, pause/restart,
+E-STOP, velocity commands) lives in the unified control web (web/index.html,
+served at --control_port) via ControlService/ControlServer — the same
+methods an autonomous Selector loop or, eventually, a networked bridge to a
+real robot would call. viser here is ONLY the 3D scene renderer plus its own
+native camera controls — it has no robot-control GUI of its own; that would
+just be a second, unsynchronized copy of what the unified web already does.
 
 Usage:
     python legged_gym/scripts/swap_experiment.py \
@@ -56,20 +58,14 @@ def main():
                               "combo — viser (web viewer) is the reliable way to actually watch this run.")
     parser.add_argument('--speed', type=float, default=0.35,
                          help="playback speed multiplier (1.0 = real-time 50Hz control rate)")
-    parser.add_argument('--docs_port', type=int, default=None,
-                         help="DEPRECATED — no-op if --control_port is set (the unified control web at "
-                              "--control_port now serves docs/ itself; see web/index.html's Docs tab). "
-                              "Only takes effect standalone, without --control_port: adds a link in the "
-                              "viser panel to a docs server assumed running at http://localhost:<docs_port>/ "
-                              "(e.g. `python -m http.server <docs_port>` run from the docs/ directory).")
     parser.add_argument('--control_port', type=int, default=None,
                          help="if set, starts a networked ControlServer (JSON-over-WebSocket at /ws, see "
                               "legged_gym/control/transport.py) on this port, exposing request_switch/"
-                              "status/pause/resume/estop to external clients — the same five calls the "
-                              "viser GUI buttons already make in-process. Unless --headless, this port "
-                              "also serves the unified control web (web/index.html: Docs/Simulator tabs "
-                              "+ persistent controls panel + keyboard shortcuts) at http://localhost:"
-                              "<control_port>/, superseding --docs_port.")
+                              "status/pause/resume/estop/restart/set_command/set_random_events to external "
+                              "clients. Unless --headless, this port also serves the unified control web "
+                              "(web/index.html: Docs/Simulator tabs + persistent controls panel + keyboard "
+                              "shortcuts + a Stimuli panel for manual velocity commands) at "
+                              "http://localhost:<control_port>/.")
     cli = parser.parse_args()
 
     policy_paths = parse_policy_args(cli.policy_specs)
@@ -109,26 +105,38 @@ def main():
         control_server = ControlServer(service, port=cli.control_port)
 
     viser_viewer = None
-    policy_label = None
 
     if not cli.headless:
-        viser_viewer = create_viser_viewer(env, port=cli.viser_port)
+        viser_viewer = create_viser_viewer(env, port=cli.viser_port, show_command_sliders=False)
         print(f"Viser web viewer started at http://localhost:{cli.viser_port}")
-
-        policy_label = viser_viewer.server.gui.add_markdown("### Active policy: —", order=-100)
+        # No robot-control GUI added here on purpose — see module docstring.
+        # viser's own Camera folder (Track robot / FOV) is all that's native
+        # to the viewer and stays; --show_command_sliders=False also drops
+        # viser's built-in (and, in this script, never-wired) velocity
+        # sliders, which duplicated the unified web's Stimuli panel.
 
         if control_server is not None:
             # Mount the unified control web (Docs/Simulator tabs + controls
             # panel + keyboard shortcuts — web/index.html) onto the SAME
             # FastAPI app/port as the /ws transport, per HANDOFF_control_web.md
-            # §3-B: one process, one port, same-origin WS (no CORS). This
-            # retires --docs_port's separate http.server for anyone using
-            # --control_port. Routes must be added before serve_in_thread().
+            # §3-B: one process, one port, same-origin WS (no CORS). Routes
+            # must be added before serve_in_thread().
             repo_root = Path(__file__).resolve().parents[2]
 
             @control_server.app.get("/config")
             def _web_config():
-                return {"viser_port": cli.viser_port}
+                # command_ranges lets the web panel clamp its velocity
+                # sliders to the exact envelope this policy was trained
+                # across (env_cfg.commands.ranges) — see SimAdapter.set_command.
+                ranges = env_cfg.commands.ranges
+                return {
+                    "viser_port": cli.viser_port,
+                    "command_ranges": {
+                        "vx": list(ranges.lin_vel_x),
+                        "vy": list(ranges.lin_vel_y),
+                        "yaw": list(ranges.ang_vel_yaw),
+                    },
+                }
 
             control_server.app.mount(
                 "/docs", StaticFiles(directory=str(repo_root / "docs"), html=True), name="docs",
@@ -136,54 +144,6 @@ def main():
             control_server.app.mount(
                 "/", StaticFiles(directory=str(repo_root / "web"), html=True), name="web",
             )
-            viser_viewer.server.gui.add_markdown(
-                f"[🖥 Open unified control web](http://localhost:{cli.control_port}/)", order=-99,
-            )
-        elif cli.docs_port is not None:
-            viser_viewer.server.gui.add_markdown(
-                f"[📖 Read the docs](http://localhost:{cli.docs_port}/)", order=-99,
-            )
-
-        restart_button = viser_viewer.server.gui.add_button(
-            "Restart",
-            hint="Reset the simulation and hold the current policy.",
-        )
-        restart_requested = {"flag": False}
-
-        @restart_button.on_click
-        def _(_) -> None:
-            print("\n>>> Restart requested from the web UI <<<\n")
-            restart_requested["flag"] = True
-
-        pause_button = viser_viewer.server.gui.add_button(
-            "Pause", hint="Freeze the sim in place. Click again to resume.",
-        )
-
-        @pause_button.on_click
-        def _(_) -> None:
-            if service.paused:
-                service.resume()
-                pause_button.label = "Pause"
-                print("\n>>> Resumed from the web UI <<<\n")
-            else:
-                service.pause()
-                pause_button.label = "Resume"
-                print("\n>>> Paused from the web UI <<<\n")
-
-        with viser_viewer.server.gui.add_folder("Policies"):
-            for name in policy_paths:  # one button per loaded skill; "damping" isn't user-selectable
-                switch_button = viser_viewer.server.gui.add_button(f"Switch to: {name}")
-
-                def _make_handler(target_name):
-                    def _handler(_):
-                        ok = service.request_switch(target_name)
-                        print(f"\n>>> Switch to '{target_name}' requested from the web UI "
-                              f"({'queued' if ok else 'no-op, already active'}) <<<\n")
-                    return _handler
-
-                switch_button.on_click(_make_handler(name))
-    else:
-        restart_requested = {"flag": False}
 
     if control_server is not None:
         # Routes/mounts (if any — see the `if not cli.headless` block above)
@@ -195,20 +155,6 @@ def main():
         print(listening_at)
 
     frame_dt = (1 / 60.0) / max(cli.speed, 0.01)
-
-    def update_label():
-        if policy_label is None:
-            return
-        status = service.status()
-        color = "🟢" if not status["ramping"] else "🟡"
-        if status["safety_tripped"]:
-            color = "🔴"
-        text = f"### {color} Active: **{status['active']}**"
-        if status["pending"]:
-            text += f" → switching to **{status['pending']}**"
-        if status["paused"]:
-            text += " (paused)"
-        policy_label.content = text
 
     def run_headless_smoke_test():
         """No web UI at all: request one switch partway through, purely to
@@ -240,7 +186,12 @@ def main():
         run_headless_smoke_test()
         return
 
-    print(f"\nOpen http://localhost:{cli.viser_port} — use the Policies buttons to switch live.")
+    if control_server is not None and not cli.headless:
+        print(f"\nOpen http://localhost:{cli.control_port} — switch policies, pause/restart, "
+              f"E-STOP, and drive velocity commands live. {cli.viser_port} is the raw 3D view.")
+    else:
+        print(f"\nOpen http://localhost:{cli.viser_port} — pass --control_port to also get "
+              f"the unified control web (policy switching, pause/restart, E-STOP, velocity commands).")
     obs = adapter.get_observations()
     while True:
         t_start = time.perf_counter()
@@ -248,8 +199,8 @@ def main():
         if control_server is not None:
             control_server.drain_commands()
 
-        if restart_requested["flag"]:
-            restart_requested["flag"] = False
+        if service.restart_requested:
+            service.restart_requested = False
             adapter.reset()
             obs = adapter.get_observations()
             safety.reset()
@@ -263,8 +214,6 @@ def main():
 
         if control_server is not None:
             control_server.publish_status(service.status())
-
-        update_label()
 
         elapsed = time.perf_counter() - t_start
         remaining = frame_dt - elapsed

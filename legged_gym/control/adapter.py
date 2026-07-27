@@ -94,6 +94,14 @@ class SimAdapter:
         self.num_envs = env.num_envs
         self._lifecycle = Lifecycle.READY
 
+        # Manual velocity-command override (see set_command/set_random_events
+        # below). Snapshot the original heading_command setting so it can be
+        # restored when returning to "auto" mode — see set_command's docstring
+        # for why heading_command has to be off while a manual command is active.
+        self._orig_heading_command = env.cfg.commands.heading_command
+        self._auto_commands = True
+        self._manual_command = (0.0, 0.0, 0.0)
+
     def reset(self) -> RobotState:
         self.env.reset()
         self._lifecycle = Lifecycle.READY
@@ -115,6 +123,14 @@ class SimAdapter:
         )
 
     def send_action(self, action: torch.Tensor) -> RobotState:
+        if not self._auto_commands:
+            # Re-assert every tick, right before stepping — the same pattern
+            # play.py's own joystick/slider control already uses. Necessary
+            # because _post_physics_step_callback (legged_robot.py) resamples
+            # commands on its own schedule regardless of who's driving; a
+            # manual command has to keep winning, tick after tick, or it gets
+            # silently overwritten a few seconds later.
+            self._apply_manual_command()
         self._lifecycle = Lifecycle.ACTIVE
         obs_buf, _, rews, dones, infos = self.env.step(action.detach())
         self._last_obs = obs_buf
@@ -131,6 +147,64 @@ class SimAdapter:
 
     def fault(self) -> None:
         self._lifecycle = Lifecycle.FAULT
+
+    def _apply_manual_command(self) -> None:
+        vx, vy, yaw = self._manual_command
+        self.env.commands[:, 0] = vx
+        self.env.commands[:, 1] = vy
+        self.env.commands[:, 2] = yaw
+
+    def set_command(self, vx: float, vy: float, yaw: float) -> None:
+        """Directly commands a target walking velocity, overriding whatever
+        the environment's own domain-randomization command resampling would
+        otherwise pick (see set_random_events). Clamped to the exact ranges
+        used during training (cfg.commands.ranges) — a manual command is
+        never allowed to ask the policy for something outside the envelope
+        it was actually trained across.
+
+        Also switches off cfg.commands.heading_command for as long as a
+        manual command is active: G1's default config computes yaw-RATE
+        from a heading TARGET every tick (see _post_physics_step_callback in
+        legged_robot.py) — with that on, a direct yaw-rate command would be
+        silently overwritten within the very same tick it was set."""
+        ranges = self.env.cfg.commands.ranges
+        vx = max(min(vx, ranges.lin_vel_x[1]), ranges.lin_vel_x[0])
+        vy = max(min(vy, ranges.lin_vel_y[1]), ranges.lin_vel_y[0])
+        yaw = max(min(yaw, ranges.ang_vel_yaw[1]), ranges.ang_vel_yaw[0])
+        self._manual_command = (vx, vy, yaw)
+        self._auto_commands = False
+        self.env.cfg.commands.heading_command = False
+        self._apply_manual_command()
+
+    def set_random_events(self, push_robots: bool, auto_commands: bool) -> None:
+        """Independently toggles the two domain-randomization stimuli that
+        otherwise run unconditionally every tick, in the sim demo just like
+        in training (legged_robot.py's _post_physics_step_callback) — random
+        shoves, and the velocity command changing on its own every few
+        seconds. Turning both off is what lets you drive the robot
+        deliberately, the way an operator would, instead of watching it
+        react to the same randomized stressors used during training."""
+        self.env.cfg.domain_rand.push_robots = push_robots
+        if auto_commands:
+            self._auto_commands = True
+            self.env.cfg.commands.heading_command = self._orig_heading_command
+        else:
+            self._auto_commands = False
+            self.env.cfg.commands.heading_command = False
+            self._apply_manual_command()  # hold at the last manual value (0,0,0 if never set)
+
+    @property
+    def command(self) -> tuple:
+        """Current (vx, vy, yaw) — whether it got there via set_command or
+        the environment's own auto-resampling."""
+        return tuple(float(v) for v in self.env.commands[0, :3].tolist())
+
+    @property
+    def random_events(self) -> dict:
+        return {
+            "push_robots": bool(self.env.cfg.domain_rand.push_robots),
+            "auto_commands": self._auto_commands,
+        }
 
     def estop(self) -> None:
         """Sim has no motors to cut power to — the meaningful thing an

@@ -48,7 +48,10 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 # accepted (see dispatch()) — it must never be blocked by anything here,
 # mirroring the "estop always wins" rule already enforced inside
 # ControlService/SafetyGovernor.
-METHODS = {"request_switch", "status", "pause", "resume", "estop"}
+METHODS = {
+    "request_switch", "status", "pause", "resume", "estop",
+    "restart", "set_command", "set_random_events",
+}
 
 
 class ControlServer:

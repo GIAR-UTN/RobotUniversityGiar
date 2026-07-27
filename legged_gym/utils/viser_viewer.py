@@ -389,12 +389,19 @@ class ViserViewer:
         num_envs: int = 1,
         server: Optional[object] = None,
         port: int = 8080,
+        show_command_sliders: bool = True,
     ):
         if not HAS_VISER:
             raise ImportError("viser is required. Install: pip install viser")
 
         self.num_envs = num_envs
         self.xml_path = xml_path
+        # play.py reads these sliders itself (see get_command()) to drive
+        # velocity commands interactively. Callers that manage commands
+        # through a different path (e.g. swap_experiment.py, via
+        # ControlService.set_command) can pass False here instead of ending
+        # up with a second, unwired copy of the same controls.
+        self._show_command_sliders = show_command_sliders
 
         self.kin_model = MjcfKinematicModel(xml_path, dof_names)
         self.body_meshes = self.kin_model.load_body_meshes()
@@ -435,7 +442,8 @@ class ViserViewer:
 
         self._setup_camera()
         self._setup_camera_gui()
-        self._setup_command_sliders()
+        if self._show_command_sliders:
+            self._setup_command_sliders()
 
     def _setup_camera(self) -> None:
         self._camera_offset = np.array([2.0, 2.0, 1.5])
@@ -612,9 +620,9 @@ class ViserViewer:
             self.server.stop()
 
 
-def create_viser_viewer(env, port: int = 8080, robot_index: int = 0) -> ViserViewer:
+def create_viser_viewer(env, port: int = 8080, robot_index: int = 0, show_command_sliders: bool = True) -> ViserViewer:
     xml_path = env.cfg.asset.xml_file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
-    
+
     dof_names = env.cfg.asset.dof_names
 
     viewer = ViserViewer(
@@ -622,6 +630,7 @@ def create_viser_viewer(env, port: int = 8080, robot_index: int = 0) -> ViserVie
         dof_names=dof_names,
         num_envs=1,
         port=port,
+        show_command_sliders=show_command_sliders,
     )
 
     try:
