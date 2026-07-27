@@ -295,9 +295,10 @@ lookPad.addEventListener('pointermove', (e) => {
   lookPadLastX = e.clientX;
   if (dx === 0) return;
   engageManualIfNeeded();
-  // Dragging right should turn right; yaw+ means "turn right" (matches
-  // keymap.json's ArrowRight: sign +1), so drag-right adds.
-  cruiseYaw = clampToRange(cruiseYaw + dx * MOUSE_YAW_SENSITIVITY, commandRanges?.yaw);
+  // Dragging right should turn right; yaw+ means "turn left" (base_ang_vel[:,2],
+  // right-hand rule around z), matching keymap.json's ArrowLeft: sign +1 —
+  // so drag-right subtracts.
+  cruiseYaw = clampToRange(cruiseYaw - dx * MOUSE_YAW_SENSITIVITY, commandRanges?.yaw);
   sendCruiseCommand();
 });
 function endMouseLook() {

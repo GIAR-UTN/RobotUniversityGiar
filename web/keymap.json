@@ -10,6 +10,6 @@
   "s": {"action": "move", "axis": "vx", "sign": -1},
   "a": {"action": "move", "axis": "vy", "sign": 1},
   "d": {"action": "move", "axis": "vy", "sign": -1},
-  "ArrowLeft": {"action": "move", "axis": "yaw", "sign": -1},
-  "ArrowRight": {"action": "move", "axis": "yaw", "sign": 1}
+  "ArrowLeft": {"action": "move", "axis": "yaw", "sign": 1},
+  "ArrowRight": {"action": "move", "axis": "yaw", "sign": -1}
 }
