@@ -523,12 +523,23 @@ function dispatchKeyAction(key) {
 }
 
 function setKeycapActive(key, active) {
-  const cap = document.querySelector(`.keycap[data-key="${CSS.escape(key)}"]`);
-  if (cap) cap.classList.toggle('active', active);
+  // Escape appears twice (the Keyboard section's cluster AND the E-STOP
+  // button's own badge) — light up every matching keycap, not just the
+  // first one in DOM order.
+  document.querySelectorAll(`.keycap[data-key="${CSS.escape(key)}"]`).forEach((cap) => {
+    cap.classList.toggle('active', active);
+  });
 }
+
+// Keys the browser would otherwise use to scroll a focused, scrollable
+// element (the sidebar) — block that default whenever shortcuts are armed,
+// even for keys with no control bound to them, so pressing e.g. ArrowUp
+// can't scroll the panel out from under the user.
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'PageUp', 'PageDown', 'Home', 'End']);
 
 document.addEventListener('keydown', (e) => {
   if (!keysArmed) return;
+  if (SCROLL_KEYS.has(e.key)) e.preventDefault();
   const binding = keymap[e.key];
   if (!binding) return;
   e.preventDefault();

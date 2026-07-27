@@ -166,6 +166,14 @@
                 inset 0 2px 3px var(--cap-shadow);
   }
   .keycap.wide{ min-width:auto; padding:0 10px; }
+  /* Escape doubles as E-STOP — flash danger-red when pressed, not the same
+     neutral orange as an ordinary movement key, so it reads as urgent. */
+  .keycap.danger.active{
+    background:linear-gradient(180deg, var(--danger) 0%, var(--danger) 100%);
+    color:#fff;
+    box-shadow: 0 0 0 1px var(--danger), 0 0 10px 1px var(--danger),
+                inset 0 2px 3px var(--cap-shadow);
+  }
 
   .kbd-map{display:flex; flex-direction:column; gap:.6rem;}
   .kbd-cluster{display:flex; flex-direction:column; gap:4px;}
@@ -279,11 +287,26 @@
             <div class="kbd-row">
               <span class="keycap" data-key="p">P</span>
               <span class="keycap" data-key="r">R</span>
-              <span class="keycap wide" data-key="Escape">Esc</span>
+              <span class="keycap wide danger" data-key="Escape">Esc</span>
             </div>
             <span class="kbd-caption">pause &middot; restart &middot; E-STOP</span>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="panel-section" data-section="pause-restart">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Pause &amp; Restart</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>Pause/Restart affect the sim run itself, separate from driving it or switching policies.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <button class="action-btn" id="btn-pause">Pause <span class="keycap">P</span></button>
+        <button class="action-btn" id="btn-restart">Restart <span class="keycap">R</span></button>
       </div>
     </section>
 
@@ -336,17 +359,15 @@
     <section class="panel-section" data-section="policies">
       <div class="section-head">
         <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
-        <h2>Policies &amp; Controls</h2>
+        <h2>Policies &amp; E-STOP</h2>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Press 1/2 or click a policy to switch. Pause/Restart affect the sim. E-STOP (button or Esc) always works, even when keyboard shortcuts are inactive.</p>
+          <p>Press 1/2 or click a policy to switch. E-STOP (button or Esc) always works, even when keyboard shortcuts are inactive.</p>
         </div>
       </div>
       <div class="section-body">
         <div id="policy-list"></div>
-        <button class="action-btn" id="btn-pause">Pause <span class="keycap">P</span></button>
-        <button class="action-btn" id="btn-restart">Restart <span class="keycap">R</span></button>
-        <button id="estop">E - S T O P <span class="keycap wide">Esc</span></button>
+        <button id="estop">E - S T O P <span class="keycap wide danger" data-key="Escape">Esc</span></button>
       </div>
     </section>
 
