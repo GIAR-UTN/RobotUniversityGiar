@@ -15,9 +15,10 @@ class Simulator(ABC):
         self._num_envs = self._cfg.env.num_envs
         self._num_actions = self._cfg.env.num_actions
         self._dof_indices = []  # align joint orders in different simulators with the order specified in the config file
+        self._props = {}  # name -> dict(pos, quat, lin_vel), populated by _create_props()
         self._parse_cfg()
         self._create_sim()
-        self._create_envs()
+        self._create_envs()  # backends that support cfg.props.list call _create_props() from within here
         self._init_buffers()
 
     #----- Public methods -----#
@@ -147,6 +148,19 @@ class Simulator(ABC):
     @abstractmethod
     def _create_envs(self):
         """Creates environments, adds the robot asset to each environment, sets DOF properties and calls callbacks to process rigid shape, rigid body and DOF properties.
+        """
+        return
+
+    def _create_props(self):
+        """Spawns optional dynamic rigid-body props (balls, obstacles, ...) declared in cfg.props.list.
+
+        No-op by default. Backends that support it must call this from within their own
+        _create_envs(), at the point where per-env actors/entities can still be added (e.g.
+        before Genesis' scene.build()) -- NOT automatically invoked by the base class, since
+        every backend finalizes/builds its envs at a different point in _create_envs().
+        Implementations should populate self._props with
+        {name: {"pos": Tensor(num_envs, 3), "quat": Tensor(num_envs, 4), "lin_vel": Tensor(num_envs, 3)}}
+        entries, one per configured prop.
         """
         return
 
@@ -756,3 +770,12 @@ class Simulator(ABC):
             The stack history is ordered from the latest(0) to the oldest(-1).
         """
         return self._depth_images
+
+    @property
+    def props(self):
+        """Returns the state of dynamic rigid-body props spawned via cfg.props.list (empty dict if none configured).
+
+        Returns:
+            Dict[str, Dict[str, Tensor]]: name -> {"pos": (num_envs, 3), "quat": (num_envs, 4) xyzw, "lin_vel": (num_envs, 3)}.
+        """
+        return self._props

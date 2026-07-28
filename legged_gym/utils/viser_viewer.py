@@ -390,12 +390,14 @@ class ViserViewer:
         server: Optional[object] = None,
         port: int = 8080,
         show_command_sliders: bool = True,
+        props_cfg: Optional[List[Dict]] = None,
     ):
         if not HAS_VISER:
             raise ImportError("viser is required. Install: pip install viser")
 
         self.num_envs = num_envs
         self.xml_path = xml_path
+        self._props_cfg = props_cfg or []
         # play.py reads these sliders itself (see get_command()) to drive
         # velocity commands interactively. Callers that manage commands
         # through a different path (e.g. swap_experiment.py, via
@@ -440,10 +442,41 @@ class ViserViewer:
             plane_opacity=0.4,
         )
 
+        self._build_props()
         self._setup_camera()
         self._setup_camera_gui()
         if self._show_command_sliders:
             self._setup_command_sliders()
+
+    def _build_props(self) -> None:
+        """Adds one mesh handle per entry in props_cfg (mirrors cfg.props.list), driven later by update_from_simulator().
+
+        Uses add_mesh_trimesh (trimesh geometry) rather than viser's native
+        add_icosphere/add_box primitives -- the same rendering path already
+        proven to work for the robot's own body meshes.
+        """
+        self._prop_handles: Dict[str, object] = {}
+        for prop_cfg in self._props_cfg:
+            name = prop_cfg["name"]
+            shape = prop_cfg.get("shape", "sphere")
+            rgba = np.clip(prop_cfg.get("color", (0.8, 0.2, 0.2, 1.0)), 0, 1)
+            color = (rgba[:3] * 255).astype(np.uint8)
+
+            if shape == "sphere":
+                mesh = trimesh.creation.icosphere(subdivisions=3, radius=float(prop_cfg.get("size", 0.1)))
+            elif shape == "box":
+                size = prop_cfg.get("size", [0.1, 0.1, 0.1])
+                extents = tuple(size) if isinstance(size, (list, tuple)) else (size, size, size)
+                mesh = trimesh.creation.box(extents=extents)
+            else:
+                continue
+
+            mesh.visual = trimesh.visual.ColorVisuals(
+                vertex_colors=np.tile(color, (len(mesh.vertices), 1)))
+
+            handle = self.server.scene.add_mesh_trimesh(
+                f"/props/{name}", mesh, cast_shadow=True, receive_shadow=True)
+            self._prop_handles[name] = handle
 
     def _setup_camera(self) -> None:
         self._camera_offset = np.array([2.0, 2.0, 1.5])
@@ -612,8 +645,30 @@ class ViserViewer:
         base_quat_xyzw = env.simulator.base_quat[robot_index].cpu().numpy()
         base_quat_wxyz = _xyzw_to_wxyz(base_quat_xyzw)
         dof_pos = env.simulator.dof_pos[robot_index].cpu().numpy()
+        fk_results = self.kin_model.forward_kinematics(base_pos, base_quat_wxyz, dof_pos)
 
-        self.update(base_pos, base_quat_wxyz, dof_pos, env_idx=0)
+        props = env.simulator.props if self._prop_handles else {}
+
+        with self.server.atomic():
+            for body_name, (pos, quat) in fk_results.items():
+                handle = self._body_handles.get((0, body_name))
+                if handle is not None:
+                    handle.position = pos
+                    handle.wxyz = quat
+
+            for name, handle in self._prop_handles.items():
+                state = props.get(name)
+                if state is None:
+                    continue
+                handle.position = state["pos"][robot_index].detach().cpu().numpy()
+                handle.wxyz = _xyzw_to_wxyz(state["quat"][robot_index].detach().cpu().numpy())
+
+            if self._camera_tracking_enabled:
+                for client in self.server.get_clients().values():
+                    client.camera.position = base_pos + self._camera_offset
+                    client.camera.look_at = base_pos + self._camera_look_at_offset
+
+        self.server.flush()
 
     def stop(self) -> None:
         if hasattr(self, 'server'):
@@ -625,12 +680,14 @@ def create_viser_viewer(env, port: int = 8080, robot_index: int = 0, show_comman
 
     dof_names = env.cfg.asset.dof_names
 
+    props_cfg = getattr(env.cfg.props, "list", [])
     viewer = ViserViewer(
         xml_path=xml_path,
         dof_names=dof_names,
         num_envs=1,
         port=port,
         show_command_sliders=show_command_sliders,
+        props_cfg=props_cfg,
     )
 
     try:

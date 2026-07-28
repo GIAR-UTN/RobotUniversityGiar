@@ -1,6 +1,7 @@
 from legged_gym import *
 from legged_gym.simulator.simulator import Simulator
 from PIL import Image as im
+import math
 import torch
 import numpy as np
 import os
@@ -42,6 +43,8 @@ class GenesisSimulator(Simulator):
             self._robot.control_dofs_force(
                 self._torques, self._dof_indices)
             self._scene.step()
+            if self._genesis_props:
+                self._apply_prop_damping()
             # dof_pos and dof_vel use joint sequence of policy
             self._dof_pos[:] = self._robot.get_dofs_position(
                 self._dof_indices)
@@ -65,6 +68,8 @@ class GenesisSimulator(Simulator):
         self._feet_pos[:] = self._robot.get_links_pos()[:, self._feet_indices, :]
         self._feet_vel[:] = self._robot.get_links_vel()[:, self._feet_indices, :]
         self._key_body_pos[:] = self._robot.get_links_pos()[:, self._key_body_indices, :]
+        if self._genesis_props:
+            self._update_props_state()
         # Link contact state
         if self._cfg.asset.obtain_link_contact_states:
             self._link_contact_states = 1. * (torch.norm(
@@ -90,7 +95,10 @@ class GenesisSimulator(Simulator):
         self._last_feet_vel[env_ids] = 0.
         self._last_base_lin_vel[env_ids] = 0.
         self._last_base_ang_vel[env_ids] = 0.
-        
+
+        if self._genesis_props:
+            self._reset_props(env_ids)
+
         # reset action queue and delay
         if self._cfg.domain_rand.randomize_ctrl_delay:
             self._action_queue[env_ids] *= 0.
@@ -353,11 +361,14 @@ class GenesisSimulator(Simulator):
             )
         else:
             raise NotImplementedError("Please specify xml file path for Genesis simulator!")
-        
+
+        # add optional dynamic rigid-body props (balls, obstacles, ...), must be added before scene.build()
+        self._create_props()
+
         # add camera if needed
         if self._cfg.sensor.add_depth:
             self._setup_depth_camera()
-        
+
         # build
         if self._headless:
             # Monkey-patch the visualizer to skip building
@@ -378,7 +389,103 @@ class GenesisSimulator(Simulator):
         self._scene.build(n_envs=self._num_envs)
 
         self._get_env_origins()
+        self._finalize_props()
+        self._resolve_robot_indices()
 
+    def _create_props(self):
+        """Adds the rigid-body entities declared in cfg.props.list to the scene.
+
+        Must run before scene.build() -- Genesis tiles entities present at build time
+        across all n_envs, exactly like the robot asset added above.
+        """
+        self._genesis_props = {}
+        for prop_cfg in self._cfg.props.list:
+            shape = prop_cfg.get("shape", "sphere")
+            pos = np.array(prop_cfg.get("pos", [0.5, 0.0, 0.5]))
+            material = gs.materials.Rigid(
+                rho=prop_cfg.get("density", 1000.0),
+                friction=prop_cfg.get("friction"),
+                coup_restitution=prop_cfg.get("restitution", 0.0),
+            )
+            color = prop_cfg.get("color")
+            surface = gs.surfaces.Default(color=tuple(color)) if color is not None else None
+            if shape == "sphere":
+                morph = gs.morphs.Sphere(radius=prop_cfg.get("size", 0.1), pos=pos, fixed=False)
+            elif shape == "box":
+                morph = gs.morphs.Box(size=prop_cfg.get("size", [0.1, 0.1, 0.1]), pos=pos, fixed=False)
+            else:
+                raise ValueError(f"Unsupported prop shape: {shape}")
+            self._genesis_props[prop_cfg["name"]] = self._scene.add_entity(
+                morph, material=material, surface=surface, name=prop_cfg["name"])
+
+    def _finalize_props(self):
+        """Applies per-prop mass and initializes the pos/quat/lin_vel buffers exposed via `Simulator.props`.
+
+        Runs after scene.build(), since entity state (mass, pose) is only queryable/settable then.
+        """
+        self._prop_reset_pos = {}
+        self._prop_linear_damping = {}
+        for prop_cfg in self._cfg.props.list:
+            name = prop_cfg["name"]
+            entity = self._genesis_props[name]
+            mass = prop_cfg.get("mass")
+            if mass is not None:
+                entity.set_mass(mass)
+            self._props[name] = {
+                "pos": torch.zeros((self._num_envs, 3), device=self._device),
+                "quat": torch.zeros((self._num_envs, 4), device=self._device),
+                "lin_vel": torch.zeros((self._num_envs, 3), device=self._device),
+            }
+            self._prop_reset_pos[name] = torch.tensor(
+                prop_cfg.get("pos", [0.5, 0.0, 0.5]), device=self._device, dtype=torch.float)
+            self._prop_linear_damping[name] = prop_cfg.get("linear_damping", 0.0)
+        if self._genesis_props:
+            self._reset_props(torch.arange(self._num_envs, device=self._device))
+        self._update_props_state()
+
+    def _update_props_state(self):
+        """Refreshes the pos/quat/lin_vel buffers of all props from the physics engine."""
+        for name, entity in self._genesis_props.items():
+            state = self._props[name]
+            state["pos"][:] = entity.get_pos()
+            state["quat"][:] = quat_wxyz_to_xyzw(entity.get_quat())
+            state["lin_vel"][:] = entity.get_vel()
+
+    def _apply_prop_damping(self):
+        """Applies viscous (velocity-proportional) linear drag to every prop, once per physics substep.
+
+        v *= exp(-damping * dt) -- a continuous exponential decay, not a one-off impulse,
+        so higher linear_damping values slow the prop down faster without ever reversing it.
+        """
+        dt = self._sim_params["dt"]
+        for name, entity in self._genesis_props.items():
+            damping = self._prop_linear_damping[name]
+            if damping <= 0.0:
+                continue
+            decay = math.exp(-damping * dt)
+            vel = entity.get_dofs_velocity()
+            vel[:, :3] *= decay  # only damp linear velocity (dofs 0:3), leave angular (3:6) alone
+            entity.set_dofs_velocity(vel)
+
+    def _reset_props(self, env_ids):
+        """Respawns every prop at its configured spawn pose (zeroing velocity) for the given env_ids.
+
+        Called from reset_idx() so props come back with the robot on episode reset,
+        instead of staying wherever they rolled/fell to from the previous episode.
+
+        The configured pos is relative to each env's origin -- same convention as
+        init_state.pos for the robot -- so env_origins must be added here, or the
+        prop resets next to world (0,0,0) while the robot resets at env_origins
+        (which, for a single-env plane layout, can be tens of meters away).
+        """
+        identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self._device)  # wxyz
+        for name, entity in self._genesis_props.items():
+            reset_pos = self._env_origins[env_ids] + self._prop_reset_pos[name].unsqueeze(0)
+            entity.set_pos(reset_pos, envs_idx=env_ids, zero_velocity=True)
+            entity.set_quat(identity_quat.unsqueeze(0).repeat(len(env_ids), 1), envs_idx=env_ids, zero_velocity=True)
+
+    def _resolve_robot_indices(self):
+        """One-time resolution of dof/link indices and domain-rand init, run once from _create_envs()."""
         self._dof_names = self._cfg.asset.dof_names
         self._num_dof = len(self._cfg.asset.dof_names)
 

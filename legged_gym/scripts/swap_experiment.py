@@ -28,6 +28,7 @@ from legged_gym import *
 from legged_gym.envs import *
 from legged_gym.utils import task_registry
 from legged_gym.utils.viser_viewer import create_viser_viewer
+from legged_gym.utils.props import default_ball_prop
 
 from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
@@ -66,6 +67,8 @@ def main():
                               "(web/index.html: Docs/Simulator tabs + persistent controls panel + keyboard "
                               "shortcuts + a Stimuli panel for manual velocity commands) at "
                               "http://localhost:<control_port>/.")
+    parser.add_argument('--ball', action='store_true', default=False,
+                         help="spawn a physics-enabled ball prop next to the robot (Genesis only, for now)")
     cli = parser.parse_args()
 
     policy_paths = parse_policy_args(cli.policy_specs)
@@ -84,7 +87,11 @@ def main():
     if SIMULATOR == "genesis":
         gs.init(backend=gs.cpu, logging_level='warning')
 
-    env, env_cfg = task_registry.make_env(name=args.task, args=args)
+    env_cfg, _ = task_registry.get_cfgs(name=args.task)
+    if cli.ball:
+        env_cfg.props.list = [default_ball_prop()]
+
+    env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     adapter = SimAdapter(env)
 
     hidden_size = 64  # matches G1RoughCfgPPO.policy.rnn_hidden_size

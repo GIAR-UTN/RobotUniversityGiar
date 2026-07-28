@@ -282,6 +282,21 @@ class LeggedRobotCfg(BaseConfig):
             return_pointcloud: bool = False
             pointcloud_in_world_frame: bool = False
 
+    class props:
+        # Optional dynamic rigid-body props (balls, obstacles, ...) spawned alongside the robot.
+        # Empty by default -- opt-in per task, no effect on existing configs.
+        # Each entry: {
+        #   "name": str,                          # unique prop name
+        #   "shape": "sphere" | "box",
+        #   "size": float | List[float],           # radius for sphere, [x,y,z] for box
+        #   "mass": float,
+        #   "pos": List[float],                    # spawn pos, relative to env origin [m]
+        #   "restitution": float,
+        #   "friction": float,
+        #   "color": List[float],                  # rgba, visualization only
+        # }
+        list: List[Dict] = []
+
     class sim:
         # Common
         dt: float = 0.005                 # 200 Hz
