@@ -55,6 +55,7 @@ class MySimulator(Simulator):
 5. **Trimesh in Genesis**: Trimesh terrain not validated for Genesis (use heightfield)
 6. **IsaacGym Rigid Body Props**: Cannot be modified on the fly (fixed at init)
 7. **Torque Dimensions**: Must match DOF count even for non-actuated DOFs
+8. **Genesis GPU Device Mismatch**: Genesis getters (`get_vel()`, `get_ang()`, `get_dofs_limit()`, etc.) may return CPU tensors even when the scene runs on CUDA. Additionally, Genesis's internal `sanitize_index` force-moves all indices to CPU, causing `scatter_` failures on CUDA buffers. The workaround is runtime monkey-patches in `genesis_simulator.py` plus explicit `.to(self._device)` on all getter results before PyTorch tensor operations.
 
 ## CODE MAP
 
