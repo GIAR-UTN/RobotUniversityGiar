@@ -57,6 +57,30 @@ export SIMULATOR=genesis   # required — legged_gym refuses to import without t
 
 No GPU required. On Apple Silicon, Genesis will report `Running on [Apple M1/M2/...] with backend gs.metal` — if it silently falls back to CPU, training still works, just slower (this fork's own G1 training ran entirely on CPU; Genesis's Metal path was, at time of writing, inconsistent enough on macOS that we didn't depend on it).
 
+### Docker Compose (recommended for reproducible runs)
+
+```bash
+# 1. Put your .pt checkpoints in ./policies/ (e.g. ./policies/motion.pt)
+# 2. Copy .env.sample to .env and edit if needed
+# 3. Build and run
+docker compose up --build
+# then open http://localhost:9006  (viser viewer)
+# and   http://localhost:9013  (unified control web)
+```
+
+Key environment variables (set in `.env`):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `GENESIS_BACKEND` | `cpu` | `cuda` for GPU (falls back to CPU if unavailable), `cpu` to force CPU-only |
+| `ACTIVE_POLICY` | *(first alphabetically)* | Filename (without `.pt`) in `./policies/` to start active |
+| `HEADLESS` | `0` | Set `1` for a smoke test without the browser viewer |
+| `SPEED` | `0.35` | Playback speed multiplier (`1.0` = real-time 50 Hz) |
+| `CONTROL_PORT` | `9013` | Port for the unified control WebSocket server |
+| `VISER_PORT` | `9006` | Port for the viser 3D viewer |
+
+The compose file mounts `./policies:/workspace/policies:ro` so checkpoint files are available inside the container without copying them into the image.
+
 ### Train a policy
 
 ```bash
@@ -173,7 +197,7 @@ For *this* fork, adopting full ROS 2 today would mean bolting a colcon workspace
 - **Networked transport + unified control web exist** (`legged_gym/control/transport.py`, `web/` — see §4a): a JSON-over-WebSocket bridge and a build-step-free browser UI, both driven purely through `ControlService`, nothing new bypasses it.
 - **`ObsSpec` enforcement is a warning, not a hard stop**: `PolicySupervisor` checks the incoming observation's shape against each policy's declared spec and warns on mismatch, but doesn't refuse to proceed — every policy you load side-by-side today must genuinely share one observation space (which is true for `stable`/`cautious`/`damping` above, but won't automatically be true for an arbitrary new skill).
 - **Episode-reset doesn't reset policy hidden states**: `SimAdapter.send_action()` ignores the env's own `dones` signal (used for RL training's episode termination). Fine for this demo — `SafetyGovernor` already reacts to a fall directly via `projected_gravity` — but a hidden state that should have been cleared on an env-internal reset currently isn't; worth fixing before using this for anything resembling an evaluation run.
-- **CPU-only tested**: policy backends default to `device='cpu'` (parameterized, not hardcoded, but nothing here has been run against a CUDA env) — the whole point of this fork is Genesis on a GPU-less Mac, so this hasn't mattered yet.
+- **GPU supported with workarounds**: Genesis on CUDA works via runtime monkey-patches in `genesis_simulator.py` that compensate for Genesis's internal `sanitize_index` CPU-forcing bug. CPU remains the primary tested path (this fork was originally built for Genesis on a GPU-less Mac), but GPU mode is functional.
 
 ---
 

@@ -58,6 +58,7 @@ LeggedGym-Ex/
 4. **Terrain Constraints**: Cannot use `curriculum=True` with `selected=True` simultaneously
 5. **Genesis XML**: Must provide XML file path when using Genesis simulator
 6. **Heightfield Limitation**: Heightfield terrain not implemented for IsaacLabSimulator
+7. **Genesis GPU Device Mismatch**: Genesis getters (`get_vel()`, `get_ang()`, `get_dofs_limit()`, etc.) may return CPU tensors even when the scene runs on CUDA. Additionally, Genesis's internal `sanitize_index` force-moves all indices to CPU, causing `scatter_` failures on CUDA buffers. The workaround is runtime monkey-patches in `genesis_simulator.py` plus explicit `.to(self._device)` on all getter results before PyTorch tensor operations.
 
 ## UNIQUE STYLES
 
