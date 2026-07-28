@@ -1,0 +1,26 @@
+# =============================================================================
+# Docker Compose override — GPU passthrough
+# =============================================================================
+# Adds the NVIDIA device reservation on top of the base docker-compose.yml.
+# Only apply this overlay on a Linux host with an NVIDIA GPU and the
+# nvidia-container-runtime installed — this block is honored by
+# `docker compose up`/`run` even outside Swarm, and hard-fails container
+# creation ("could not select device driver nvidia") if no matching driver
+# is present. That's why it isn't in the base file.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Also set GENESIS_BACKEND=cuda (in .env or on the command line) so
+# swap_experiment.py actually requests the CUDA backend from Genesis.
+# =============================================================================
+
+services:
+  leggedgym:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

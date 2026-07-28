@@ -62,10 +62,18 @@ No GPU required. On Apple Silicon, Genesis will report `Running on [Apple M1/M2/
 ```bash
 # 1. Put your .pt checkpoints in ./policies/ (e.g. ./policies/motion.pt)
 # 2. Copy .env.sample to .env and edit if needed
-# 3. Build and run
+# 3. Build and run (works on any host arch — amd64 or arm64/Apple Silicon)
 docker compose up --build
 # then open http://localhost:9006  (viser viewer)
 # and   http://localhost:9013  (unified control web)
+```
+
+The image builds and runs on any host architecture: on `linux/amd64` it installs the CUDA 12.8 (sm_120) build of PyTorch; everywhere else (e.g. `linux/arm64` under Colima/Docker Desktop on Apple Silicon) it keeps the generic CPU build, since NVIDIA doesn't publish CUDA wheels for non-amd64.
+
+On a Linux host with an NVIDIA GPU and the `nvidia-container-runtime` installed, pass through the GPU with the `docker-compose.gpu.yml` overlay (not in the base file — Compose hard-fails container creation on hosts without a matching driver if the device reservation is unconditional):
+
+```bash
+GENESIS_BACKEND=cuda docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
 Key environment variables (set in `.env`):

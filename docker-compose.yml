@@ -17,6 +17,19 @@
 #
 # Headless smoke test (no browser):
 #   docker compose run --rm -e HEADLESS=1 leggedgym
+#
+# GPU host (Linux + NVIDIA + nvidia-container-runtime installed):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#   (also set GENESIS_BACKEND=cuda, in .env or on the command line)
+#
+# NOTE: the NVIDIA `deploy.resources.reservations.devices` block is NOT safe
+# to leave in this base file — unlike the Swarm-only `deploy` keys Compose V2
+# otherwise ignores outside a stack deploy, this one is honored by
+# `docker compose up`/`run`, and it hard-fails container creation with
+# "could not select device driver nvidia" on any host without that driver
+# (Apple Silicon/Colima, plain Linux without a GPU, CI, etc). It lives in the
+# optional docker-compose.gpu.yml overlay instead, so this base file runs
+# anywhere.
 # =============================================================================
 
 services:
@@ -26,17 +39,6 @@ services:
       dockerfile: Dockerfile
     image: leggedgym-ex:genesis
     container_name: leggedgym-swap-experiment
-
-    # GPU reservation: if an NVIDIA GPU and the nvidia-container-runtime
-    # are present, the GPU is passed through.  If not, Docker ignores this
-    # section and the container runs on CPU.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
 
     # Mount the repo live so edits on the host are reflected immediately.
     # Also mount a read-only policies/ directory for your .pt checkpoints.
@@ -65,8 +67,8 @@ services:
       SPEED: ${SPEED:-0.35}
 
     ports:
-      - "9006:9006"   # viser 3-D viewer
-      - "9013:9013"   # unified control web
+      - "${VISER_PORT:-9006}:${VISER_PORT:-9006}"   # viser 3-D viewer
+      - "${CONTROL_PORT:-9013}:${CONTROL_PORT:-9013}"   # unified control web
 
     stdin_open: true
     tty: true

@@ -7,14 +7,18 @@
 # It is configured for:
 #   * Python 3.12
 #   * Genesis simulator  (CPU fallback by default, GPU libraries included)
-#   * PyTorch 2.9.0 + CUDA 12.8 — includes Blackwell (sm_120) GPU support
+#   * PyTorch 2.9.0 + CUDA 12.8 on linux/amd64 (includes Blackwell/sm_120
+#     GPU support); generic CPU PyTorch on other architectures (e.g.
+#     linux/arm64, such as Apple Silicon under Colima/Docker Desktop)
 #   * viser web viewer (port 9006)
 #   * FastAPI unified control web / WebSocket bridge (port 9013)
 #
-# The container is GPU-ready: if you run it with the NVIDIA Container
-# Runtime (--gpus all) Genesis and PyTorch will see the CUDA device.
-# If no GPU is available the same image still runs because
-# swap_experiment.py initialises Genesis with backend=gs.cpu.
+# This image builds and runs on any host architecture. On linux/amd64 with
+# the NVIDIA Container Runtime (--gpus all), Genesis and PyTorch will see
+# the CUDA device. Everywhere else — no GPU, or a non-amd64 arch where the
+# CUDA wheels don't exist — the same image still runs because
+# swap_experiment.py initialises Genesis with backend=gs.cpu unless
+# GENESIS_BACKEND=cuda is set and available.
 #
 # Build:
 #   docker build -t leggedgym-ex:genesis .
@@ -73,15 +77,30 @@ COPY pyproject.toml ./
 
 # ---- Create venv and install dependencies from pyproject.toml -----------------
 # pyproject.toml is the single source of truth:
-#   * Base dependencies under [project] dependencies
-#   * Genesis-specific extras (pinned PyTorch cu128, genesis-world, warp-lang)
-#     under [project.optional-dependencies] genesis
+#   * Base dependencies under [project] dependencies (includes unpinned
+#     torch/torchvision so the image builds on any CPU architecture)
+#   * Genesis-specific extras (genesis-world, warp-lang) under
+#     [project.optional-dependencies] genesis
 # A fresh resolution is generated on every build so the image always picks up
 # latest compatible versions without requiring a committed lockfile.
+#
+# CUDA wheels (torch/torchvision +cu128, needed for Blackwell/sm_120 support)
+# are only published for linux/amd64 — there is no matching wheel for
+# linux/arm64 (e.g. this image built on Apple Silicon under Colima/Docker
+# Desktop). So: resolve the base+genesis deps first (generic torch/torchvision,
+# works on every arch), then on amd64 hosts *upgrade* torch/torchvision in
+# place to the CUDA-pinned build. arm64 hosts keep the generic build and run
+# Genesis on CPU (or Metal, outside Docker) via the GENESIS_BACKEND=cpu path.
 RUN uv venv --python 3.12 .venv \
  && . .venv/bin/activate \
  && uv pip install -r pyproject.toml --extra genesis \
-    --extra-index-url https://download.pytorch.org/whl/cu128
+ && if [ "$(uname -m)" = "x86_64" ]; then \
+        echo "x86_64 host: installing CUDA-enabled PyTorch (cu128, sm_120 support)"; \
+        uv pip install "torch==2.9.0+cu128" "torchvision==0.24.0+cu128" \
+            --extra-index-url https://download.pytorch.org/whl/cu128; \
+    else \
+        echo "$(uname -m) host: keeping generic CPU PyTorch (no CUDA wheels for this arch)"; \
+    fi
 
 # ---- Copy the full repository ------------------------------------------------
 COPY . .
