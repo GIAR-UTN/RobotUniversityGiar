@@ -132,6 +132,25 @@ class ControlService:
             base_policy=base_policy, cmd_vx=cmd_vx, cmd_vy=cmd_vy, cmd_yaw=cmd_yaw,
         )
 
+    def system_info(self) -> dict:
+        """What this server's machine actually is — CPU, RAM, GPU
+        availability, simulator backend — for the web panel that shows it
+        (the user explicitly didn't want to be guessing at what their
+        hardware can handle)."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        info = self.training.system_info()
+        info["control_backend"] = getattr(self.adapter, "backend_name", "sim")
+        return info
+
+    def estimate_training_time(self, max_iterations: int, num_envs: int) -> dict:
+        """Seconds estimate for a would-be training job, from this
+        machine's own history of completed jobs (see TrainingManager.estimate)
+        — called live as the Create Policy form's fields change."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        return self.training.estimate(max_iterations, num_envs)
+
     def pause(self) -> None:
         self.paused = True
 

@@ -116,6 +116,7 @@ function connect() {
   ws.onopen = () => {
     footer.textContent = 'connected'; connDot.className = 'ok';
     refreshTrainingCatalog();
+    refreshSystemInfo();
   };
   ws.onclose = () => {
     footer.textContent = 'disconnected — retrying…';
@@ -783,6 +784,66 @@ function initPopovers() {
   }, true);
 }
 
+// ---- system info bar ----
+// The user asked for this explicitly: don't make them guess what hardware
+// is running the sim/training — show it, and use it as the basis for the
+// Create Policy panel's num_envs suggestion + time estimate below.
+
+const systemSummary = $('#system-summary');
+const systemDetailsBtn = $('#system-details-btn');
+const systemDetails = $('#system-details');
+let systemInfo = null;
+
+function refreshSystemInfo() {
+  call('system_info').then((info) => {
+    systemInfo = info;
+    const gpuNote = info.cuda_available ? 'CUDA available (unused — training runs CPU)'
+      : info.mps_available ? 'Metal available (unused — training runs CPU)' : 'no GPU';
+    systemSummary.textContent =
+      `${info.cpu_brand} · ${info.cpu_count} cores · ${info.ram_gb ?? '?'} GB RAM · ` +
+      `${info.simulator}/${info.genesis_backend} · ${gpuNote}`;
+    systemDetails.innerHTML = '';
+    const dl = document.createElement('dl');
+    const rows = [
+      ['OS', info.os], ['Machine', info.machine], ['CPU', info.cpu_brand],
+      ['Cores', info.cpu_count], ['RAM', `${info.ram_gb ?? '?'} GB`],
+      ['Simulator', info.simulator], ['Sim backend', info.genesis_backend],
+      ['Control backend', info.control_backend],
+      ['CUDA', info.cuda_available ? 'yes' : 'no'], ['Metal (MPS)', info.mps_available ? 'yes' : 'no'],
+      ['Suggested envs', `${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper}`],
+    ];
+    for (const [k, v] of rows) {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v;
+      dl.appendChild(dt); dl.appendChild(dd);
+    }
+    systemDetails.appendChild(dl);
+
+    if (!envsFieldTouched) {
+      trainEnvs.value = info.suggested_num_envs.comfortable;
+    }
+    trainEnvsHint.textContent =
+      `Suggested for this machine: ${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper} ` +
+      `(${info.cpu_count} cores detected) — more scales training speed less on CPU past that.`;
+    updateEstimate();
+  }).catch((e) => {
+    systemSummary.textContent = 'system info unavailable';
+    console.warn('system_info unavailable:', e.message);
+  });
+}
+
+systemDetailsBtn.addEventListener('click', () => {
+  const opening = systemDetails.hidden;
+  systemDetails.hidden = !opening;
+  systemDetailsBtn.setAttribute('aria-expanded', String(opening));
+});
+document.addEventListener('click', (e) => {
+  if (!systemDetails.hidden && !e.target.closest('#system-bar')) {
+    systemDetails.hidden = true;
+    systemDetailsBtn.setAttribute('aria-expanded', 'false');
+  }
+});
+
 // ---- create policy (training) ----
 // The whole point of this panel, per the user ask: never hide the actual
 // command behind the form — #train-cmd-preview always shows exactly what
@@ -797,13 +858,46 @@ const trainBase = $('#train-base');
 const trainTask = $('#train-task');
 const trainIters = $('#train-iters');
 const trainEnvs = $('#train-envs');
+const trainEnvsHint = $('#train-envs-hint');
 const trainVxLo = $('#train-vx-lo'), trainVxHi = $('#train-vx-hi');
 const trainVyLo = $('#train-vy-lo'), trainVyHi = $('#train-vy-hi');
 const trainYawLo = $('#train-yaw-lo'), trainYawHi = $('#train-yaw-hi');
 const trainCmdPreview = $('#train-cmd-preview');
+const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
 const btnStartTraining = $('#btn-start-training');
 const trainingJobsEl = $('#training-jobs');
+
+let envsFieldTouched = false; // stop overwriting the field with the suggested
+                               // default once the user has typed their own value
+trainEnvs.addEventListener('input', () => { envsFieldTouched = true; }, { once: true });
+
+function formatDuration(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+let estimateDebounce = null;
+
+function updateEstimate() {
+  clearTimeout(estimateDebounce);
+  estimateDebounce = setTimeout(() => {
+    const iterations = parseInt(trainIters.value, 10);
+    const numEnvs = parseInt(trainEnvs.value, 10);
+    if (!Number.isFinite(iterations) || !Number.isFinite(numEnvs) || iterations <= 0 || numEnvs <= 0) {
+      trainEstimate.textContent = 'Estimated time: –';
+      return;
+    }
+    call('estimate_training_time', { max_iterations: iterations, num_envs: numEnvs }).then((est) => {
+      trainEstimate.textContent = est.basis === 'measured'
+        ? `Estimated time: ~${formatDuration(est.seconds)} (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine)`
+        : 'Estimated time: no runs on this machine yet — the first one calibrates this estimate.';
+    }).catch(() => { trainEstimate.textContent = 'Estimated time: –'; });
+  }, 250);
+}
 
 function showTrainError(msg) {
   trainError.textContent = msg;
@@ -885,13 +979,17 @@ btnNewPolicy.addEventListener('click', () => {
   const opening = createPolicyForm.hidden;
   createPolicyForm.hidden = !opening;
   btnNewPolicy.textContent = opening ? 'Cancel' : '+ New policy…';
-  if (opening) { showTrainError(''); updateCommandPreview(); trainName.focus(); }
+  if (opening) { showTrainError(''); updateCommandPreview(); updateEstimate(); trainName.focus(); }
 });
 
 [trainName, trainBase, trainTask, trainIters, trainEnvs,
  trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi].forEach((el) => {
   el.addEventListener('input', updateCommandPreview);
   el.addEventListener('change', updateCommandPreview);
+});
+[trainIters, trainEnvs].forEach((el) => {
+  el.addEventListener('input', updateEstimate);
+  el.addEventListener('change', updateEstimate);
 });
 
 createPolicyForm.addEventListener('submit', (e) => {

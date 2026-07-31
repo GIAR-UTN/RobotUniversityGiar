@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import platform
 import subprocess
 import sys
 import time
@@ -31,6 +33,39 @@ from typing import Dict, List, Optional, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAIN_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_train.py"
 JOBS_DIR = REPO_ROOT / "logs" / "_web_training"
+HISTORY_PATH = JOBS_DIR / "history.json"
+
+
+def _cpu_brand() -> str:
+    """platform.processor() returns '' on macOS — sysctl has the real
+    string ('Apple M1 Pro', etc.); Linux falls back to /proc/cpuinfo's
+    'model name'. Either miss just falls back to platform.machine()."""
+    try:
+        if platform.system() == "Darwin":
+            return subprocess.check_output(
+                ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=2).strip()
+        if platform.system() == "Linux":
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.lower().startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+    except Exception:  # noqa: BLE001 - this is cosmetic, never worth failing over
+        pass
+    return platform.processor() or platform.machine() or "unknown"
+
+
+def _total_ram_bytes() -> Optional[int]:
+    try:
+        if platform.system() == "Darwin":
+            return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=2).strip())
+        if platform.system() == "Linux":
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) * 1024
+    except Exception:  # noqa: BLE001 - cosmetic
+        pass
+    return None
 
 
 @dataclasses.dataclass
@@ -42,6 +77,8 @@ class TrainingJob:
     log_path: str
     result_path: str
     started_at: float
+    max_iterations: int
+    num_envs: int
     status: str = "running"  # running | done | failed
     finished_at: Optional[float] = None
     error: Optional[str] = None
@@ -52,6 +89,8 @@ class TrainingJob:
             "id": self.id,
             "policy_name": self.policy_name,
             "task": self.task,
+            "max_iterations": self.max_iterations,
+            "num_envs": self.num_envs,
             "command": self.command,
             "status": self.status,
             "started_at": self.started_at,
@@ -75,6 +114,83 @@ class TrainingManager:
         # just not usable as a --from_checkpoint base).
         self.policy_sources: Dict[str, dict] = {}
         JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        self._history: List[dict] = self._load_history()
+
+    # ---- what this machine actually is (for the "System" panel + sizing) ----
+
+    def system_info(self) -> dict:
+        """No claims beyond what's directly measurable on THIS machine —
+        the panel this feeds exists specifically so the user isn't guessing
+        at what their hardware can do (see the conversation that asked for
+        this). cuda/mps availability is informational only: every training
+        job launched from this UI runs Genesis on CPU (see web_train.py's
+        gs.init(backend=gs.cpu if cli.cpu else gs.gpu) — cli.cpu defaults
+        True), so a GPU being present doesn't currently change anything."""
+        cpu_count = os.cpu_count() or 1
+        try:
+            import torch
+            cuda_available = torch.cuda.is_available()
+            mps_available = getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()
+        except Exception:  # noqa: BLE001 - torch import shouldn't be fatal to a status panel
+            cuda_available = False
+            mps_available = False
+        return {
+            "os": f"{platform.system()} {platform.release()}",
+            "machine": platform.machine(),
+            "cpu_brand": _cpu_brand(),
+            "cpu_count": cpu_count,
+            "ram_gb": round(_total_ram_bytes() / (1024 ** 3), 1) if _total_ram_bytes() else None,
+            "cuda_available": cuda_available,
+            "mps_available": mps_available,
+            "simulator": os.environ.get("SIMULATOR", "unknown"),
+            "genesis_backend": os.environ.get("GENESIS_BACKEND", "cpu"),
+            # Not a measurement — a starting-point heuristic (envs run
+            # vectorized but not free; more than a few per core stops
+            # scaling on CPU). Gets less relevant once real history exists;
+            # estimate()/the UI prefer measured numbers when they're available.
+            "suggested_num_envs": {"comfortable": max(4, cpu_count * 4), "upper": max(8, cpu_count * 16)},
+        }
+
+    # ---- timing history (persisted so estimates survive a server restart) ----
+
+    def _load_history(self) -> List[dict]:
+        try:
+            with open(HISTORY_PATH) as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return []
+
+    def _save_history(self) -> None:
+        try:
+            with open(HISTORY_PATH, 'w') as f:
+                json.dump(self._history[-200:], f)  # unbounded growth guard — 200 runs is plenty of signal
+        except OSError:
+            pass  # best-effort — a failed write must not crash the sim loop
+
+    def estimate(self, max_iterations: int, num_envs: int) -> dict:
+        """Seconds estimate for a (max_iterations, num_envs) job on THIS
+        machine, from this machine's own completed-job history — pooled
+        across tasks (same robot/obs/action space, so iteration cost is the
+        same regardless of which reward function is being trained). Returns
+        basis='none' with no seconds figure when there's no history yet,
+        rather than inventing a number with false precision — see
+        system_info()'s suggested_num_envs for a sizing starting point in
+        that case."""
+        max_iterations = max(1, int(max_iterations))
+        num_envs = max(1, int(num_envs))
+        if not self._history:
+            return {"basis": "none", "samples": 0, "seconds": None}
+        rates = [h["elapsed_s"] / (h["max_iterations"] * h["num_envs"])
+                 for h in self._history if h["max_iterations"] > 0 and h["num_envs"] > 0]
+        if not rates:
+            return {"basis": "none", "samples": 0, "seconds": None}
+        rates.sort()
+        median_rate = rates[len(rates) // 2]
+        return {
+            "basis": "measured",
+            "samples": len(rates),
+            "seconds": round(median_rate * max_iterations * num_envs, 1),
+        }
 
     # ---- catalog the web UI's form renders from ----
 
@@ -107,8 +223,11 @@ class TrainingManager:
         if any(j.status == "running" and j.policy_name == policy_name for j in self.jobs.values()):
             raise ValueError(f"a training job for policy '{policy_name}' is already running")
         max_iterations = int(max_iterations)
+        num_envs = int(num_envs)
         if max_iterations <= 0:
             raise ValueError("max_iterations must be positive")
+        if num_envs <= 0:
+            raise ValueError("num_envs must be positive")
 
         from_checkpoint = None
         if base_policy:
@@ -128,7 +247,7 @@ class TrainingManager:
             "--task", task,
             "--name", policy_name,
             "--max_iterations", str(max_iterations),
-            "--num_envs", str(int(num_envs)),
+            "--num_envs", str(num_envs),
             "--headless", "--cpu",
             "--result_path", str(result_path),
         ]
@@ -152,6 +271,7 @@ class TrainingManager:
         job = TrainingJob(
             id=job_id, policy_name=policy_name, task=task, command=display_command,
             log_path=str(log_path), result_path=str(result_path), started_at=time.time(),
+            max_iterations=max_iterations, num_envs=num_envs,
         )
         self.jobs[job_id] = job
         self._procs[job_id] = proc
@@ -184,6 +304,11 @@ class TrainingManager:
                 job.policy_path = result["policy_path"]
                 job.status = "done"
                 newly_done.append(job)
+                self._history.append({
+                    "task": job.task, "max_iterations": job.max_iterations,
+                    "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
+                })
+                self._save_history()
             except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
                 job.status = "failed"
                 job.error = f"training process exited cleanly but its result file was unreadable: {e}"
