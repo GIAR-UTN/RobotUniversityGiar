@@ -13,63 +13,29 @@ let msgId = 1;
 let keymap = {};
 let keyByPolicy = {}; // policy name -> bound key, precomputed once at boot (not per render)
 let renderedPolicyNames = null; // policies list actually painted into the DOM right now
-let keysArmed = false; // true while the Simulator/Real-robot tab is active —
-                        // keyboard shortcuts always work in that mode, and
-                        // never while reading Docs; see selectView() below
+let keysArmed = true; // true whenever no drawer is open over the simulator —
+                       // keyboard shortcuts must not fire while reading Docs
+                       // (e.g. arrow-key scrolling shouldn't drive the
+                       // robot); see openDrawer()/closeDrawer() below
 
-// ---- simulator pause on tab switch ----
-// Leaving the Simulator tab used to leave its viser <iframe> alive forever —
-// still WebSocket-connected and rendering WebGL in the background, competing
-// for CPU/GPU with the page you're actually looking at (this is what made
-// the page unresponsive and, worse, made it impossible to click back to
-// Docs — see HANDOFF_control_web.md's post-merge incident note).
-//
-// The first version of this fix also destroyed the iframe (`.remove()`) on
-// leaving Simulator, to free its WebGL context. That backfired badly: tearing
-// down a live WebGL context synchronously froze the renderer hard (~180%
-// CPU, unresponsive for 40+ seconds) under any real host load — worse than
-// the bug it was fixing. DO NOT reintroduce iframe removal/recreation here.
-//
-// The part that's actually safe AND does the real work is
-// ControlService.pause()/resume(): tick() returns None while paused, so the
-// server stops stepping physics AND stops pushing new scene data to viser
-// (service.py) — that's the literal "machinery" the user wanted stopped, and
-// it doesn't touch the DOM at all. The iframe itself is mounted once
-// (lazily, on first visit to Simulator, so Docs-only sessions never connect
-// to viser) and from then on is left alone; the existing `.view`/`.view
-// .active` CSS (`display:none` on the inactive tab) already stops it from
-// being painted, and with no new data flowing in while paused there's little
-// left for it to do in the background.
-let currentView = 'docs'; // matches the tab marked .active in index.html
-let simIframeMounted = false;
+// ---- Simulator is a permanent base layer ----
+// Two earlier approaches both failed here: (1) tab-switching the Simulator
+// out of view left its viser <iframe> alive and rendering forever in the
+// background — the CPU/GPU contention from that is what originally made the
+// page unresponsive; (2) destroying/recreating that iframe on tab switch (to
+// fix #1) backfired worse — tearing down a live WebGL context synchronously
+// froze the renderer hard (~180% CPU, unresponsive 40+ seconds) under real
+// host load. DO NOT hide, resize, or remove the Simulator's iframe on
+// navigation. It is mounted once at boot and never touched again. Docs (and,
+// later, Real-robot) are drawers that slide in OVER it instead — see
+// index.html's .drawer CSS — so the simulator view itself never changes.
 let viserPort = null; // filled in from /config at boot
-let autoPausedByNav = false; // true only if THIS code paused the sim on nav
-                              // away — so returning to Simulator doesn't
-                              // resume a sim the user paused manually
-                              // on purpose before leaving
 
 function mountSimIframe() {
-  if (simIframeMounted || !viserPort) return;
+  if (!viserPort) return;
   const iframe = document.createElement('iframe');
   iframe.src = `http://localhost:${viserPort}/`;
   $('#view-sim').appendChild(iframe);
-  simIframeMounted = true;
-}
-
-// Pausing when nobody's driving is exactly the "not manually paused" check
-// applied uniformly for both the boot-time and the tab-switch cases.
-function pauseForNav() {
-  if (!latestStatus || !latestStatus.paused) {
-    autoPausedByNav = true;
-    send('pause');
-  }
-}
-
-function resumeFromNavIfOurs() {
-  if (autoPausedByNav) {
-    autoPausedByNav = false;
-    send('resume');
-  }
 }
 
 const $ = (sel) => document.querySelector(sel);
@@ -124,25 +90,10 @@ function send(method, params = {}) {
   ws.send(JSON.stringify({ method, params, id: msgId++ }));
 }
 
-let didInitialNavPause = false; // one-shot — only the very first successful
-                                 // connection decides whether to auto-pause
-                                 // for the boot-time view; later reconnects
-                                 // must not re-evaluate this (see selectView
-                                 // for the case that already handles it)
-
 function connect() {
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
-  ws.onopen = () => {
-    footer.textContent = 'connected'; connDot.className = 'ok';
-    // Mirrors selectView()'s "leaving sim" logic for the page's initial
-    // view — if we're loading straight into Docs (the default), the sim
-    // shouldn't run until someone actually opens the Simulator tab.
-    if (!didInitialNavPause) {
-      didInitialNavPause = true;
-      if (currentView !== 'sim') pauseForNav();
-    }
-  };
+  ws.onopen = () => { footer.textContent = 'connected'; connDot.className = 'ok'; };
   ws.onclose = () => {
     footer.textContent = 'disconnected — retrying…';
     connDot.className = 'bad';
@@ -216,7 +167,7 @@ function applyStatus(status) {
   restartBtn.disabled = !restartAvailable;
   restartBtn.title = restartAvailable ? '' : `not available on backend "${status.backend}"`;
 
-  const realTab = document.querySelector('nav button[data-view="real"]');
+  const realTab = document.querySelector('nav button[data-drawer="real"]');
   const realPlaceholder = $('#real-placeholder');
   if (status.backend === 'real') {
     realTab.disabled = false;
@@ -323,37 +274,37 @@ function updateCommandUI() {
 
 // ---- tabs ----
 
-function selectView(name) {
-  if (name === currentView) return;
-  document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-  document.querySelectorAll('#tabs button').forEach((b) => b.classList.remove('active'));
-  $(`#view-${name}`).classList.add('active');
-  document.querySelector(`#tabs button[data-view="${name}"]`).classList.add('active');
-  // The control sidebar (and its keyboard shortcuts) only make sense while
-  // actively driving the robot — Simulator or Real-robot — not while
-  // reading Docs, which gets the full viewport width instead.
-  keysArmed = name === 'sim' || name === 'real';
-  document.body.classList.toggle('controls-active', keysArmed);
+// A drawer (Docs, later Real-robot) slides in OVER the permanently-mounted
+// Simulator — see the CSS-level comment in index.html. Only one open at a
+// time; clicking the already-open drawer's button retracts it instead of
+// re-opening it (the toggle behavior asked for). Keyboard shortcuts are
+// armed only while no drawer is open, so reading Docs can't accidentally
+// drive the robot.
+let openDrawerName = null;
 
-  const leavingSim = currentView === 'sim';
-  const enteringSim = name === 'sim';
-  currentView = name;
-
-  // Pause the instant nobody could be watching the sim, and only resume
-  // once someone actually opens the Simulator tab again — see the block
-  // comment above `currentView`'s declaration for why this pauses but does
-  // NOT touch the iframe's DOM.
-  if (leavingSim) {
-    pauseForNav();
-  }
-  if (enteringSim) {
-    mountSimIframe();
-    resumeFromNavIfOurs();
-  }
+function setKeysArmed() {
+  keysArmed = openDrawerName === null;
 }
 
-document.querySelectorAll('#tabs button').forEach((btn) => {
-  btn.addEventListener('click', () => { if (!btn.disabled) selectView(btn.dataset.view); });
+function closeDrawer() {
+  if (!openDrawerName) return;
+  document.getElementById(`drawer-${openDrawerName}`).classList.remove('open');
+  document.querySelector(`#tabs button[data-drawer="${openDrawerName}"]`).classList.remove('active');
+  openDrawerName = null;
+  setKeysArmed();
+}
+
+function openDrawer(name) {
+  if (openDrawerName === name) { closeDrawer(); return; }
+  closeDrawer();
+  document.getElementById(`drawer-${name}`).classList.add('open');
+  document.querySelector(`#tabs button[data-drawer="${name}"]`).classList.add('active');
+  openDrawerName = name;
+  setKeysArmed();
+}
+
+document.querySelectorAll('#tabs button[data-drawer]').forEach((btn) => {
+  btn.addEventListener('click', () => { if (!btn.disabled) openDrawer(btn.dataset.drawer); });
 });
 
 // ---- controls panel buttons ----
@@ -804,11 +755,10 @@ async function boot() {
     if (binding.action === 'switch' && binding.policy) keyByPolicy[binding.policy] = key;
   }
 
-  // Not mounted here on purpose: the iframe is only created on demand, when
-  // the Simulator tab is actually selected — see mountSimIframe()/
-  // selectView(). Docs is the default tab, so nothing should connect to
-  // viser (or run the sim) until the user asks to see it.
+  // The Simulator is the permanent base layer (see the block comment near
+  // mountSimIframe()) — mount it once, right here at boot, and never again.
   viserPort = config.viser_port;
+  mountSimIframe();
 
   // Clamp the HUDs (and, via commandRanges, the arrow keys) to the exact
   // velocity envelope this policy was trained across (env_cfg.commands.ranges
@@ -823,8 +773,9 @@ async function boot() {
   initPopovers();
 
   connect();
-  // keysArmed starts false (Docs is the default tab) and flips on whenever
-  // the Simulator/Real-robot tab is selected — see selectView().
+  // keysArmed starts true — no drawer is open at boot, so the (always-
+  // mounted) Simulator is what's showing; see openDrawer()/closeDrawer().
+  setKeysArmed();
 }
 
 boot();

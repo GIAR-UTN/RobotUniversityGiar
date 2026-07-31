@@ -79,20 +79,33 @@
   nav button:disabled{opacity:.45; cursor:not-allowed;}
 
   main{flex:1; display:flex; min-height:0;}
+  /* The Simulator is a permanent base layer — it is mounted once and never
+     hidden, resized, or torn down again. Earlier attempts that swapped it
+     out of view (tab switching, then iframe removal) both froze the
+     renderer under real host load — destroying/resizing a live WebGL
+     context is expensive and, worse, can block the main thread for tens of
+     seconds. Docs (and, later, Real-robot) are drawers that slide in OVER
+     the simulator instead — the sim view itself is simply never touched. */
   #views{flex:1; position:relative; min-width:0;}
-  .view{position:absolute; inset:0; display:none;}
-  .view.active{display:block;}
+  .view{position:absolute; inset:0;}
   .view iframe{width:100%; height:100%; border:0;}
   .placeholder{
     display:flex; align-items:center; justify-content:center; height:100%;
     color:var(--muted); text-align:center; padding:2rem;
   }
 
-  /* Sidebar + keyboard shortcuts are active while Simulator or Real-robot is
-     the current tab — Docs gets the full viewport width and no shortcuts;
-     see selectView() in app.js. */
-  #panel{ display:none; }
-  body.controls-active #panel{ display:block; }
+  .drawer{
+    position:absolute; inset:0 auto 0 0; width:min(920px, 84vw);
+    background:var(--bg); border-right:1px solid var(--line);
+    box-shadow:0 0 40px var(--cap-shadow);
+    transform:translateX(-100%); transition:transform .22s ease;
+    z-index:5;
+  }
+  .drawer.open{transform:translateX(0);}
+  .drawer iframe{width:100%; height:100%; border:0;}
+
+  /* The controls panel is always visible now — the simulator it drives is
+     always the base layer, so there's no "wrong tab" state to hide it for. */
   #panel{
     width:280px; flex:none; border-left:1px solid var(--line); background:var(--bg-raised);
     padding:.9rem; overflow-y:auto; overflow-x:hidden; outline:none;
@@ -212,19 +225,18 @@
 <header>
   <h1>LeggedGym-Ex — Control Web</h1>
   <nav id="tabs">
-    <button data-view="docs" class="active">Docs</button>
-    <button data-view="sim">Simulator</button>
-    <button data-view="real" disabled title="requires hardware">Real robot</button>
+    <button data-drawer="docs">Docs</button>
+    <button data-drawer="real" disabled title="requires hardware">Real robot</button>
   </nav>
 </header>
 
 <main>
   <div id="views">
-    <div class="view active" id="view-docs"><iframe src="/docs/index.html"></iframe></div>
     <div class="view" id="view-sim"></div>
-    <div class="view" id="view-real">
+    <aside class="drawer" id="drawer-docs"><iframe src="/docs/index.html"></iframe></aside>
+    <aside class="drawer" id="drawer-real">
       <div class="placeholder" id="real-placeholder">Real-robot view unavailable — see reason below.</div>
-    </div>
+    </aside>
   </div>
 
   <div id="panel" tabindex="0">
