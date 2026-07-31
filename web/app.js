@@ -617,8 +617,19 @@ function setKeycapActive(key, active) {
 // can't scroll the panel out from under the user.
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ', 'PageUp', 'PageDown', 'Home', 'End']);
 
+// The Create Policy form (and any other text/number/select field in the
+// panel) needs to receive normal typing — 'p', 'r', '0'-'9', the arrow
+// keys, and space are all bound shortcuts that would otherwise fire
+// instead of being typed. `keysArmed` alone isn't enough to prevent that:
+// it's about which VIEW has focus (sim vs. a drawer), not about what's
+// focused within the panel.
+function isTypingTarget(e) {
+  const t = e.target;
+  return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+}
+
 document.addEventListener('keydown', (e) => {
-  if (!keysArmed) return;
+  if (!keysArmed || isTypingTarget(e)) return;
   if (SCROLL_KEYS.has(e.key)) e.preventDefault();
   const binding = keymap[e.key];
   if (!binding) return;
@@ -636,6 +647,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('keyup', (e) => {
+  if (isTypingTarget(e)) return;
   setKeycapActive(e.key, false);
   const binding = keymap[e.key];
   if (!binding || binding.action !== 'move') return;
