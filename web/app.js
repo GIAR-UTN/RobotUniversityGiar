@@ -17,20 +17,31 @@ let keysArmed = false; // true while the Simulator/Real-robot tab is active —
                         // keyboard shortcuts always work in that mode, and
                         // never while reading Docs; see selectView() below
 
-// ---- simulator connect/disconnect on tab switch ----
+// ---- simulator pause on tab switch ----
 // Leaving the Simulator tab used to leave its viser <iframe> alive forever —
 // still WebSocket-connected and rendering WebGL in the background, competing
 // for CPU/GPU with the page you're actually looking at (this is what made
 // the page unresponsive and, worse, made it impossible to click back to
-// Docs — see HANDOFF_control_web.md's post-merge incident note). Since
-// ControlService.pause()/resume() already halt the ENTIRE sim loop
-// server-side (tick() returns None, so physics stepping and the viser scene
-// update are both skipped — see service.py), the fix is to mirror that on
-// the frontend: destroy the iframe (which closes its own WebSocket and
-// frees GPU/CPU instantly) whenever nobody could possibly be watching it,
-// and recreate it fresh on return.
+// Docs — see HANDOFF_control_web.md's post-merge incident note).
+//
+// The first version of this fix also destroyed the iframe (`.remove()`) on
+// leaving Simulator, to free its WebGL context. That backfired badly: tearing
+// down a live WebGL context synchronously froze the renderer hard (~180%
+// CPU, unresponsive for 40+ seconds) under any real host load — worse than
+// the bug it was fixing. DO NOT reintroduce iframe removal/recreation here.
+//
+// The part that's actually safe AND does the real work is
+// ControlService.pause()/resume(): tick() returns None while paused, so the
+// server stops stepping physics AND stops pushing new scene data to viser
+// (service.py) — that's the literal "machinery" the user wanted stopped, and
+// it doesn't touch the DOM at all. The iframe itself is mounted once
+// (lazily, on first visit to Simulator, so Docs-only sessions never connect
+// to viser) and from then on is left alone; the existing `.view`/`.view
+// .active` CSS (`display:none` on the inactive tab) already stops it from
+// being painted, and with no new data flowing in while paused there's little
+// left for it to do in the background.
 let currentView = 'docs'; // matches the tab marked .active in index.html
-let simIframeEl = null;
+let simIframeMounted = false;
 let viserPort = null; // filled in from /config at boot
 let autoPausedByNav = false; // true only if THIS code paused the sim on nav
                               // away — so returning to Simulator doesn't
@@ -38,17 +49,11 @@ let autoPausedByNav = false; // true only if THIS code paused the sim on nav
                               // on purpose before leaving
 
 function mountSimIframe() {
-  if (simIframeEl || !viserPort) return;
+  if (simIframeMounted || !viserPort) return;
   const iframe = document.createElement('iframe');
   iframe.src = `http://localhost:${viserPort}/`;
   $('#view-sim').appendChild(iframe);
-  simIframeEl = iframe;
-}
-
-function unmountSimIframe() {
-  if (!simIframeEl) return;
-  simIframeEl.remove();
-  simIframeEl = null;
+  simIframeMounted = true;
 }
 
 // Pausing when nobody's driving is exactly the "not manually paused" check
@@ -334,11 +339,11 @@ function selectView(name) {
   const enteringSim = name === 'sim';
   currentView = name;
 
-  // Disconnect/pause the instant nobody could be watching the sim, and only
-  // reconnect/resume once someone actually opens the Simulator tab again —
-  // see the block comment above `currentView`'s declaration.
+  // Pause the instant nobody could be watching the sim, and only resume
+  // once someone actually opens the Simulator tab again — see the block
+  // comment above `currentView`'s declaration for why this pauses but does
+  // NOT touch the iframe's DOM.
   if (leavingSim) {
-    unmountSimIframe();
     pauseForNav();
   }
   if (enteringSim) {
