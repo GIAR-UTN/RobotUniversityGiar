@@ -24,6 +24,7 @@ from .adapter import RobotAdapter, Lifecycle
 from .safety import SafetyGovernor
 from .selector import Selector
 from .supervisor import PolicySupervisor
+from .training import TrainingManager
 
 
 class ControlService:
@@ -33,11 +34,13 @@ class ControlService:
         supervisor: PolicySupervisor,
         safety: SafetyGovernor,
         selector: Optional[Selector] = None,
+        training: Optional[TrainingManager] = None,
     ):
         self.adapter = adapter
         self.supervisor = supervisor
         self.safety = safety
         self.selector = selector
+        self.training = training
         self.paused = False
         # Restart only *records* intent, same shape as PolicySupervisor's
         # request_switch — the sim loop owns `obs` (the raw observation
@@ -74,7 +77,60 @@ class ControlService:
             s["command"] = {"vx": vx, "vy": vy, "yaw": yaw}
         if hasattr(self.adapter, "random_events"):
             s["random_events"] = self.adapter.random_events
+        if self.training is not None:
+            s["training_jobs"] = self.training.status()
         return s
+
+    # ---- training a new policy (see legged_gym/control/training.py) ----
+
+    def _compatible_training_tasks(self) -> Optional[list]:
+        """Only tasks whose observation space matches the currently-loaded
+        policies are offered — a trained policy that doesn't match can't be
+        hot-loaded into this running supervisor (PolicySupervisor requires
+        one shared observation space; see supervisor.py's ObsSpec check).
+        Returns None (meaning "don't filter") if the current env's obs count
+        can't be determined."""
+        env = getattr(self.adapter, "env", None)
+        num_obs = getattr(getattr(env, "cfg", None), "env", None)
+        num_obs = getattr(num_obs, "num_observations", None)
+        if num_obs is None:
+            return None
+        from legged_gym.utils import task_registry
+        compatible = []
+        for name in task_registry.task_classes:
+            try:
+                env_cfg, _ = task_registry.get_cfgs(name)
+            except Exception:  # noqa: BLE001 - a broken/unregistered cfg shouldn't break the catalog
+                continue
+            if getattr(env_cfg.env, "num_observations", None) == num_obs:
+                compatible.append(name)
+        return compatible
+
+    def training_catalog(self) -> dict:
+        """Everything the Create Policy panel needs to render its form and
+        compose a command: trainable tasks compatible with this running sim,
+        and every currently-loaded policy that's clonable (has a known
+        checkpoint) as a fine-tuning base."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        return self.training.catalog(compatible_tasks=self._compatible_training_tasks())
+
+    def start_training(self, policy_name: str, task: str, max_iterations: int, num_envs: int = 64,
+                        base_policy: Optional[str] = None,
+                        cmd_vx: Optional[list] = None, cmd_vy: Optional[list] = None,
+                        cmd_yaw: Optional[list] = None) -> str:
+        """Launches a new training job; returns its job id. Training runs
+        out-of-process (see TrainingManager) — this call returns immediately,
+        the job's progress shows up in status()['training_jobs'], and the
+        resulting policy is hot-loaded into the supervisor automatically once
+        it finishes (see swap_experiment.py's per-tick poll_finished_training()
+        drain, mirroring how restart_requested is drained today)."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        return self.training.start(
+            policy_name=policy_name, task=task, max_iterations=max_iterations, num_envs=num_envs,
+            base_policy=base_policy, cmd_vx=cmd_vx, cmd_vy=cmd_vy, cmd_yaw=cmd_yaw,
+        )
 
     def pause(self) -> None:
         self.paused = True

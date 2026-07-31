@@ -217,6 +217,50 @@
     margin-bottom:.4rem; cursor:pointer; user-select:none;
   }
 
+  /* ---- create-policy form ---- */
+  .field-row{display:flex; flex-direction:column; gap:.2rem; margin-bottom:.55rem;}
+  .field-row label{font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.03em;}
+  .field-row select, .field-row input[type="text"], .field-row input[type="number"]{
+    font:inherit; font-size:.85rem; padding:.35rem .45rem; border-radius:5px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); width:100%;
+  }
+  .range-pair{display:flex; gap:.4rem; align-items:center;}
+  .range-pair input{width:0; flex:1;}
+  .range-pair span{color:var(--muted); font-size:.75rem;}
+  .field-hint{font-size:.68rem; color:var(--muted); margin:0;}
+  #train-cmd-preview{
+    display:block; white-space:pre-wrap; word-break:break-word;
+    background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .55rem; font:11px/1.4 ui-monospace,monospace; color:var(--ink-soft);
+    margin:.3rem 0 .6rem;
+  }
+  #train-error{color:var(--danger); font-size:.76rem; margin:0 0 .5rem; display:none;}
+  #train-error.show{display:block;}
+  #btn-start-training{
+    width:100%; padding:.5rem .6rem; border-radius:6px; border:1px solid var(--accent2);
+    background:var(--accent2); color:var(--accent-ink); font:600 .85rem/1 inherit; cursor:pointer;
+  }
+  #btn-start-training:disabled{opacity:.5; cursor:not-allowed;}
+  #btn-new-policy{
+    width:100%; margin-bottom:.6rem; padding:.5rem .6rem; border-radius:6px;
+    border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
+  }
+  #create-policy-form[hidden]{display:none;}
+  #training-jobs{display:flex; flex-direction:column; gap:.35rem; margin-top:.6rem;}
+  .job-row{
+    border:1px solid var(--line); border-radius:6px; padding:.4rem .5rem; font-size:.76rem;
+  }
+  .job-row .job-head{display:flex; justify-content:space-between; align-items:center; gap:.4rem;}
+  .job-row .job-name{font-weight:600;}
+  .job-row .job-status{font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted);}
+  .job-row.running .job-status{color:var(--accent2);}
+  .job-row.failed .job-status{color:var(--danger);}
+  .job-row .job-cmd{
+    margin-top:.25rem; font:10px/1.3 ui-monospace,monospace; color:var(--muted);
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .job-row .job-error{margin-top:.25rem; color:var(--danger); font-size:.7rem;}
+
   footer{padding:.35rem 1rem; font-size:.72rem; color:var(--muted); border-top:1px solid var(--line);}
 </style>
 </head>
@@ -385,6 +429,72 @@
       <div class="section-body">
         <label class="toggle-row"><input type="checkbox" id="chk-push"> Random Pushes</label>
         <label class="toggle-row"><input type="checkbox" id="chk-auto-cmd"> Random Movement</label>
+      </div>
+    </section>
+
+    <section class="panel-section" data-section="training">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Create Policy</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>Trains a new policy asynchronously (a real subprocess, not a UI trick) and adds it to the Policies list above once it finishes. The command below is exactly what will run — nothing is hidden behind this form.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <button id="btn-new-policy" type="button">+ New policy&hellip;</button>
+        <form id="create-policy-form" hidden>
+          <div class="field-row">
+            <label for="train-name">Policy name</label>
+            <input type="text" id="train-name" placeholder="e.g. cautious_v2" autocomplete="off">
+          </div>
+          <div class="field-row">
+            <label for="train-base">Clone from (relative target)</label>
+            <select id="train-base">
+              <option value="">— from scratch —</option>
+            </select>
+            <p class="field-hint">Fine-tunes the chosen policy's weights instead of starting from random init.</p>
+          </div>
+          <div class="field-row">
+            <label for="train-task">Task</label>
+            <select id="train-task"></select>
+          </div>
+          <div class="field-row">
+            <label for="train-iters">Time budget (iterations)</label>
+            <input type="number" id="train-iters" min="1" step="1" value="500">
+          </div>
+          <div class="field-row">
+            <label for="train-envs">Parallel environments</label>
+            <input type="number" id="train-envs" min="1" step="1" value="64">
+          </div>
+          <div class="field-row">
+            <label>Command envelope — measurement targets (m/s, m/s, rad/s)</label>
+            <p class="field-hint">Linear X range</p>
+            <div class="range-pair">
+              <input type="number" id="train-vx-lo" step="0.1" placeholder="lo">
+              <span>&#8594;</span>
+              <input type="number" id="train-vx-hi" step="0.1" placeholder="hi">
+            </div>
+            <p class="field-hint">Linear Y range</p>
+            <div class="range-pair">
+              <input type="number" id="train-vy-lo" step="0.1" placeholder="lo">
+              <span>&#8594;</span>
+              <input type="number" id="train-vy-hi" step="0.1" placeholder="hi">
+            </div>
+            <p class="field-hint">Yaw range</p>
+            <div class="range-pair">
+              <input type="number" id="train-yaw-lo" step="0.1" placeholder="lo">
+              <span>&#8594;</span>
+              <input type="number" id="train-yaw-hi" step="0.1" placeholder="hi">
+            </div>
+            <p class="field-hint">Leave blank to keep the task's default ranges.</p>
+          </div>
+          <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
+          <code id="train-cmd-preview">python legged_gym/scripts/web_train.py &hellip;</code>
+          <p id="train-error"></p>
+          <button type="submit" id="btn-start-training">Start training</button>
+        </form>
+        <div id="training-jobs"></div>
       </div>
     </section>
   </div>

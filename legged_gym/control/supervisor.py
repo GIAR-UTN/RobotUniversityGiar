@@ -54,6 +54,14 @@ class PolicySupervisor:
     def cancel_pending_switch(self) -> None:
         self.pending_name = None
 
+    def add_policy(self, policy: Policy) -> None:
+        """Registers a newly-trained policy into the running supervisor —
+        the hot-load counterpart to loading policies at construction time.
+        Does not touch active/pending state; the new policy is simply
+        selectable from here on, same as any policy loaded at startup."""
+        policy.backend.reset()
+        self.policies[policy.name] = policy
+
     def confirm_pending_switch(self) -> bool:
         """SafetyGovernor calls this — and ONLY this — once it has decided
         the current instant is safe to switch. Begins a linear cross-fade

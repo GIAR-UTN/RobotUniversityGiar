@@ -13,6 +13,10 @@ let msgId = 1;
 let keymap = {};
 let keyByPolicy = {}; // policy name -> bound key, precomputed once at boot (not per render)
 let renderedPolicyNames = null; // policies list actually painted into the DOM right now
+let renderedTrainingJobsKey = null; // like renderedPolicyNames — dedupe key excluding elapsed_s
+                                     // (elapsed_s would otherwise change on every ~10Hz status
+                                     // push while a job is running and force a DOM rebuild every tick)
+let trainingCatalog = null; // {tasks, base_policies} — fetched once per connection via training_catalog
 let keysArmed = true; // true whenever no drawer is open over the simulator —
                        // keyboard shortcuts must not fire while reading Docs
                        // (e.g. arrow-key scrolling shouldn't drive the
@@ -90,10 +94,29 @@ function send(method, params = {}) {
   ws.send(JSON.stringify({ method, params, id: msgId++ }));
 }
 
+// send() is fire-and-forget (its reply is ignored — the next status push is
+// the source of truth, per the comment at the bottom of onmessage). The
+// Create Policy form needs an actual reply (the catalog to render the form,
+// or a job id / error from starting training), so it gets its own
+// promise-based call() that tracks replies by id.
+let pendingCalls = {}; // id -> {resolve, reject}
+
+function call(method, params = {}) {
+  return new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) { reject(new Error('not connected')); return; }
+    const id = msgId++;
+    pendingCalls[id] = { resolve, reject };
+    ws.send(JSON.stringify({ method, params, id }));
+  });
+}
+
 function connect() {
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
-  ws.onopen = () => { footer.textContent = 'connected'; connDot.className = 'ok'; };
+  ws.onopen = () => {
+    footer.textContent = 'connected'; connDot.className = 'ok';
+    refreshTrainingCatalog();
+  };
   ws.onclose = () => {
     footer.textContent = 'disconnected — retrying…';
     connDot.className = 'bad';
@@ -102,6 +125,12 @@ function connect() {
   ws.onerror = () => { connDot.className = 'bad'; };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
+    if (msg.id != null && pendingCalls[msg.id]) {
+      const { resolve, reject } = pendingCalls[msg.id];
+      delete pendingCalls[msg.id];
+      if ('error' in msg) reject(new Error(msg.error)); else resolve(msg.result);
+      return;
+    }
     if (msg.method === 'status') {
       // status() pushes at ~10Hz REGARDLESS of whether anything changed —
       // most ticks are identical to the last one. Skip all DOM work on a
@@ -201,6 +230,8 @@ function applyStatus(status) {
     cruiseYaw = status.command.yaw;
     updateCommandUI();
   }
+
+  renderTrainingJobs(status.training_jobs || []);
 }
 
 // ---- HUD rendering ----
@@ -738,6 +769,190 @@ function initPopovers() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && openPopover) closePopover();
   }, true);
+}
+
+// ---- create policy (training) ----
+// The whole point of this panel, per the user ask: never hide the actual
+// command behind the form — #train-cmd-preview always shows exactly what
+// ControlService.start_training()/TrainingManager.start() will run (see
+// legged_gym/control/training.py's display_command construction, which this
+// mirrors on purpose so the two never drift apart silently).
+
+const btnNewPolicy = $('#btn-new-policy');
+const createPolicyForm = $('#create-policy-form');
+const trainName = $('#train-name');
+const trainBase = $('#train-base');
+const trainTask = $('#train-task');
+const trainIters = $('#train-iters');
+const trainEnvs = $('#train-envs');
+const trainVxLo = $('#train-vx-lo'), trainVxHi = $('#train-vx-hi');
+const trainVyLo = $('#train-vy-lo'), trainVyHi = $('#train-vy-hi');
+const trainYawLo = $('#train-yaw-lo'), trainYawHi = $('#train-yaw-hi');
+const trainCmdPreview = $('#train-cmd-preview');
+const trainError = $('#train-error');
+const btnStartTraining = $('#btn-start-training');
+const trainingJobsEl = $('#training-jobs');
+
+function showTrainError(msg) {
+  trainError.textContent = msg;
+  trainError.classList.toggle('show', !!msg);
+}
+
+function refreshTrainingCatalog() {
+  call('training_catalog').then((catalog) => {
+    trainingCatalog = catalog;
+    const prevTask = trainTask.value, prevBase = trainBase.value;
+    trainTask.innerHTML = '';
+    for (const t of catalog.tasks) {
+      const opt = document.createElement('option');
+      opt.value = t; opt.textContent = t;
+      trainTask.appendChild(opt);
+    }
+    if (catalog.tasks.includes(prevTask)) trainTask.value = prevTask;
+
+    trainBase.innerHTML = '<option value="">— from scratch —</option>';
+    for (const p of catalog.base_policies) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.checkpoint ? p.name : `${p.name} (no checkpoint on this machine)`;
+      opt.disabled = !p.checkpoint;
+      trainBase.appendChild(opt);
+    }
+    if (catalog.base_policies.some((p) => p.name === prevBase)) trainBase.value = prevBase;
+
+    updateCommandPreview();
+  }).catch((e) => {
+    // Not fatal — the panel just can't populate its selects yet (e.g. the
+    // server doesn't have a TrainingManager configured at all). Silent:
+    // this is checked again on every reconnect.
+    console.warn('training_catalog unavailable:', e.message);
+  });
+}
+
+function rangePair(loEl, hiEl) {
+  const lo = loEl.value.trim(), hi = hiEl.value.trim();
+  if (lo === '' && hi === '') return null;
+  if (lo === '' || hi === '') return undefined; // incomplete — caller treats as a validation error
+  return [parseFloat(lo), parseFloat(hi)];
+}
+
+function composeTrainingParams() {
+  const name = trainName.value.trim();
+  const task = trainTask.value;
+  const iterations = parseInt(trainIters.value, 10);
+  const numEnvs = parseInt(trainEnvs.value, 10);
+  const base = trainBase.value || null;
+  const cmdVx = rangePair(trainVxLo, trainVxHi);
+  const cmdVy = rangePair(trainVyLo, trainVyHi);
+  const cmdYaw = rangePair(trainYawLo, trainYawHi);
+  return { name, task, iterations, numEnvs, base, cmdVx, cmdVy, cmdYaw };
+}
+
+function updateCommandPreview() {
+  const p = composeTrainingParams();
+  const parts = [
+    'python legged_gym/scripts/web_train.py',
+    `--task ${p.task || '<task>'}`,
+    `--name ${p.name || '<policy name>'}`,
+    `--max_iterations ${Number.isFinite(p.iterations) ? p.iterations : '<iterations>'}`,
+    `--num_envs ${Number.isFinite(p.numEnvs) ? p.numEnvs : '<num_envs>'}`,
+    '--headless --cpu',
+    '--result_path <assigned by the server>',
+  ];
+  if (p.base) {
+    const source = trainingCatalog?.base_policies.find((b) => b.name === p.base);
+    parts.push(`--from_checkpoint ${source?.checkpoint || '<' + p.base + "'s checkpoint>"}`);
+  }
+  if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
+  if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
+  if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);
+  trainCmdPreview.textContent = parts.join(' ');
+}
+
+btnNewPolicy.addEventListener('click', () => {
+  const opening = createPolicyForm.hidden;
+  createPolicyForm.hidden = !opening;
+  btnNewPolicy.textContent = opening ? 'Cancel' : '+ New policy…';
+  if (opening) { showTrainError(''); updateCommandPreview(); trainName.focus(); }
+});
+
+[trainName, trainBase, trainTask, trainIters, trainEnvs,
+ trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi].forEach((el) => {
+  el.addEventListener('input', updateCommandPreview);
+  el.addEventListener('change', updateCommandPreview);
+});
+
+createPolicyForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const p = composeTrainingParams();
+  if (!p.name) return showTrainError('Policy name is required.');
+  if (!p.task) return showTrainError('Pick a task.');
+  if (!Number.isFinite(p.iterations) || p.iterations <= 0) return showTrainError('Time budget must be a positive number of iterations.');
+  if (!Number.isFinite(p.numEnvs) || p.numEnvs <= 0) return showTrainError('Parallel environments must be positive.');
+  if (p.cmdVx === undefined || p.cmdVy === undefined || p.cmdYaw === undefined) {
+    return showTrainError('Fill in both ends of a command range, or leave the whole pair blank.');
+  }
+
+  showTrainError('');
+  btnStartTraining.disabled = true;
+  call('start_training', {
+    policy_name: p.name, task: p.task, max_iterations: p.iterations, num_envs: p.numEnvs,
+    base_policy: p.base, cmd_vx: p.cmdVx, cmd_vy: p.cmdVy, cmd_yaw: p.cmdYaw,
+  }).then(() => {
+    createPolicyForm.reset();
+    createPolicyForm.hidden = true;
+    btnNewPolicy.textContent = '+ New policy…';
+  }).catch((e) => {
+    showTrainError(e.message);
+  }).finally(() => {
+    btnStartTraining.disabled = false;
+  });
+});
+
+function renderTrainingJobs(jobs) {
+  // Dedupe on everything EXCEPT elapsed_s — elapsed_s ticks up every status
+  // push while a job runs, and rebuilding this DOM at ~10Hz for that alone
+  // would reintroduce exactly the perf issue the policy-list dedupe above
+  // already exists to avoid (see HANDOFF_control_web.md's post-merge
+  // incident note). A running job's card just doesn't show a live timer.
+  const key = jobs.map((j) => `${j.id}:${j.status}:${j.error || ''}`).join('|');
+  if (key === renderedTrainingJobsKey) return;
+  const justFinished = renderedTrainingJobsKey !== null &&
+    jobs.some((j) => j.status === 'done' && !renderedTrainingJobsKey.includes(`${j.id}:done`));
+  renderedTrainingJobsKey = key;
+
+  trainingJobsEl.innerHTML = '';
+  for (const job of jobs) {
+    const row = document.createElement('div');
+    row.className = `job-row ${job.status}`;
+    const head = document.createElement('div');
+    head.className = 'job-head';
+    const name = document.createElement('span');
+    name.className = 'job-name';
+    name.textContent = job.policy_name;
+    const statusEl = document.createElement('span');
+    statusEl.className = 'job-status';
+    statusEl.textContent = job.status === 'running' ? 'training…' : `${job.status} (${job.elapsed_s}s)`;
+    head.appendChild(name);
+    head.appendChild(statusEl);
+    row.appendChild(head);
+    const cmd = document.createElement('div');
+    cmd.className = 'job-cmd';
+    cmd.textContent = job.command;
+    row.appendChild(cmd);
+    if (job.error) {
+      const err = document.createElement('div');
+      err.className = 'job-error';
+      err.textContent = job.error;
+      row.appendChild(err);
+    }
+    trainingJobsEl.appendChild(row);
+  }
+
+  // A job finishing means a new policy just got hot-loaded (see
+  // swap_experiment.py's drain_finished_training()) — refresh the catalog
+  // so it's immediately choosable as a fine-tuning base too.
+  if (justFinished) refreshTrainingCatalog();
 }
 
 // ---- boot ----

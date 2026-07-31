@@ -33,7 +33,7 @@ from legged_gym.utils.props import default_ball_prop
 
 from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
-    load_policy, damping_policy,
+    load_policy, damping_policy, TrainingManager,
 )
 from legged_gym.control.transport import ControlServer
 
@@ -115,7 +115,45 @@ def main():
 
     supervisor = PolicySupervisor(policies, active=active_name, ramp_ticks=cli.ramp_ticks)
     safety = SafetyGovernor(supervisor, damping_policy_name="damping")
-    service = ControlService(adapter, supervisor, safety, selector=None)
+
+    # Lets the control web's "Create Policy" panel launch new training runs
+    # (as subprocesses — see legged_gym/control/training.py) and, once one
+    # finishes, hot-load the result here as a new switchable policy. Every
+    # policy loaded via --policy above was trained on this same task's
+    # observation space, so it's registered as a "clone from" source too —
+    # see the poll loop below for how a *newly* trained policy gets
+    # registered the same way once it completes.
+    training = TrainingManager()
+    for name, path in policy_paths.items():
+        training.register_source(name, task=args.task, checkpoint=path)
+    service = ControlService(adapter, supervisor, safety, selector=None, training=training)
+
+    hidden_size_for_new_policies = hidden_size  # matches G1RoughCfgPPO.policy.rnn_hidden_size (see above)
+
+    def drain_finished_training():
+        """Call once per sim tick. Any job TrainingManager reports done gets
+        loaded and registered into the running supervisor right here — the
+        same 'web layer requests, sim-loop thread executes' boundary as
+        restart_requested (see ControlService.restart()'s docstring) —
+        loading a torch.jit module isn't safety-relevant, but it does touch
+        the same `policies` dict the control loop reads every tick, so it
+        belongs on this thread, not the socket thread."""
+        for job in training.poll():
+            try:
+                new_policy = load_policy(
+                    job.policy_name, job.policy_path,
+                    num_obs=env_cfg.env.num_observations,
+                    hidden_size=hidden_size_for_new_policies, num_envs=env.num_envs,
+                    description=f"Trained via the control web ({job.command})",
+                )
+                supervisor.add_policy(new_policy)
+                training.register_source(job.policy_name, task=job.task, checkpoint=job.policy_path)
+                print(f"[training] '{job.policy_name}' finished and is now selectable "
+                      f"(job {job.id}, exported to {job.policy_path})")
+            except Exception as e:  # noqa: BLE001 - a bad export must not crash the sim loop
+                job.status = "failed"
+                job.error = f"training finished but the policy failed to load: {e}"
+                print(f"[training] job {job.id} ('{job.policy_name}') failed to load: {e}")
 
     control_server = None
     if cli.control_port is not None:
@@ -221,6 +259,8 @@ def main():
             adapter.reset()
             obs = adapter.get_observations()
             safety.reset()
+
+        drain_finished_training()
 
         action = service.tick(obs)
         if action is not None:

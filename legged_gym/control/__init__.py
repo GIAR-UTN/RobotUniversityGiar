@@ -20,6 +20,7 @@ from .supervisor import PolicySupervisor
 from .safety import SafetyGovernor
 from .selector import Selector, TiltRecoverySelector
 from .service import ControlService
+from .training import TrainingManager
 
 __all__ = [
     "Lifecycle", "RobotState", "RobotAdapter", "SimAdapter",
@@ -28,4 +29,5 @@ __all__ = [
     "SafetyGovernor",
     "Selector", "TiltRecoverySelector",
     "ControlService",
+    "TrainingManager",
 ]
