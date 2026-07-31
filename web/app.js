@@ -17,6 +17,56 @@ let keysArmed = false; // true while the Simulator/Real-robot tab is active —
                         // keyboard shortcuts always work in that mode, and
                         // never while reading Docs; see selectView() below
 
+// ---- simulator connect/disconnect on tab switch ----
+// Leaving the Simulator tab used to leave its viser <iframe> alive forever —
+// still WebSocket-connected and rendering WebGL in the background, competing
+// for CPU/GPU with the page you're actually looking at (this is what made
+// the page unresponsive and, worse, made it impossible to click back to
+// Docs — see HANDOFF_control_web.md's post-merge incident note). Since
+// ControlService.pause()/resume() already halt the ENTIRE sim loop
+// server-side (tick() returns None, so physics stepping and the viser scene
+// update are both skipped — see service.py), the fix is to mirror that on
+// the frontend: destroy the iframe (which closes its own WebSocket and
+// frees GPU/CPU instantly) whenever nobody could possibly be watching it,
+// and recreate it fresh on return.
+let currentView = 'docs'; // matches the tab marked .active in index.html
+let simIframeEl = null;
+let viserPort = null; // filled in from /config at boot
+let autoPausedByNav = false; // true only if THIS code paused the sim on nav
+                              // away — so returning to Simulator doesn't
+                              // resume a sim the user paused manually
+                              // on purpose before leaving
+
+function mountSimIframe() {
+  if (simIframeEl || !viserPort) return;
+  const iframe = document.createElement('iframe');
+  iframe.src = `http://localhost:${viserPort}/`;
+  $('#view-sim').appendChild(iframe);
+  simIframeEl = iframe;
+}
+
+function unmountSimIframe() {
+  if (!simIframeEl) return;
+  simIframeEl.remove();
+  simIframeEl = null;
+}
+
+// Pausing when nobody's driving is exactly the "not manually paused" check
+// applied uniformly for both the boot-time and the tab-switch cases.
+function pauseForNav() {
+  if (!latestStatus || !latestStatus.paused) {
+    autoPausedByNav = true;
+    send('pause');
+  }
+}
+
+function resumeFromNavIfOurs() {
+  if (autoPausedByNav) {
+    autoPausedByNav = false;
+    send('resume');
+  }
+}
+
 const $ = (sel) => document.querySelector(sel);
 const panel = $('#panel');
 const footer = $('#footer');
@@ -69,10 +119,25 @@ function send(method, params = {}) {
   ws.send(JSON.stringify({ method, params, id: msgId++ }));
 }
 
+let didInitialNavPause = false; // one-shot — only the very first successful
+                                 // connection decides whether to auto-pause
+                                 // for the boot-time view; later reconnects
+                                 // must not re-evaluate this (see selectView
+                                 // for the case that already handles it)
+
 function connect() {
   const url = `ws://${location.host}/ws`;
   ws = new WebSocket(url);
-  ws.onopen = () => { footer.textContent = 'connected'; connDot.className = 'ok'; };
+  ws.onopen = () => {
+    footer.textContent = 'connected'; connDot.className = 'ok';
+    // Mirrors selectView()'s "leaving sim" logic for the page's initial
+    // view — if we're loading straight into Docs (the default), the sim
+    // shouldn't run until someone actually opens the Simulator tab.
+    if (!didInitialNavPause) {
+      didInitialNavPause = true;
+      if (currentView !== 'sim') pauseForNav();
+    }
+  };
   ws.onclose = () => {
     footer.textContent = 'disconnected — retrying…';
     connDot.className = 'bad';
@@ -254,6 +319,7 @@ function updateCommandUI() {
 // ---- tabs ----
 
 function selectView(name) {
+  if (name === currentView) return;
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.remove('active'));
   $(`#view-${name}`).classList.add('active');
@@ -263,6 +329,22 @@ function selectView(name) {
   // reading Docs, which gets the full viewport width instead.
   keysArmed = name === 'sim' || name === 'real';
   document.body.classList.toggle('controls-active', keysArmed);
+
+  const leavingSim = currentView === 'sim';
+  const enteringSim = name === 'sim';
+  currentView = name;
+
+  // Disconnect/pause the instant nobody could be watching the sim, and only
+  // reconnect/resume once someone actually opens the Simulator tab again —
+  // see the block comment above `currentView`'s declaration.
+  if (leavingSim) {
+    unmountSimIframe();
+    pauseForNav();
+  }
+  if (enteringSim) {
+    mountSimIframe();
+    resumeFromNavIfOurs();
+  }
 }
 
 document.querySelectorAll('#tabs button').forEach((btn) => {
@@ -717,10 +799,11 @@ async function boot() {
     if (binding.action === 'switch' && binding.policy) keyByPolicy[binding.policy] = key;
   }
 
-  const simView = $('#view-sim');
-  const iframe = document.createElement('iframe');
-  iframe.src = `http://localhost:${config.viser_port}/`;
-  simView.appendChild(iframe);
+  // Not mounted here on purpose: the iframe is only created on demand, when
+  // the Simulator tab is actually selected — see mountSimIframe()/
+  // selectView(). Docs is the default tab, so nothing should connect to
+  // viser (or run the sim) until the user asks to see it.
+  viserPort = config.viser_port;
 
   // Clamp the HUDs (and, via commandRanges, the arrow keys) to the exact
   // velocity envelope this policy was trained across (env_cfg.commands.ranges
