@@ -78,6 +78,19 @@ class ControlServer:
         self.app = FastAPI()
         self.app.add_api_websocket_route("/ws", self._ws_endpoint)
 
+        # StaticFiles (mounted by swap_experiment.py for web/ and docs/)
+        # sends no Cache-Control header by default, so browsers fall back to
+        # heuristic caching and can keep serving a stale web/app.js or
+        # index.html for a long time — even across a hard reload, since a
+        # conditional request isn't guaranteed either. This is a local dev
+        # tool whose files change every run; there is never a reason to
+        # cache them. Force revalidation-free fetches on every request.
+        @self.app.middleware("http")
+        async def _no_cache(request, call_next):
+            response = await call_next(request)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
         if host not in ("localhost", "127.0.0.1", "::1"):
             print(f"[ControlServer] WARNING: binding to non-localhost host "
                   f"'{host}' with no auth — commands (incl. request_switch, "
