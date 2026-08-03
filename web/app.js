@@ -245,10 +245,21 @@ function applyStatus(status) {
 // shows up automatically.
 const telemetryBody = $('#telemetry-body');
 
+// Fixed decimal places (toFixed) already keeps digit COUNT constant; the
+// remaining source of horizontal jitter is the sign — "-0.033" is one
+// character wider than "0.033" — so a value crossing zero was shifting
+// everything after it in the row. Reserving a sign column (a leading
+// space for non-negative numbers) keeps every number the same width
+// regardless of sign.
+function padNum(v) {
+  const s = v.toFixed(3);
+  return v < 0 ? s : ` ${s}`;
+}
+
 function formatTeleValue(value, unit) {
   if (value == null) return '–';
-  if (Array.isArray(value)) return `[${value.map((v) => v.toFixed(3)).join(', ')}] ${unit}`;
-  return `${value.toFixed(3)} ${unit}`;
+  if (Array.isArray(value)) return `[${value.map(padNum).join(', ')}] ${unit}`;
+  return `${padNum(value)} ${unit}`;
 }
 
 function renderTelemetry(telemetry) {
@@ -256,33 +267,42 @@ function renderTelemetry(telemetry) {
     telemetryBody.innerHTML = '<p class="field-hint">Waiting for data&hellip;</p>';
     return;
   }
-  telemetryBody.innerHTML = '';
+  // Update existing rows/cells in place rather than rebuilding the DOM —
+  // the label/badge/note text never changes tick to tick, only the value,
+  // so only the value node's textContent needs to touch the layout at all.
+  // (One-time: clear the "Waiting for data…" placeholder on first arrival.)
+  if (!telemetryBody.dataset.ready) {
+    telemetryBody.innerHTML = '';
+    telemetryBody.dataset.ready = '1';
+  }
   for (const [key, t] of Object.entries(telemetry)) {
-    const row = document.createElement('div');
-    row.className = 'tele-row';
-    const head = document.createElement('div');
-    head.className = 'tele-head';
-    const label = document.createElement('span');
-    label.className = 'tele-label';
-    label.textContent = t.label;
-    const badge = document.createElement('span');
-    badge.className = `tele-badge ${t.source}`;
-    badge.textContent = t.source === 'sensor' ? 'sensor' : 'sim';
-    const left = document.createElement('span');
-    left.append(label, ' ', badge);
-    const val = document.createElement('span');
-    val.className = 'tele-val';
-    val.textContent = formatTeleValue(t.value, t.unit);
-    head.append(left, val);
-    row.appendChild(head);
-    if (t.note) {
-      const note = document.createElement('p');
-      note.className = 'tele-note';
-      note.textContent = t.note;
-      row.appendChild(note);
+    let row = telemetryBody.querySelector(`.tele-row[data-key="${key}"]`);
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'tele-row';
+      row.dataset.key = key;
+      const labelRow = document.createElement('div');
+      labelRow.className = 'tele-label-row';
+      const label = document.createElement('span');
+      label.className = 'tele-label';
+      label.textContent = t.label;
+      const badge = document.createElement('span');
+      badge.className = `tele-badge ${t.source}`;
+      badge.textContent = t.source === 'sensor' ? 'sensor' : 'sim';
+      labelRow.append(label, badge);
+      const val = document.createElement('span');
+      val.className = 'tele-val';
+      row.appendChild(labelRow);
+      row.appendChild(val);
+      if (t.note) {
+        const note = document.createElement('p');
+        note.className = 'tele-note';
+        note.textContent = t.note;
+        row.appendChild(note);
+      }
+      telemetryBody.appendChild(row);
     }
-    row.dataset.key = key;
-    telemetryBody.appendChild(row);
+    row.querySelector('.tele-val').textContent = formatTeleValue(t.value, t.unit);
   }
 }
 

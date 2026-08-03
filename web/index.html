@@ -269,14 +269,27 @@
   .field-hint{font-size:.68rem; color:var(--muted); margin:0;}
 
   /* ---- live telemetry panel ---- */
+  /* Label/badge and value are on separate rows, and each row's height/
+     content never depends on the OTHER row's width — a value ticking at
+     ~10Hz (sign flips, digit-count noise) must never make the label row
+     reflow, and vice versa. See .tele-val below for how the value itself
+     is kept from jittering horizontally as numbers change. */
   .tele-row{padding:.35rem 0; border-bottom:1px solid var(--line);}
   .tele-row:last-child{border-bottom:none;}
-  .tele-head{display:flex; align-items:baseline; justify-content:space-between; gap:.4rem;}
+  .tele-label-row{display:flex; align-items:center; gap:.4rem; flex-wrap:wrap;}
   .tele-label{font-size:.78rem; font-weight:600;}
-  .tele-val{font:600 .8rem/1 ui-monospace,monospace; color:var(--ink-soft);}
+  .tele-val{
+    display:block; margin-top:.15rem; font:600 .8rem/1.3 ui-monospace,monospace;
+    color:var(--ink-soft);
+    /* Fixed-width digits (tabular-nums) + JS always reserving a sign column
+       (see formatTeleValue/padNum in app.js) so a number crossing zero, or
+       gaining/losing a digit, changes in place instead of shifting every
+       character after it — "the numbers update, nothing moves". */
+    font-variant-numeric:tabular-nums; white-space:pre-wrap; word-break:break-all;
+  }
   .tele-badge{
     font-size:.6rem; padding:1px 5px; border-radius:3px; text-transform:uppercase;
-    letter-spacing:.03em; font-weight:700; white-space:nowrap;
+    letter-spacing:.03em; font-weight:700; white-space:nowrap; flex:none;
   }
   .tele-badge.sim_ground_truth{background:color-mix(in srgb, var(--accent) 20%, transparent); color:var(--accent);}
   .tele-badge.sensor{background:color-mix(in srgb, var(--accent2) 20%, transparent); color:var(--accent2);}
