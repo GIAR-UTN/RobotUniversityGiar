@@ -171,32 +171,69 @@ class TrainingManager:
         except OSError:
             pass  # best-effort — a failed write must not crash the sim loop
 
-    def estimate(self, max_iterations: int, num_envs: int) -> dict:
-        """Seconds estimate for a (max_iterations, num_envs) job on THIS
-        machine, from this machine's own completed-job history — pooled
-        across tasks (same robot/obs/action space, so iteration cost is the
-        same regardless of which reward function is being trained). Returns
-        basis='none' with no seconds figure when there's no history yet,
-        rather than inventing a number with false precision — see
-        system_info()'s suggested_num_envs for a sizing starting point in
-        that case."""
-        max_iterations = max(1, int(max_iterations))
+    def estimate(self, num_envs: int, max_iterations: Optional[int] = None,
+                 max_minutes: Optional[float] = None) -> dict:
+        """Estimated (iterations, seconds) for a job on THIS machine, from
+        this machine's own completed-job history — pooled across tasks
+        (dominated by robot/obs/action space size, not which reward
+        function is being trained, so cost-per-iteration is comparable
+        across tasks). Works with either or both of max_iterations/
+        max_minutes, mirroring the actual job's own 'whichever hits first'
+        semantics (see web_train.py's chunked learn() loop) — if both are
+        given, whichever resolves to fewer seconds wins. This is always an
+        estimate, not a promise: per-iteration cost varies with machine
+        load, so a wall-clock budget may stop a run a bit short of or past
+        the iteration count shown here — it still stops on time; the
+        iteration count just moves. Returns basis='none' (no invented
+        number) when there's no history yet — see system_info()'s
+        suggested_num_envs for a sizing starting point in that case."""
         num_envs = max(1, int(num_envs))
+        none_result = {"basis": "none", "samples": 0, "seconds": None, "iterations": None}
         if not self._history:
-            return {"basis": "none", "samples": 0, "seconds": None}
+            return none_result
         rates = [h["elapsed_s"] / (h["max_iterations"] * h["num_envs"])
                  for h in self._history if h["max_iterations"] > 0 and h["num_envs"] > 0]
         if not rates:
-            return {"basis": "none", "samples": 0, "seconds": None}
+            return none_result
         rates.sort()
-        median_rate = rates[len(rates) // 2]
-        return {
-            "basis": "measured",
-            "samples": len(rates),
-            "seconds": round(median_rate * max_iterations * num_envs, 1),
-        }
+        median_rate = rates[len(rates) // 2]  # seconds per (iteration * env)
+
+        candidates = []  # (seconds, iterations)
+        if max_iterations:
+            it = max(1, int(max_iterations))
+            candidates.append((median_rate * it * num_envs, it))
+        if max_minutes:
+            budget_s = max(1.0, float(max_minutes) * 60.0)
+            it = max(1, int(budget_s / (median_rate * num_envs)))
+            candidates.append((budget_s, it))
+        if not candidates:
+            return none_result
+        seconds, iterations = min(candidates, key=lambda c: c[0])
+        return {"basis": "measured", "samples": len(rates), "seconds": round(seconds, 1), "iterations": iterations}
 
     # ---- catalog the web UI's form renders from ----
+
+    # Every variable the Create Policy panel's target selector can offer, in
+    # one place — add an entry here (plus a matching cfg.rewards field pair:
+    # a scalar target the existing tracking reward already reads, and a
+    # `<field>_range` physical clamp) and it shows up in the UI's variable
+    # dropdown with no other backend change. 'flag' is the exact web_train.py
+    # CLI arg the resolved number is sent as — Absolute/Relative/Extreme
+    # modes all funnel through the SAME flag (see app.js's resolveTarget()),
+    # so "extreme" never needs a new reward term: it just resolves to the
+    # config's own physical bound instead of a user-typed number.
+    VARIABLE_REGISTRY = {
+        "base_height": {
+            "label": "Pelvis height",
+            "unit": "m",
+            "source": "sim_ground_truth",
+            "flag": "base_height_target",
+            "config_attr": "base_height_target",
+            "range_attr": "base_height_target_range",
+            "note": "Not measured by any real sensor — see RobotState.base_height's docstring. "
+                    "Fine as a training target since training only ever runs in sim.",
+        },
+    }
 
     def register_source(self, name: str, task: str, checkpoint: Optional[str]) -> None:
         self.policy_sources[name] = {"task": task, "checkpoint": checkpoint}
@@ -211,6 +248,15 @@ class TrainingManager:
                 {"name": name, "base_height_target": self._task_base_height(info["task"]), **info}
                 for name, info in sorted(self.policy_sources.items())
             ],
+            # Task-independent half of VARIABLE_REGISTRY (label/unit/source/
+            # flag/note) — populates the target variable dropdown once per
+            # connection. The task-dependent half (reference/range, which
+            # differ per task/clone-from base) comes from task_defaults()
+            # instead, called again on every task/base change.
+            "variables": {
+                key: {k: v for k, v in meta.items() if k not in ("config_attr", "range_attr")}
+                for key, meta in self.VARIABLE_REGISTRY.items()
+            },
         }
 
     def _task_base_height(self, task: str) -> Optional[float]:
@@ -228,8 +274,32 @@ class TrainingManager:
         delta to. This is the task's config default, not necessarily the
         exact value a specific checkpoint was actually trained with (a prior
         job may have overridden it) — the best available reference short of
-        loading and stepping that checkpoint."""
-        return {"base_height_target": self._task_base_height(task)}
+        loading and stepping that checkpoint.
+
+        'variables' is the generic form of the same idea — one entry per
+        VARIABLE_REGISTRY key, each carrying a reference (for Relative mode)
+        and a physical range (for Extreme mode's lowest/highest bounds).
+        The task-independent half of the registry (label/unit/source/flag/
+        note) comes from catalog() instead — fetched once, not on every
+        task change. 'base_height_target' at the top level is kept for
+        backward compat with the panel's existing pelvis-specific code
+        path; it's exactly variables['base_height']['reference']."""
+        from legged_gym.utils import task_registry
+        try:
+            env_cfg, _ = task_registry.get_cfgs(name=task)
+        except Exception:  # noqa: BLE001 - a broken/unregistered cfg shouldn't break the panel
+            env_cfg = None
+
+        variables = {}
+        for key, meta in self.VARIABLE_REGISTRY.items():
+            reference = getattr(env_cfg.rewards, meta["config_attr"], None) if env_cfg is not None else None
+            value_range = getattr(env_cfg.rewards, meta["range_attr"], None) if env_cfg is not None else None
+            variables[key] = {
+                "reference": reference,
+                "range": list(value_range) if value_range is not None else None,
+            }
+
+        return {"base_height_target": self._task_base_height(task), "variables": variables}
 
     # ---- launching ----
 

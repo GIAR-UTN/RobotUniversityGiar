@@ -79,7 +79,55 @@ class ControlService:
             s["random_events"] = self.adapter.random_events
         if self.training is not None:
             s["training_jobs"] = self.training.status()
+        s["telemetry"] = self._telemetry()
         return s
+
+    def _telemetry(self) -> Optional[dict]:
+        """Live IMU-adjacent readout for the web panel — see RobotState's
+        own field docstrings for what's a real sensor vs. simulator-only
+        ground truth (surfaced verbatim in each field's 'source' below so
+        the UI doesn't have to duplicate that knowledge). get_state() just
+        reads already-populated tensors (no extra sim step), so this is
+        cheap to call every tick. Only env 0 — swap_experiment.py's live
+        control demo always runs num_envs=1."""
+        try:
+            state = self.adapter.get_state()
+        except Exception:  # noqa: BLE001 - a telemetry glitch must not break status()
+            return None
+
+        def scalar(t):
+            return float(t[0]) if t is not None else None
+
+        def vec3(t):
+            return [float(x) for x in t[0]] if t is not None else None
+
+        return {
+            "base_height": {
+                "value": scalar(state.base_height), "unit": "m", "source": "sim_ground_truth",
+                "label": "Pelvis height",
+                "note": "Not measured by any real sensor — the simulator's own base z position. "
+                        "Fine as a training-time target (training only ever runs in sim); would need "
+                        "a different signal (e.g. leg kinematics) to ever inform a real-robot policy.",
+            },
+            "projected_gravity": {
+                "value": vec3(state.projected_gravity), "unit": "g", "source": "sensor",
+                "label": "Orientation (gravity in body frame)",
+                "note": "What an IMU actually gives you: the gravity vector expressed in the robot's "
+                        "own frame — upright is ~(0,0,-1); the same signal legged_robot.py's fall "
+                        "detection watches.",
+            },
+            "base_ang_vel": {
+                "value": vec3(state.base_ang_vel), "unit": "rad/s", "source": "sensor",
+                "label": "Angular velocity (gyroscope)",
+                "note": "Real IMU gyroscope reading — available on both sim and real hardware.",
+            },
+            "base_lin_vel": {
+                "value": vec3(state.base_lin_vel), "unit": "m/s", "source": "sim_ground_truth",
+                "label": "Linear velocity",
+                "note": "Not directly sensed on real hardware (no IMU measures velocity, only "
+                        "acceleration) — simulator ground truth only, None on RealAdapter.",
+            },
+        }
 
     # ---- training a new policy (see legged_gym/control/training.py) ----
 
@@ -168,13 +216,16 @@ class ControlService:
         info["control_backend"] = getattr(self.adapter, "backend_name", "sim")
         return info
 
-    def estimate_training_time(self, max_iterations: int, num_envs: int) -> dict:
-        """Seconds estimate for a would-be training job, from this
-        machine's own history of completed jobs (see TrainingManager.estimate)
-        — called live as the Create Policy form's fields change."""
+    def estimate_training_time(self, num_envs: int, max_iterations: Optional[int] = None,
+                                max_minutes: Optional[float] = None) -> dict:
+        """(iterations, seconds) estimate for a would-be training job, from
+        this machine's own history of completed jobs (see
+        TrainingManager.estimate) — called live as the Create Policy form's
+        fields change, works whether the user filled in iterations,
+        minutes, or both."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
-        return self.training.estimate(max_iterations, num_envs)
+        return self.training.estimate(num_envs, max_iterations=max_iterations, max_minutes=max_minutes)
 
     def pause(self) -> None:
         self.paused = True

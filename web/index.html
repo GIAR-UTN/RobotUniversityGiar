@@ -129,8 +129,8 @@
   /* The controls panel is always visible now — the simulator it drives is
      always the base layer, so there's no "wrong tab" state to hide it for. */
   #panel{
-    width:280px; flex:none; border-left:1px solid var(--line); background:var(--bg-raised);
-    padding:.9rem; overflow-y:auto; overflow-x:hidden; outline:none;
+    width:min(420px, 32vw); min-width:280px; flex:none; border-left:1px solid var(--line);
+    background:var(--bg-raised); padding:.9rem; overflow-y:auto; overflow-x:hidden; outline:none;
   }
   #panel h2{font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0;}
 
@@ -267,6 +267,20 @@
   .range-pair input{width:0; flex:1;}
   .range-pair span{color:var(--muted); font-size:.75rem;}
   .field-hint{font-size:.68rem; color:var(--muted); margin:0;}
+
+  /* ---- live telemetry panel ---- */
+  .tele-row{padding:.35rem 0; border-bottom:1px solid var(--line);}
+  .tele-row:last-child{border-bottom:none;}
+  .tele-head{display:flex; align-items:baseline; justify-content:space-between; gap:.4rem;}
+  .tele-label{font-size:.78rem; font-weight:600;}
+  .tele-val{font:600 .8rem/1 ui-monospace,monospace; color:var(--ink-soft);}
+  .tele-badge{
+    font-size:.6rem; padding:1px 5px; border-radius:3px; text-transform:uppercase;
+    letter-spacing:.03em; font-weight:700; white-space:nowrap;
+  }
+  .tele-badge.sim_ground_truth{background:color-mix(in srgb, var(--accent) 20%, transparent); color:var(--accent);}
+  .tele-badge.sensor{background:color-mix(in srgb, var(--accent2) 20%, transparent); color:var(--accent2);}
+  .tele-note{font-size:.66rem; color:var(--muted); margin:.15rem 0 0;}
   #train-cmd-preview{
     display:block; white-space:pre-wrap; word-break:break-word;
     background:var(--bg); border:1px solid var(--line); border-radius:6px;
@@ -399,6 +413,20 @@
       <div class="section-body">
         <button class="action-btn" id="btn-pause">Pause <span class="keycap">P</span></button>
         <button class="action-btn" id="btn-restart">Restart <span class="keycap">R</span></button>
+      </div>
+    </section>
+
+    <section class="panel-section" data-section="telemetry">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Live Telemetry</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>What the running robot's state actually is, right now — read these before picking a Create Policy target so you're choosing a real number, not guessing. <span class="tele-badge sensor">sensor</span> is a real IMU/gyroscope reading, available on both sim and real hardware. <span class="tele-badge sim_ground_truth">sim</span> only exists in simulation — no equivalent sensor exists on the physical robot, so it can't be an input to a real-robot policy, only a training-time target.</p>
+        </div>
+      </div>
+      <div class="section-body" id="telemetry-body">
+        <p class="field-hint">Waiting for data&hellip;</p>
       </div>
     </section>
 
@@ -560,14 +588,18 @@
             </div>
 
             <div class="field-row">
-              <label>Pelvis height</label>
+              <label for="train-var-select">Target variable</label>
+              <select id="train-var-select"></select>
+              <p class="field-hint" id="train-var-note"></p>
+
               <div class="mode-tabs" id="train-height-mode">
                 <button type="button" data-mode="absolute" class="active">Absolute</button>
                 <button type="button" data-mode="relative">Raise / lower</button>
+                <button type="button" data-mode="extreme">Lowest / highest</button>
               </div>
 
               <div class="subfield" id="train-height-absolute">
-                <p class="field-hint">Pelvis height (m) the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing height.</p>
+                <p class="field-hint" id="train-height-absolute-hint">Value the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing height.</p>
                 <input type="number" id="train-height" step="0.01" placeholder="leave blank for the task's default">
               </div>
 
@@ -580,7 +612,16 @@
                   </select>
                   <input type="number" id="train-height-delta" step="0.01" min="0" placeholder="m">
                 </div>
-                <p class="field-hint">Resolved against the reference height above at submit time — the exact same <code>--base_height_target</code> flag as Absolute, just composed for you.</p>
+                <p class="field-hint">Resolved against the reference above at submit time — the exact same flag as Absolute, just composed for you.</p>
+              </div>
+
+              <div class="subfield" id="train-height-extreme" hidden>
+                <div class="mode-tabs" id="train-extreme-dir">
+                  <button type="button" data-dir="lowest" class="active">Lowest</button>
+                  <button type="button" data-dir="highest">Highest</button>
+                </div>
+                <p class="field-hint" id="train-extreme-note">Resolves to &ndash;</p>
+                <p class="field-hint">Pushes toward this variable's configured physical limit — not an unconstrained optimum (an unbounded "as low as possible" has a trivial, degenerate solution: lying on the ground). Stability-related reward weights (orientation, termination, balance) stay at full strength — there's no "acceptable stability loss" budget yet, so this is always the 0%-sacrifice behavior.</p>
               </div>
             </div>
 

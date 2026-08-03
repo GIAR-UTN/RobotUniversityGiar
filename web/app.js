@@ -235,6 +235,55 @@ function applyStatus(status) {
   }
 
   renderTrainingJobs(status.training_jobs || []);
+  renderTelemetry(status.telemetry);
+}
+
+// ---- live telemetry panel ----
+// See ControlService._telemetry()'s own docstring: each entry already
+// carries its own source/label/note/unit, so this is pure rendering, no
+// per-variable knowledge duplicated here — a new telemetry field just
+// shows up automatically.
+const telemetryBody = $('#telemetry-body');
+
+function formatTeleValue(value, unit) {
+  if (value == null) return '–';
+  if (Array.isArray(value)) return `[${value.map((v) => v.toFixed(3)).join(', ')}] ${unit}`;
+  return `${value.toFixed(3)} ${unit}`;
+}
+
+function renderTelemetry(telemetry) {
+  if (!telemetry) {
+    telemetryBody.innerHTML = '<p class="field-hint">Waiting for data&hellip;</p>';
+    return;
+  }
+  telemetryBody.innerHTML = '';
+  for (const [key, t] of Object.entries(telemetry)) {
+    const row = document.createElement('div');
+    row.className = 'tele-row';
+    const head = document.createElement('div');
+    head.className = 'tele-head';
+    const label = document.createElement('span');
+    label.className = 'tele-label';
+    label.textContent = t.label;
+    const badge = document.createElement('span');
+    badge.className = `tele-badge ${t.source}`;
+    badge.textContent = t.source === 'sensor' ? 'sensor' : 'sim';
+    const left = document.createElement('span');
+    left.append(label, ' ', badge);
+    const val = document.createElement('span');
+    val.className = 'tele-val';
+    val.textContent = formatTeleValue(t.value, t.unit);
+    head.append(left, val);
+    row.appendChild(head);
+    if (t.note) {
+      const note = document.createElement('p');
+      note.className = 'tele-note';
+      note.textContent = t.note;
+      row.appendChild(note);
+    }
+    row.dataset.key = key;
+    telemetryBody.appendChild(row);
+  }
 }
 
 // ---- HUD rendering ----
@@ -868,13 +917,19 @@ const trainEnvsHint = $('#train-envs-hint');
 const trainVxLo = $('#train-vx-lo'), trainVxHi = $('#train-vx-hi');
 const trainVyLo = $('#train-vy-lo'), trainVyHi = $('#train-vy-hi');
 const trainYawLo = $('#train-yaw-lo'), trainYawHi = $('#train-yaw-hi');
+const trainVarSelect = $('#train-var-select');
+const trainVarNote = $('#train-var-note');
 const trainHeight = $('#train-height');
+const trainHeightAbsoluteHint = $('#train-height-absolute-hint');
 const trainHeightModeTabs = $('#train-height-mode');
 const trainHeightAbsolute = $('#train-height-absolute');
 const trainHeightRelative = $('#train-height-relative');
 const trainHeightReference = $('#train-height-reference');
 const trainHeightDir = $('#train-height-dir');
 const trainHeightDelta = $('#train-height-delta');
+const trainHeightExtreme = $('#train-height-extreme');
+const trainExtremeDirTabs = $('#train-extreme-dir');
+const trainExtremeNote = $('#train-extreme-note');
 const trainPush = $('#train-push');
 const trainPushVel = $('#train-push-vel');
 const trainPushInterval = $('#train-push-interval');
@@ -898,6 +953,10 @@ function formatDuration(seconds) {
 }
 
 let estimateDebounce = null;
+// Mirrors legged_gym/scripts/web_train.py's TIME_BUDGET_CHUNK_ITERS — the
+// wall-clock deadline for --max_minutes is only re-checked this often, so a
+// run can overshoot its budget by up to this many iterations' worth of time.
+const TIME_BUDGET_CHUNK_ITERS = 10;
 
 function updateEstimate() {
   clearTimeout(estimateDebounce);
@@ -911,17 +970,29 @@ function updateEstimate() {
       trainEstimate.textContent = 'Estimated time: – (set an iteration count or a minute budget)';
       return;
     }
-    if (!hasIters) {
-      // Minutes-only: nothing to estimate — the time budget IS the answer.
-      trainEstimate.textContent = `Estimated time: time-boxed to ${minutes} minute${minutes === 1 ? '' : 's'} — stops then regardless of iterations reached.`;
-      return;
-    }
     if (!Number.isFinite(numEnvs) || numEnvs <= 0) { trainEstimate.textContent = 'Estimated time: –'; return; }
-    call('estimate_training_time', { max_iterations: iterations, num_envs: numEnvs }).then((est) => {
-      const cap = hasMinutes ? ` (also capped at ${minutes} minute${minutes === 1 ? '' : 's'}, whichever hits first)` : '';
-      trainEstimate.textContent = est.basis === 'measured'
-        ? `Estimated time: ~${formatDuration(est.seconds)} (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine)${cap}`
-        : `Estimated time: no runs on this machine yet — the first one calibrates this estimate.${cap}`;
+    // Estimates are never exact — per-iteration cost drifts with machine
+    // load, so this is always phrased as "about", and a minutes budget
+    // always shows the iteration count it's expected to buy (not just
+    // "time-boxed to N minutes" with no sense of how much training that
+    // actually is) — see TrainingManager.estimate()'s own docstring.
+    call('estimate_training_time', {
+      num_envs: numEnvs,
+      max_iterations: hasIters ? iterations : null,
+      max_minutes: hasMinutes ? minutes : null,
+    }).then((est) => {
+      if (est.basis !== 'measured') {
+        trainEstimate.textContent = hasMinutes && !hasIters
+          ? `Estimated time: time-boxed to ${minutes} minute${minutes === 1 ? '' : 's'} — no runs on this machine yet, so an iteration count can't be estimated (the first run calibrates this).`
+          : 'Estimated time: no runs on this machine yet — the first one calibrates this estimate.';
+        return;
+      }
+      const boundBy = hasIters && hasMinutes
+        ? (est.iterations < iterations ? 'minutes' : 'iterations')
+        : hasMinutes ? 'minutes' : 'iterations';
+      trainEstimate.textContent = boundBy === 'minutes'
+        ? `Estimated time: ~${est.iterations} iterations in ${minutes} minute${minutes === 1 ? '' : 's'} (approximate — based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine; the wall-clock deadline is checked every ${TIME_BUDGET_CHUNK_ITERS} iterations, so the run may overshoot by a few iterations' worth of time).`
+        : `Estimated time: ~${formatDuration(est.seconds)} for ${est.iterations} iterations (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine)${hasMinutes ? ` — also capped at ${minutes} minute${minutes === 1 ? '' : 's'}, whichever hits first` : ''}.`;
     }).catch(() => { trainEstimate.textContent = 'Estimated time: –'; });
   }, 250);
 }
@@ -931,61 +1002,128 @@ function showTrainError(msg) {
   trainError.classList.toggle('show', !!msg);
 }
 
-// ---- pelvis height: absolute value vs. relative to a reference ----
-// The reference is read from the task's (or clone-from base's task's) own
-// config — legged_gym/control/training.py's task_defaults()/catalog() —
-// never from running the sim, so it's the config default, not necessarily
-// the exact value a specific checkpoint trained with.
-let heightMode = 'absolute';
-let heightReference = null; // {value: number|null, label: string} | null
+// ---- target variable: absolute value, relative to a reference, or an ----
+// ---- extreme (lowest/highest) push against a physical bound         ----
+// One variable at a time, chosen from #train-var-select — populated from
+// TrainingManager.VARIABLE_REGISTRY (legged_gym/control/training.py) via
+// training_catalog()'s 'variables' (task-independent: label/unit/source/
+// flag/note) and task_defaults()'s 'variables' (task-dependent: reference/
+// range, refetched on every task/clone-from change). Absolute/Relative
+// resolve the same way they always did; Extreme resolves to the variable's
+// configured physical bound (range[0]/range[1]) rather than an
+// unconstrained optimum — see the panel's own copy for why (a truly
+// unbounded "lowest" has a degenerate solution: lying on the ground).
+let targetMode = 'absolute';
+let extremeDir = 'lowest';
+let targetReference = null; // {value: number|null, label: string} | null
+let targetRange = null;     // [min, max] | null
+
+function selectedVariable() {
+  return trainVarSelect.value;
+}
+
+function variableMeta() {
+  return trainingCatalog?.variables?.[selectedVariable()] || null;
+}
 
 function findBaseHeightTarget(baseName) {
   const p = trainingCatalog?.base_policies.find((b) => b.name === baseName);
   return p ? p.base_height_target : undefined;
 }
 
-function renderHeightReference() {
-  trainHeightReference.textContent = (!heightReference || heightReference.value == null)
+function renderVariableChrome() {
+  const meta = variableMeta();
+  const unit = meta?.unit || '';
+  const label = meta?.label || 'value';
+  trainVarNote.textContent = meta
+    ? `${meta.source === 'sensor' ? 'Real sensor' : 'Simulator ground truth'} — ${meta.note || ''}`
+    : '';
+  trainHeightAbsoluteHint.textContent =
+    `${label} (${unit}) the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing value.`;
+}
+
+function renderTargetReference() {
+  const unit = variableMeta()?.unit || '';
+  trainHeightReference.textContent = (!targetReference || targetReference.value == null)
     ? 'Reference: – (pick a task or clone-from base first)'
-    : `Reference: ${heightReference.value.toFixed(3)} m (${heightReference.label})`;
+    : `Reference: ${targetReference.value.toFixed(3)} ${unit} (${targetReference.label})`;
+  renderExtremeNote();
   updateCommandPreview();
 }
 
-function refreshHeightReference() {
-  const base = trainBase.value, task = trainTask.value;
-  if (base) {
-    heightReference = { value: findBaseHeightTarget(base) ?? null, label: `${base}'s task default` };
-    renderHeightReference();
+function renderExtremeNote() {
+  const unit = variableMeta()?.unit || '';
+  const label = variableMeta()?.label || 'value';
+  if (!targetRange) {
+    trainExtremeNote.textContent = 'Resolves to – (pick a task or clone-from base first)';
     return;
   }
-  if (!task) { heightReference = null; renderHeightReference(); return; }
-  call('task_defaults', { task }).then((d) => {
-    heightReference = { value: d.base_height_target ?? null, label: `${task}'s default` };
-    renderHeightReference();
-  }).catch(() => { heightReference = null; renderHeightReference(); });
+  const bound = extremeDir === 'lowest' ? targetRange[0] : targetRange[1];
+  trainExtremeNote.textContent = `Resolves to ${bound.toFixed(3)} ${unit} — this task's configured ${extremeDir} bound for ${label.toLowerCase()}.`;
 }
+
+function refreshTargetReference() {
+  const base = trainBase.value, task = trainTask.value;
+  const varKey = selectedVariable();
+  if (base && varKey === 'base_height') {
+    // Fast path: base_height's reference for a clone-from base is already
+    // in training_catalog's base_policies list, no extra round trip.
+    targetReference = { value: findBaseHeightTarget(base) ?? null, label: `${base}'s task default` };
+    targetRange = null; // extreme mode's clamp is still task-scoped — fall through below for it
+  }
+  if (!task && !base) { targetReference = null; targetRange = null; renderTargetReference(); return; }
+  const effectiveTask = task || trainingCatalog?.base_policies.find((b) => b.name === base)?.task;
+  if (!effectiveTask) { renderTargetReference(); return; }
+  call('task_defaults', { task: effectiveTask }).then((d) => {
+    const v = d.variables?.[varKey];
+    if (!base) {
+      targetReference = { value: v?.reference ?? null, label: `${effectiveTask}'s default` };
+    }
+    targetRange = v?.range ?? null;
+    renderTargetReference();
+  }).catch(() => { if (!base) targetReference = null; targetRange = null; renderTargetReference(); });
+}
+
+trainVarSelect.addEventListener('change', () => {
+  renderVariableChrome();
+  refreshTargetReference();
+});
 
 trainHeightModeTabs.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
-    heightMode = btn.dataset.mode;
+    targetMode = btn.dataset.mode;
     trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-    trainHeightAbsolute.hidden = heightMode !== 'absolute';
-    trainHeightRelative.hidden = heightMode !== 'relative';
-    if (heightMode === 'relative') refreshHeightReference();
+    trainHeightAbsolute.hidden = targetMode !== 'absolute';
+    trainHeightRelative.hidden = targetMode !== 'relative';
+    trainHeightExtreme.hidden = targetMode !== 'extreme';
+    if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
+    updateCommandPreview();
+  });
+});
+
+trainExtremeDirTabs.querySelectorAll('button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    extremeDir = btn.dataset.dir;
+    trainExtremeDirTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+    renderExtremeNote();
     updateCommandPreview();
   });
 });
 
 function resolveHeight() {
-  if (heightMode === 'absolute') {
+  if (targetMode === 'absolute') {
     const raw = trainHeight.value.trim();
     return raw === '' ? null : parseFloat(raw);
   }
+  if (targetMode === 'extreme') {
+    if (!targetRange) return undefined; // can't resolve yet — validation error
+    return extremeDir === 'lowest' ? targetRange[0] : targetRange[1];
+  }
   const deltaRaw = trainHeightDelta.value.trim();
   if (deltaRaw === '') return null; // no delta entered — leave the target unset (task default)
-  if (!heightReference || heightReference.value == null) return undefined; // can't resolve yet — validation error
+  if (!targetReference || targetReference.value == null) return undefined; // can't resolve yet — validation error
   const sign = trainHeightDir.value === 'lower' ? -1 : 1;
-  return heightReference.value + sign * parseFloat(deltaRaw);
+  return targetReference.value + sign * parseFloat(deltaRaw);
 }
 
 function refreshTrainingCatalog() {
@@ -1010,7 +1148,17 @@ function refreshTrainingCatalog() {
     }
     if (catalog.base_policies.some((p) => p.name === prevBase)) trainBase.value = prevBase;
 
-    if (heightMode === 'relative') refreshHeightReference();
+    const prevVar = trainVarSelect.value;
+    trainVarSelect.innerHTML = '';
+    for (const [key, meta] of Object.entries(catalog.variables || {})) {
+      const opt = document.createElement('option');
+      opt.value = key; opt.textContent = meta.label;
+      trainVarSelect.appendChild(opt);
+    }
+    if (catalog.variables?.[prevVar]) trainVarSelect.value = prevVar;
+    renderVariableChrome();
+
+    if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
     updateCommandPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
@@ -1071,8 +1219,9 @@ function updateCommandPreview() {
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
   if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);
-  if (p.height === undefined) parts.push('--base_height_target <no reference height yet — pick a task or clone-from base>');
-  else if (p.height !== null) parts.push(`--base_height_target ${p.height.toFixed(3)}`);
+  const targetFlag = variableMeta()?.flag || 'base_height_target';
+  if (p.height === undefined) parts.push(`--${targetFlag} <no reference yet — pick a task or clone-from base>`);
+  else if (p.height !== null) parts.push(`--${targetFlag} ${p.height.toFixed(3)}`);
   if (p.push) parts.push(`--push_robots ${p.push}`);
   if (p.pushVel !== null) parts.push(`--max_push_vel_xy ${p.pushVel}`);
   if (p.pushInterval !== null) parts.push(`--push_interval_s ${p.pushInterval}`);
@@ -1094,7 +1243,9 @@ btnNewPolicy.addEventListener('click', () => {
   el.addEventListener('change', updateCommandPreview);
 });
 [trainBase, trainTask].forEach((el) => {
-  el.addEventListener('change', () => { if (heightMode === 'relative') refreshHeightReference(); });
+  el.addEventListener('change', () => {
+    if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
+  });
 });
 [trainIters, trainMinutes, trainEnvs].forEach((el) => {
   el.addEventListener('input', updateEstimate);
@@ -1130,10 +1281,11 @@ createPolicyForm.addEventListener('submit', (e) => {
     createPolicyForm.reset();
     createPolicyForm.hidden = true;
     btnNewPolicy.textContent = '+ New policy…';
-    heightMode = 'absolute';
+    targetMode = 'absolute';
     trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'absolute'));
     trainHeightAbsolute.hidden = false;
     trainHeightRelative.hidden = true;
+    trainHeightExtreme.hidden = true;
   }).catch((e) => {
     showTrainError(e.message);
   }).finally(() => {
