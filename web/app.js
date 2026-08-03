@@ -152,6 +152,9 @@ function connect() {
 }
 
 function policyButtonRow(name, active) {
+  const row = document.createElement('div');
+  row.className = 'policy-row';
+
   const btn = document.createElement('button');
   btn.className = 'policy-btn' + (name === active ? ' active' : '');
   const label = document.createElement('span');
@@ -165,7 +168,40 @@ function policyButtonRow(name, active) {
     btn.appendChild(cap);
   }
   btn.onclick = () => send('request_switch', { name });
-  return btn;
+  row.appendChild(btn);
+
+  // No keyboard shortcut, no auto-confirm — discarding a policy deletes its
+  // checkpoint file, and this UI already deliberately dropped its one
+  // irreversible keybinding once before (the E-STOP key). Disabled for the
+  // active policy client-side too (not just server-side, which also
+  // enforces it) so the reason it's unavailable is visible, not a
+  // surprise error after clicking.
+  const del = document.createElement('button');
+  del.className = 'policy-delete-btn';
+  del.type = 'button';
+  del.textContent = '✕';
+  del.title = name === active
+    ? "Can't delete the active policy — switch to another one first"
+    : `Delete "${name}" — removes it from this list and deletes its checkpoint file. Cannot be undone.`;
+  del.disabled = name === active;
+  del.onclick = (e) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete policy "${name}"? This removes it from the list and deletes its checkpoint file on disk — cannot be undone.`)) return;
+    del.disabled = true;
+    call('delete_policy', { name }).then(() => {
+      // The Policies list itself refreshes from the next status push
+      // (status.policies already won't include `name`); the Clone-from
+      // catalog is a separate fetch that isn't part of that push, so it
+      // needs its own refresh or it'd keep offering a deleted checkpoint.
+      refreshTrainingCatalog();
+    }).catch((err) => {
+      del.disabled = false;
+      window.alert(`Couldn't delete "${name}": ${err.message}`);
+    });
+  };
+  row.appendChild(del);
+
+  return row;
 }
 
 function applyStatus(status) {

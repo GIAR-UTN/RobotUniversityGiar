@@ -167,11 +167,19 @@
 
   .policy-btn, .action-btn{
     display:flex; align-items:center; justify-content:space-between; width:100%;
-    text-align:left; margin-bottom:.4rem;
+    text-align:left;
     padding:.5rem .6rem; border-radius:6px; border:1px solid var(--line);
     background:var(--bg); color:var(--ink); cursor:pointer; font:inherit;
   }
   .policy-btn.active{border-color:var(--accent2); font-weight:600;}
+  .policy-row{display:flex; align-items:center; gap:.35rem; margin-bottom:.4rem;}
+  .policy-row .policy-btn{margin-bottom:0; flex:1; min-width:0;}
+  .policy-delete-btn{
+    flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--muted); cursor:pointer; font:inherit; line-height:1;
+  }
+  .policy-delete-btn:hover:not(:disabled){border-color:var(--danger); color:var(--danger);}
+  .policy-delete-btn:disabled{opacity:.35; cursor:not-allowed;}
 
   /* ---- illuminated keycaps ---- */
   .keycap{

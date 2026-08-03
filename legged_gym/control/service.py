@@ -55,6 +55,20 @@ class ControlService:
     def request_switch(self, name: str) -> bool:
         return self.supervisor.request_switch(name)
 
+    def delete_policy(self, name: str) -> None:
+        """Discards a policy entirely — pulled from the switchable list AND
+        the clone-from catalog, its exported checkpoint deleted from disk.
+        For a training experiment that converged to something useless (the
+        motivating case: a policy that never settled into a coherent gait —
+        no reason to keep cluttering the panel or offering it as a
+        fine-tuning base). Irreversible. Raises if `name` is 'damping', is
+        currently active, or has a switch pending — see
+        PolicySupervisor.remove_policy()'s docstring for why; the caller
+        has to switch to something else first."""
+        self.supervisor.remove_policy(name)
+        if self.training is not None:
+            self.training.forget_source(name)
+
     def status(self) -> dict:
         s = self.supervisor.status
         s["paused"] = self.paused

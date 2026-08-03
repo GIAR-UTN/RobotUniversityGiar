@@ -286,6 +286,30 @@ class TrainingManager:
             "train_checkpoint": self._train_checkpoint_from_export(checkpoint),
         }
 
+    def forget_source(self, name: str) -> None:
+        """Drops a policy from the clone-from catalog and deletes its
+        exported checkpoint file — the counterpart to register_source(),
+        for discarding a training experiment that didn't work out (see
+        ControlService.delete_policy()). Deliberately only deletes
+        `checkpoint` (the exported .pt actually referenced by the catalog/
+        loadable into the supervisor) — NOT `train_checkpoint` (one of
+        several model_N.pt snapshots sharing that run's log_dir alongside
+        its TensorBoard event file); leaving those is harmless disk usage,
+        not anything exposed in the UI, and avoids this method reaching
+        into a whole run directory to guess what else is safe to remove.
+        Best-effort on the file removal — a source with no checkpoint on
+        this machine, or one already deleted, isn't an error; the point is
+        the CATALOG no longer listing it, not enforcing the file existed."""
+        source = self.policy_sources.pop(name, None)
+        if source is None:
+            return
+        checkpoint = source.get("checkpoint")
+        if checkpoint:
+            try:
+                os.remove(checkpoint)
+            except OSError:
+                pass
+
     def catalog(self, compatible_tasks: Optional[Sequence[str]] = None) -> dict:
         from legged_gym.utils import task_registry
         all_tasks = sorted(task_registry.task_classes.keys())
