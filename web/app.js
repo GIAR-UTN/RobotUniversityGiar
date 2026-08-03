@@ -1162,8 +1162,15 @@ function refreshTrainingCatalog() {
     for (const p of catalog.base_policies) {
       const opt = document.createElement('option');
       opt.value = p.name;
-      opt.textContent = p.checkpoint ? p.name : `${p.name} (no checkpoint on this machine)`;
-      opt.disabled = !p.checkpoint;
+      // Fine-tuning needs train_checkpoint (rsl_rl's raw format), not
+      // checkpoint (the exported/deployable one) — see
+      // TrainingManager._train_checkpoint_from_export()'s docstring for
+      // why those are different files. A policy can have one without the
+      // other, so these are two distinct reasons "Clone from" is disabled.
+      opt.textContent = !p.checkpoint ? `${p.name} (no checkpoint on this machine)`
+        : !p.train_checkpoint ? `${p.name} (no training checkpoint to fine-tune from)`
+        : p.name;
+      opt.disabled = !p.train_checkpoint;
       trainBase.appendChild(opt);
     }
     if (catalog.base_policies.some((p) => p.name === prevBase)) trainBase.value = prevBase;
@@ -1234,7 +1241,7 @@ function updateCommandPreview() {
   if (p.iterations === null && p.minutes === null) parts.push('--max_iterations <or> --max_minutes <required>');
   if (p.base) {
     const source = trainingCatalog?.base_policies.find((b) => b.name === p.base);
-    parts.push(`--from_checkpoint ${source?.checkpoint || '<' + p.base + "'s checkpoint>"}`);
+    parts.push(`--from_checkpoint ${source?.train_checkpoint || '<' + p.base + "'s training checkpoint>"}`);
   }
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
@@ -1314,12 +1321,16 @@ createPolicyForm.addEventListener('submit', (e) => {
 });
 
 function renderTrainingJobs(jobs) {
-  // Dedupe on everything EXCEPT elapsed_s — elapsed_s ticks up every status
-  // push while a job runs, and rebuilding this DOM at ~10Hz for that alone
-  // would reintroduce exactly the perf issue the policy-list dedupe above
-  // already exists to avoid (see HANDOFF_control_web.md's post-merge
-  // incident note). A running job's card just doesn't show a live timer.
-  const key = jobs.map((j) => `${j.id}:${j.status}:${j.error || ''}`).join('|');
+  // Dedupe on everything except elapsed_s's raw per-tick ticking — elapsed_s
+  // pushes every status update while a job runs (~10Hz), and rebuilding
+  // this DOM that often would reintroduce exactly the perf issue the
+  // policy-list dedupe above already exists to avoid (see
+  // HANDOFF_control_web.md's post-merge incident note). iterations_done IS
+  // included, deliberately — it only changes once per
+  // TIME_BUDGET_CHUNK_ITERS chunk (web_train.py's write_progress(), a few
+  // times a minute at most, not 10Hz), so re-rendering when it changes is
+  // what actually shows live progress instead of a static "training…".
+  const key = jobs.map((j) => `${j.id}:${j.status}:${j.error || ''}:${j.iterations_done ?? ''}`).join('|');
   if (key === renderedTrainingJobsKey) return;
   const justFinished = renderedTrainingJobsKey !== null &&
     jobs.some((j) => j.status === 'done' && !renderedTrainingJobsKey.includes(`${j.id}:done`));
@@ -1336,7 +1347,18 @@ function renderTrainingJobs(jobs) {
     name.textContent = job.policy_name;
     const statusEl = document.createElement('span');
     statusEl.className = 'job-status';
-    statusEl.textContent = job.status === 'running' ? 'training…' : `${job.status} (${job.elapsed_s}s)`;
+    if (job.status === 'running') {
+      // iterations_done is a live snapshot (updated every
+      // TIME_BUDGET_CHUNK_ITERS iterations — see web_train.py's
+      // write_progress()/TrainingManager._refresh_progress()), null until
+      // the first chunk completes.
+      const cap = job.max_iterations ? `/${job.max_iterations}` : '';
+      statusEl.textContent = job.iterations_done != null
+        ? `training… (${job.iterations_done}${cap} iterations, ${job.elapsed_s}s)`
+        : `training… (${job.elapsed_s}s)`;
+    } else {
+      statusEl.textContent = `${job.status} (${job.elapsed_s}s)`;
+    }
     head.appendChild(name);
     head.appendChild(statusEl);
     row.appendChild(head);

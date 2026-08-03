@@ -76,11 +76,13 @@ class TrainingJob:
     command: str  # display string — exactly what the UI previewed, minus the interpreter path
     log_path: str
     result_path: str
+    progress_path: str  # see web_train.py's --progress_path — overwritten mid-run, read by poll()
     started_at: float
     max_iterations: Optional[int]  # requested cap — None if only --max_minutes was given
     max_minutes: Optional[float]
     num_envs: int
-    iterations_done: Optional[int] = None  # filled in from result.json on success — see poll()
+    iterations_done: Optional[int] = None  # live while running (from progress_path), final on success
+                                            # (from result.json, which then wins — see poll())
     status: str = "running"  # running | done | failed
     finished_at: Optional[float] = None
     error: Optional[str] = None
@@ -235,8 +237,54 @@ class TrainingManager:
         },
     }
 
+    @staticmethod
+    def _train_checkpoint_from_export(export_path: Optional[str]) -> Optional[str]:
+        """`checkpoint` (export_policy()'s output, e.g. `<log_dir>/exported/
+        policy_lstm_1.pt`) is a deployable TorchScript/ONNX artifact — the
+        right thing to hot-load into the live supervisor, and exactly the
+        WRONG thing to pass to `ppo_runner.load()`/--from_checkpoint, which
+        needs rsl_rl's own raw format (weights + shapes for resuming
+        training, saved as `<log_dir>/model_<iter>.pt` by
+        OnPolicyRunner.learn() — see on_policy_runner.py). Passing the
+        exported file there raises NotImplementedError deep in torch's
+        jit loader — confusing, and it happened for real the first time
+        this UI's 'Clone from' was used.
+
+        This derives the raw checkpoint from the exported one by the
+        directory convention this whole repo already uses everywhere else
+        (web_train.py's own `export_dir = os.path.join(log_dir, 'exported')`):
+        walk up one level from `exported/`, take the highest-iteration
+        `model_*.pt` sibling. Returns None if that convention doesn't hold
+        (e.g. `stable`'s checkpoint is a completely separate, external
+        unitree_rl_gym clone with no local training history at all — see
+        HANDOFF_control_web.md's policy table) — those sources correctly
+        stay un-fine-tunable rather than silently guessing."""
+        if not export_path:
+            return None
+        log_dir = os.path.dirname(os.path.dirname(export_path))
+        if not os.path.isdir(log_dir):
+            return None
+        try:
+            candidates = [f for f in os.listdir(log_dir) if f.startswith("model_") and f.endswith(".pt")]
+        except OSError:
+            return None
+        if not candidates:
+            return None
+
+        def _iter_num(fname: str) -> int:
+            try:
+                return int(fname[len("model_"):-len(".pt")])
+            except ValueError:
+                return -1
+
+        candidates.sort(key=_iter_num)
+        return os.path.join(log_dir, candidates[-1])
+
     def register_source(self, name: str, task: str, checkpoint: Optional[str]) -> None:
-        self.policy_sources[name] = {"task": task, "checkpoint": checkpoint}
+        self.policy_sources[name] = {
+            "task": task, "checkpoint": checkpoint,
+            "train_checkpoint": self._train_checkpoint_from_export(checkpoint),
+        }
 
     def catalog(self, compatible_tasks: Optional[Sequence[str]] = None) -> dict:
         from legged_gym.utils import task_registry
@@ -338,12 +386,20 @@ class TrainingManager:
             source = self.policy_sources.get(base_policy)
             if source is None:
                 raise ValueError(f"unknown base policy '{base_policy}'")
-            from_checkpoint = source.get("checkpoint")
+            # Deliberately train_checkpoint, NOT checkpoint — see
+            # _train_checkpoint_from_export()'s docstring. Passing the
+            # exported (checkpoint) path here is exactly the bug that made
+            # the first real 'Clone from' run crash instantly.
+            from_checkpoint = source.get("train_checkpoint")
             if not from_checkpoint:
-                raise ValueError(f"base policy '{base_policy}' has no known checkpoint file to fine-tune from")
+                raise ValueError(
+                    f"base policy '{base_policy}' has no local training checkpoint to fine-tune from "
+                    f"(only an exported/deployable .pt — e.g. an externally-sourced policy with no "
+                    f"training history on this machine)")
 
         job_id = uuid.uuid4().hex[:8]
         result_path = JOBS_DIR / f"{job_id}.result.json"
+        progress_path = JOBS_DIR / f"{job_id}.progress.json"
         log_path = JOBS_DIR / f"{job_id}.log"
 
         argv = [
@@ -353,6 +409,7 @@ class TrainingManager:
             "--num_envs", str(num_envs),
             "--headless", "--cpu",
             "--result_path", str(result_path),
+            "--progress_path", str(progress_path),
         ]
         if max_iterations is not None:
             argv += ["--max_iterations", str(max_iterations)]
@@ -397,7 +454,8 @@ class TrainingManager:
 
         job = TrainingJob(
             id=job_id, policy_name=policy_name, task=task, command=display_command,
-            log_path=str(log_path), result_path=str(result_path), started_at=time.time(),
+            log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
+            started_at=time.time(),
             max_iterations=max_iterations, max_minutes=max_minutes, num_envs=num_envs,
         )
         self.jobs[job_id] = job
@@ -406,6 +464,28 @@ class TrainingManager:
         return job_id
 
     # ---- polling (call once per sim tick — cheap, non-blocking) ----
+
+    def _refresh_progress(self, job: TrainingJob) -> None:
+        """Best-effort: read whatever web_train.py's write_progress() last
+        wrote (see its own docstring — overwritten every
+        TIME_BUDGET_CHUNK_ITERS iterations). The file may not exist yet
+        (nothing written before the first chunk completes) or may be
+        mid-write (we could race an OS-level partial write, though on Linux/
+        macOS a single open+write+close of a small file is effectively
+        atomic in practice) — either way, a bad read just means this tick's
+        status push doesn't have a fresher number than the last one, never
+        a crash. iterations_done is intentionally the SAME field poll()'s
+        success path fills in from result.json — that call always comes
+        after the process has exited, so it can't race this one, and it's
+        authoritative (the exact final count) where this is a snapshot."""
+        try:
+            with open(job.progress_path) as f:
+                progress = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
+        iterations_done = progress.get("iterations_done")
+        if iterations_done is not None:
+            job.iterations_done = iterations_done
 
     def poll(self) -> List[TrainingJob]:
         """Returns jobs that just finished (status 'done') on this call —
@@ -418,6 +498,7 @@ class TrainingManager:
             proc = self._procs[job_id]
             rc = proc.poll()
             if rc is None:
+                self._refresh_progress(job)
                 continue
             job.finished_at = time.time()
             self._log_files[job_id].close()

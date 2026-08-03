@@ -88,6 +88,11 @@ def main():
                               "shoves the robot forward")
     parser.add_argument('--result_path', type=str, required=True,
                          help="JSON {policy_path, task, name, iterations_done, stopped_reason} written here on success — the parent process polls for this file rather than parsing stdout")
+    parser.add_argument('--progress_path', type=str, default=None,
+                         help="JSON {iterations_done, elapsed_s, updated_at} overwritten after every "
+                              "TIME_BUDGET_CHUNK_ITERS-iteration chunk, for the parent process to show live "
+                              "progress on a still-running job — same 'poll a file instead of parsing stdout' "
+                              "pattern as --result_path, just written mid-run instead of once at the end")
     cli = parser.parse_args()
 
     if cli.max_iterations is None and cli.max_minutes is None:
@@ -140,9 +145,27 @@ def main():
     # is enforced by running it in small chunks and checking the wall clock
     # between them, rather than needing a callback rsl_rl doesn't expose.
     start_iteration = ppo_runner.current_learning_iteration
-    deadline = time.time() + cli.max_minutes * 60 if cli.max_minutes is not None else None
+    start_time = time.time()
+    deadline = start_time + cli.max_minutes * 60 if cli.max_minutes is not None else None
     iteration_cap = start_iteration + cli.max_iterations if cli.max_iterations is not None else None
     stopped_reason = "max_iterations" if cli.max_minutes is None else "max_minutes"
+
+    def write_progress():
+        if not cli.progress_path:
+            return
+        # Best-effort — a failed write must not crash a training run that's
+        # otherwise fine; the parent just won't see this update and tries
+        # again next chunk. Same "poll a file, don't lean on it" spirit as
+        # TrainingManager.poll()'s own except-and-continue on the read side.
+        try:
+            with open(cli.progress_path, 'w') as f:
+                json.dump({
+                    "iterations_done": ppo_runner.current_learning_iteration - start_iteration,
+                    "elapsed_s": round(time.time() - start_time, 1),
+                    "updated_at": time.time(),
+                }, f)
+        except OSError:
+            pass
 
     while True:
         if deadline is not None and time.time() >= deadline:
@@ -155,6 +178,7 @@ def main():
         if iteration_cap is not None:
             chunk = min(chunk, iteration_cap - ppo_runner.current_learning_iteration)
         ppo_runner.learn(num_learning_iterations=chunk, init_at_random_ep_len=True)
+        write_progress()
 
     iterations_done = ppo_runner.current_learning_iteration - start_iteration
     print(f"Stopped after {iterations_done} iterations ({stopped_reason}).")
