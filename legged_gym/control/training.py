@@ -23,6 +23,7 @@ import dataclasses
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,93 @@ def _total_ram_bytes() -> Optional[int]:
     return None
 
 
+# ---- turning a raw job .log into something a human (or the info popup) can read ----
+
+_ITER_RE = re.compile(r"Learning iteration (\d+)/(\d+)")
+_STAT_RES = {
+    "noise_std": re.compile(r"Mean action noise std:\s*([-\d.]+)"),
+    "reward": re.compile(r"Mean reward:\s*([-\d.]+)"),
+    "episode_length": re.compile(r"Mean episode length:\s*([-\d.]+)"),
+}
+_TERM_RE = re.compile(r"Mean episode rew_(\w+):\s*([-\d.]+)")
+SERIES_MAX_POINTS = 60  # downsample target — a training run can print thousands of
+                         # iteration blocks; the popup's chart only needs enough
+                         # points to see the trend, not every single one
+
+
+def parse_training_log(log_path: str) -> dict:
+    """rsl_rl's OnPolicyRunner prints one human-readable stats block per
+    logged iteration (see the sample block this regex set is built from, in
+    HANDOFF_stability_curriculum.md §1) — this is the ONLY place those
+    numbers exist; nothing in this codebase stores them structured today.
+    Rather than teach web_train.py to duplicate rsl_rl's own logging as
+    structured JSON mid-run (real surgery, for a value only the info popup
+    needs), this just re-reads the plain-text log after the fact. Best-
+    effort: a missing/unreadable/log-format-mismatched file returns empty
+    results rather than raising — a policy trained before this parser
+    existed, or from a log that's since been cleaned up, should still show
+    its meta.json fields, just without the chart.
+
+    Returns {"series": [{"iteration", "noise_std", "reward",
+    "episode_length"}, ...] (downsampled to SERIES_MAX_POINTS),
+    "final": {"noise_std", "reward", "episode_length"} | None,
+    "final_reward_terms": {<term>: value} | None} — the LAST fully-parsed
+    block's per-reward-term breakdown (`Mean episode rew_*` lines), for
+    "what is this policy actually optimizing for" at a glance."""
+    empty = {"series": [], "final": None, "final_reward_terms": None}
+    try:
+        with open(log_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return empty
+
+    records = []
+    current = None
+    for line in lines:
+        m = _ITER_RE.search(line)
+        if m:
+            if current and current.get("_complete"):
+                records.append(current)
+            current = {"iteration": int(m.group(1)), "_complete": False, "terms": {}}
+            continue
+        if current is None:
+            continue
+        for key, pattern in _STAT_RES.items():
+            m = pattern.search(line)
+            if m:
+                current[key] = float(m.group(1))
+                # A block is "complete" once its three headline stats are in —
+                # the per-term rew_* lines that follow are extra detail, not
+                # required for the point to count.
+                if all(k in current for k in _STAT_RES):
+                    current["_complete"] = True
+                break
+        else:
+            m = _TERM_RE.search(line)
+            if m:
+                current["terms"][m.group(1)] = float(m.group(2))
+    if current and current.get("_complete"):
+        records.append(current)
+
+    if not records:
+        return empty
+
+    step = max(1, len(records) // SERIES_MAX_POINTS)
+    sampled = records[::step]
+    if sampled[-1] is not records[-1]:
+        sampled.append(records[-1])  # always keep the true final point
+
+    series = [
+        {"iteration": r["iteration"], "noise_std": r["noise_std"],
+         "reward": r["reward"], "episode_length": r["episode_length"]}
+        for r in sampled
+    ]
+    last = records[-1]
+    final = {"noise_std": last["noise_std"], "reward": last["reward"],
+              "episode_length": last["episode_length"]}
+    return {"series": series, "final": final, "final_reward_terms": last["terms"] or None}
+
+
 @dataclasses.dataclass
 class TrainingJob:
     id: str
@@ -91,6 +179,10 @@ class TrainingJob:
     status: str = "running"  # running | done | failed
     finished_at: Optional[float] = None
     error: Optional[str] = None
+    base_policy: Optional[str] = None  # clone-from source name, if this job fine-tuned one
+    entropy_coef: Optional[float] = None  # None = task default was used, not overridden
+    reward_scale_overrides: Optional[Dict[str, float]] = None  # name -> overridden value,
+                                                                 # only the terms actually changed
     policy_path: Optional[str] = None
     train_checkpoint_path: Optional[str] = None  # rsl_rl's raw model_N.pt for this run,
                                                   # if web_train.py found one — see poll()
@@ -111,6 +203,9 @@ class TrainingJob:
             "elapsed_s": round((self.finished_at or time.time()) - self.started_at, 1),
             "error": self.error,
             "log_path": self.log_path,
+            "base_policy": self.base_policy,
+            "entropy_coef": self.entropy_coef,
+            "reward_scale_overrides": self.reward_scale_overrides,
         }
 
 
@@ -303,7 +398,8 @@ class TrainingManager:
         }
 
     def finalize_policy(self, name: str, task: str, checkpoint: str,
-                         train_checkpoint: Optional[str]) -> str:
+                         train_checkpoint: Optional[str],
+                         job: Optional["TrainingJob"] = None) -> str:
         """Called once a training job finishes (see swap_experiment.py's
         drain_finished_training()) to copy its two checkpoints out of
         rsl_rl's log_dir — which is logging/TensorBoard scratch space, not
@@ -311,16 +407,30 @@ class TrainingManager:
         self-contained `policies/<name>/` folder: `checkpoint.pt` (the
         deployable export, hot-loaded into the supervisor) alongside
         `train_checkpoint.pt` (the raw PPO state, fine-tunable via
-        Clone-from) and a small `meta.json`. This is what makes Clone-from
-        for anything trained through this UI *always* work — no more
-        walking back from an exported path guessing whether its log_dir
-        still exists (see _train_checkpoint_from_export()'s docstring for
-        the bad old way, still used as a fallback for --policy-supplied
-        checkpoints this UI never produced). Copies rather than moves, so
-        the original log_dir (TensorBoard events, every intermediate
-        model_N.pt) is untouched. Returns the new checkpoint path — load
-        THAT into the supervisor, not the original export, so what's
-        running matches what's registered."""
+        Clone-from), `train.log` (the job's own log, copied so the run's
+        full history survives even if `logs/_web_training/` is ever
+        cleaned up), and a `meta.json`. This is what makes Clone-from for
+        anything trained through this UI *always* work — no more walking
+        back from an exported path guessing whether its log_dir still
+        exists (see _train_checkpoint_from_export()'s docstring for the bad
+        old way, still used as a fallback for --policy-supplied checkpoints
+        this UI never produced). Copies rather than moves, so the original
+        log_dir (TensorBoard events, every intermediate model_N.pt) is
+        untouched. Returns the new checkpoint path — load THAT into the
+        supervisor, not the original export, so what's running matches
+        what's registered.
+
+        `job` is the finished TrainingJob, when the caller has one (every
+        real caller does — see drain_finished_training()) — it's what lets
+        meta.json carry the exact command that produced this policy, what
+        it was cloned from, the entropy_coef used, and (via
+        parse_training_log()) how its `Mean action noise std` / `Mean
+        reward` / `Mean episode length` actually moved over the run. This
+        is the ONE place that data gets captured — the info popup reads it
+        straight back out of meta.json rather than re-parsing anything.
+        Passing None (or a checkpoint this UI didn't itself launch) just
+        means a leaner meta.json — see policy_info()'s fallback for
+        policies with no job at all, e.g. `stable`."""
         dest_dir = POLICIES_DIR / name
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest_checkpoint = dest_dir / "checkpoint.pt"
@@ -329,13 +439,59 @@ class TrainingManager:
         if train_checkpoint and os.path.isfile(train_checkpoint):
             dest_train_checkpoint = dest_dir / "train_checkpoint.pt"
             shutil.copyfile(train_checkpoint, dest_train_checkpoint)
+
+        meta = {"task": task, "created_at": time.time(), "trained_via": "control web"}
+        if job is not None:
+            metrics = parse_training_log(job.log_path)
+            dest_log = None
+            if os.path.isfile(job.log_path):
+                dest_log = dest_dir / "train.log"
+                shutil.copyfile(job.log_path, dest_log)
+            meta.update({
+                "command": job.command,
+                "base_policy": job.base_policy,
+                "entropy_coef": job.entropy_coef,
+                "reward_scale_overrides": job.reward_scale_overrides,
+                "num_envs": job.num_envs,
+                "max_iterations": job.max_iterations,
+                "max_minutes": job.max_minutes,
+                "iterations_done": job.iterations_done,
+                "started_at": job.started_at,
+                "finished_at": job.finished_at,
+                "elapsed_s": round((job.finished_at or time.time()) - job.started_at, 1),
+                "source_log_dir": os.path.dirname(os.path.dirname(checkpoint))
+                    if os.path.basename(os.path.dirname(checkpoint)) == "exported" else None,
+                "log_path": str(dest_log) if dest_log else None,
+                "metrics": metrics,
+            })
         with open(dest_dir / "meta.json", "w") as f:
-            json.dump({"task": task, "created_at": time.time(), "trained_via": "control web"}, f)
+            json.dump(meta, f)
         self.register_source(
             name, task=task, checkpoint=str(dest_checkpoint),
             train_checkpoint=str(dest_train_checkpoint) if dest_train_checkpoint else None,
         )
         return str(dest_checkpoint)
+
+    def policy_info(self, name: str) -> dict:
+        """Everything the info popup shows for one policy — a light read of
+        `policies/<name>/meta.json` plus the file-existence facts a popup
+        needs to gray out a Clone-from-only action (e.g. no
+        train_checkpoint.pt). Deliberately does NOT re-parse the log on
+        every call — finalize_policy() already did that once and baked the
+        result into meta.json, so this stays cheap enough to call from a
+        button click. Raises FileNotFoundError for a name with no
+        policies/<name>/ folder at all (nothing to show — e.g. a policy
+        registered from a bare --policy CLI path with no self-contained
+        folder, like `stable`); the caller/UI is expected to handle that as
+        'no extra info available' rather than an error message."""
+        meta_path = POLICIES_DIR / name / "meta.json"
+        with open(meta_path) as f:
+            meta = json.load(f)
+        dest_dir = POLICIES_DIR / name
+        meta["name"] = name
+        meta["has_train_checkpoint"] = (dest_dir / "train_checkpoint.pt").is_file()
+        meta["checkpoint_path"] = str(dest_dir / "checkpoint.pt")
+        return meta
 
     def forget_source(self, name: str) -> None:
         """Drops a policy from the clone-from catalog and deletes its files
@@ -427,7 +583,27 @@ class TrainingManager:
                 "range": list(value_range) if value_range is not None else None,
             }
 
-        return {"base_height_target": self._task_base_height(task), "variables": variables}
+        # Every reward-term weight this task's own config defines, name ->
+        # current default — read straight off <Cfg>.rewards.scales rather
+        # than hand-maintaining a list here, so a task that adds/removes a
+        # term shows up correctly with zero changes on this side. This is
+        # what lets the Create Policy panel's "Reward weights" section be
+        # fully task-driven: it doesn't know what a task rewards, it just
+        # renders whatever this returns and lets --reward_scale override
+        # any subset of it (see web_train.py's --reward_scale).
+        reward_scales = {}
+        if env_cfg is not None:
+            from legged_gym.utils.helpers import class_to_dict
+            reward_scales = {
+                k: v for k, v in class_to_dict(env_cfg.rewards.scales).items()
+                if isinstance(v, (int, float))
+            }
+
+        return {
+            "base_height_target": self._task_base_height(task),
+            "variables": variables,
+            "reward_scales": reward_scales,
+        }
 
     # ---- launching ----
 
@@ -442,7 +618,8 @@ class TrainingManager:
                max_push_vel_xy: Optional[float] = None,
                push_interval_s: Optional[float] = None,
                push_dir: Optional[str] = None,
-               entropy_coef: Optional[float] = None) -> str:
+               entropy_coef: Optional[float] = None,
+               reward_scale_overrides: Optional[Dict[str, float]] = None) -> str:
         policy_name = (policy_name or "").strip()
         if not policy_name:
             raise ValueError("policy_name is required")
@@ -463,6 +640,15 @@ class TrainingManager:
             raise ValueError("num_envs must be positive")
         if entropy_coef is not None and entropy_coef < 0:
             raise ValueError("entropy_coef can't be negative")
+        if reward_scale_overrides:
+            # Validated here, not left to web_train.py's subprocess exit
+            # code — a typo'd term name should be a clear error in the
+            # panel immediately, not a job that dies 10s later with
+            # "exited with code 2, see the log".
+            known = self.task_defaults(task)["reward_scales"]
+            unknown = [k for k in reward_scale_overrides if k not in known]
+            if unknown:
+                raise ValueError(f"unknown reward scale(s) for task '{task}': {', '.join(unknown)}")
 
         from_checkpoint = None
         if base_policy:
@@ -518,6 +704,9 @@ class TrainingManager:
             argv += ["--push_dir", push_dir]
         if entropy_coef is not None:
             argv += ["--entropy_coef", str(entropy_coef)]
+        if reward_scale_overrides:
+            for name, value in sorted(reward_scale_overrides.items()):
+                argv += ["--reward_scale", name, str(value)]
 
         # Exactly what a human would type, modulo the interpreter path and
         # `-u` — this string is what the web UI already showed as a preview
@@ -542,6 +731,8 @@ class TrainingManager:
             log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
             started_at=time.time(),
             max_iterations=max_iterations, max_minutes=max_minutes, num_envs=num_envs,
+            base_policy=base_policy, entropy_coef=entropy_coef,
+            reward_scale_overrides=dict(reward_scale_overrides) if reward_scale_overrides else None,
         )
         self.jobs[job_id] = job
         self._procs[job_id] = proc

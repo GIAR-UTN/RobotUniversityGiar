@@ -38,7 +38,13 @@ class G1RoughCfg(G1Flat12DofCommonCfg):
             collision = 0.0
             action_rate = -0.01
             dof_pos_limits = -5.0
-            alive = 0.15
+            alive = 0.3  # was 0.15 — small step up, not a leap: episode length plateaued at
+                         # ~73/1000 steps across two curriculum runs (see HANDOFF_stability_
+                         # curriculum.md §6 hypothesis 3) with alive contributing very little
+                         # relative to the penalty terms above. Doubling it is enough to move
+                         # the needle if this is the bottleneck, without drowning out the other
+                         # terms — re-check the next run's `Mean episode length` before pushing
+                         # this further.
             hip_pos = -1.0
             contact_no_vel = -0.2
             feet_swing_height = -20.0

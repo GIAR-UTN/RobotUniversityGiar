@@ -165,6 +165,64 @@
   .help-popover[hidden]{display:none;}
   .help-popover p{margin:0;}
 
+  .policy-info-btn{
+    flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--muted); cursor:pointer; font:600 12px/1 inherit;
+  }
+  .policy-info-btn:hover{border-color:var(--accent2); color:var(--accent2);}
+
+  /* ---- policy info popup ---- */
+  .modal-overlay{
+    position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.45);
+    display:flex; align-items:center; justify-content:center; padding:1.2rem;
+  }
+  .modal-overlay[hidden]{display:none;}
+  .modal-box{
+    background:var(--bg-raised); color:var(--ink); border:1px solid var(--line);
+    border-radius:10px; max-width:640px; width:100%; max-height:85vh;
+    overflow-y:auto; box-shadow:0 12px 40px var(--cap-shadow); padding:0;
+  }
+  .modal-head{
+    position:sticky; top:0; display:flex; align-items:center; justify-content:space-between;
+    padding:.8rem 1rem; border-bottom:1px solid var(--line); background:var(--bg-raised);
+  }
+  .modal-head h2{margin:0; font-size:1rem;}
+  .modal-close{
+    flex:none; width:28px; height:28px; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--muted); cursor:pointer; font-size:1.1rem; line-height:1;
+  }
+  .modal-close:hover{border-color:var(--danger); color:var(--danger);}
+  #policy-info-body{padding:1rem;}
+  .info-empty{color:var(--muted); font-size:.85rem;}
+  .info-section{margin-bottom:1rem;}
+  .info-section h3{
+    font-size:.68rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+    margin:0 0 .4rem;
+  }
+  .info-kv{display:grid; grid-template-columns:auto 1fr; gap:.25rem .7rem; font-size:.82rem;}
+  .info-kv dt{color:var(--muted); white-space:nowrap;}
+  .info-kv dd{margin:0; word-break:break-all;}
+  .info-cmd{
+    display:block; font-family:ui-monospace,monospace; font-size:.72rem; white-space:pre-wrap;
+    word-break:break-all; background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .6rem;
+  }
+  .info-stat-row{display:flex; gap:.6rem; flex-wrap:wrap;}
+  .info-stat{
+    flex:1; min-width:110px; border:1px solid var(--line); border-radius:8px;
+    padding:.5rem .6rem; text-align:center;
+  }
+  .info-stat .val{font-size:1.15rem; font-weight:700; font-family:ui-monospace,monospace;}
+  .info-stat .lbl{font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
+  .info-chart{width:100%; height:110px; display:block;}
+  .info-chart-caption{font-size:.65rem; color:var(--muted); text-align:right; margin-top:.15rem;}
+  .info-terms{display:flex; flex-direction:column; gap:.2rem;}
+  .info-term-row{display:grid; grid-template-columns:9rem 1fr auto; align-items:center; gap:.4rem; font-size:.74rem;}
+  .info-term-name{font-family:ui-monospace,monospace; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .info-term-bar-track{position:relative; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden;}
+  .info-term-bar{position:absolute; top:0; bottom:0;}
+  .info-term-val{font-family:ui-monospace,monospace; text-align:right; white-space:nowrap;}
+
   .policy-btn, .action-btn{
     display:flex; align-items:center; justify-content:space-between; width:100%;
     text-align:left;
@@ -277,6 +335,16 @@
   .range-pair input{width:0; flex:1;}
   .range-pair span{color:var(--muted); font-size:.75rem;}
   .field-hint{font-size:.68rem; color:var(--muted); margin:0;}
+
+  /* ---- Reward weights grid (Create Policy, advanced) ---- */
+  .reward-scale-grid{display:grid; grid-template-columns:1fr 1fr; gap:.35rem .5rem; margin-top:.2rem;}
+  .reward-scale-field{display:flex; flex-direction:column; gap:.15rem;}
+  .reward-scale-field label{font-size:.65rem; color:var(--muted); font-family:var(--mono, monospace);}
+  .reward-scale-field input{
+    font:inherit; font-size:.8rem; padding:.25rem .4rem; border-radius:5px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); width:100%;
+  }
+  .reward-scale-field input:not(:placeholder-shown){border-color:var(--accent2); color:var(--accent-ink);}
 
   /* ---- live telemetry panel ---- */
   /* Label/badge and value are on separate rows, and each row's height/
@@ -679,6 +747,12 @@
               <input type="number" id="train-entropy-coef" step="0.001" min="0" placeholder="task default (0.01)">
               <p class="field-hint">How much randomness PPO keeps injecting into actions as it trains — higher explores more, lower settles into a fixed behavior sooner. This should shrink toward 0 as training converges; if instead it keeps <em>growing</em> the whole run (watch "Mean action noise std" in a job's log — it should trend down, never up), the policy gets more erratic and jittery the longer it trains instead of better. That's this set too high for how weak this task's actual reward signal is — lower it (e.g. 0.001&ndash;0.003) rather than training longer.</p>
             </div>
+
+            <div class="field-row">
+              <label>Reward weights <span style="font-weight:400; color:var(--muted);">(advanced — every term this task's own reward function defines)</span></label>
+              <p class="field-hint">Leave a field blank to keep the task's own default (shown as the placeholder). Positive rewards more of that behavior, negative penalizes it — magnitude is relative to the OTHER terms below, not an absolute scale, so nudge one at a time and compare "Mean episode length" / "Mean reward" before/after (see a policy's info popup for that history). E.g. <code>alive</code> is the per-step bonus for still being upright — raise it if the robot converges to a gait that scores fine per-step but keeps falling early.</p>
+              <div id="train-reward-scales" class="reward-scale-grid"></div>
+            </div>
           </div>
 
           <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
@@ -693,6 +767,16 @@
 </main>
 
 <footer id="footer">connecting&hellip;</footer>
+
+<div id="policy-info-overlay" class="modal-overlay" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="policy-info-title">
+    <div class="modal-head">
+      <h2 id="policy-info-title">Policy</h2>
+      <button type="button" id="policy-info-close" class="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="policy-info-body">Loading&hellip;</div>
+  </div>
+</div>
 
 <script src="/app.js"></script>
 </body>

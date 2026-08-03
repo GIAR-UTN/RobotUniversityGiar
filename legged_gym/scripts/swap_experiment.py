@@ -147,7 +147,7 @@ def main():
                 # running matches what's registered.
                 final_checkpoint = training.finalize_policy(
                     job.policy_name, task=job.task, checkpoint=job.policy_path,
-                    train_checkpoint=job.train_checkpoint_path,
+                    train_checkpoint=job.train_checkpoint_path, job=job,
                 )
                 new_policy = load_policy(
                     job.policy_name, final_checkpoint,

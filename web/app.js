@@ -179,6 +179,21 @@ function policyButtonRow(name, active) {
   btn.onclick = () => send('request_switch', { name });
   row.appendChild(btn);
 
+  // Opens the rich info popup (§ policy info) — everything this session
+  // knows about how `name` came to exist: the exact command, what it was
+  // cloned from, entropy_coef/reward weight overrides, file paths, and (for
+  // anything trained through this UI) the parsed noise-std/reward/episode-
+  // length trend. This is the pivot the "Done" training-job cards used to
+  // half-cover — see renderTrainingJobs()'s docstring for why those cards
+  // no longer stick around once a policy exists.
+  const info = document.createElement('button');
+  info.className = 'policy-info-btn';
+  info.type = 'button';
+  info.textContent = 'ⓘ';
+  info.title = `Info — how "${name}" was trained`;
+  info.onclick = (e) => { e.stopPropagation(); openPolicyInfo(name); };
+  row.appendChild(info);
+
   // No keyboard shortcut, no auto-confirm — discarding a policy deletes its
   // checkpoint file, and this UI already deliberately dropped its one
   // irreversible keybinding once before (the E-STOP key). Disabled for the
@@ -494,9 +509,10 @@ function updateCommandUI() {
 // armed only while no drawer is open, so reading Docs can't accidentally
 // drive the robot.
 let openDrawerName = null;
+let policyInfoOpen = false; // true while the policy info popup is up — see openPolicyInfo()
 
 function setKeysArmed() {
-  keysArmed = openDrawerName === null;
+  keysArmed = openDrawerName === null && !policyInfoOpen;
 }
 
 function closeDrawer() {
@@ -1088,6 +1104,7 @@ const trainPushVel = $('#train-push-vel');
 const trainPushInterval = $('#train-push-interval');
 const trainPushDir = $('#train-push-dir');
 const trainEntropyCoef = $('#train-entropy-coef');
+const trainRewardScales = $('#train-reward-scales');
 const trainCmdPreview = $('#train-cmd-preview');
 const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
@@ -1280,6 +1297,65 @@ function resolveHeight() {
   return targetReference.value + sign * parseFloat(deltaRaw);
 }
 
+// ---- reward weights (advanced) — every <Cfg>.rewards.scales term the ----
+// chosen task actually defines, one optional override field each. This is
+// the direct answer to "what reward configurations aren't in the UI yet" —
+// rather than hand-picking a few (alive, base_height, ...) and leaving the
+// rest CLI-only, every term the backend's task_defaults().reward_scales
+// returns gets a field, sourced from the task's own config so it never
+// drifts out of sync with what a task actually rewards (see
+// TrainingManager.task_defaults()'s docstring). Blank = task default,
+// exactly like every other optional field in this form.
+function refreshRewardScaleFields() {
+  const base = trainBase.value, task = trainTask.value;
+  const effectiveTask = task || trainingCatalog?.base_policies.find((b) => b.name === base)?.task;
+  if (!effectiveTask) { renderRewardScaleFields({}); return; }
+  call('task_defaults', { task: effectiveTask }).then((d) => {
+    renderRewardScaleFields(d.reward_scales || {});
+  }).catch(() => renderRewardScaleFields({}));
+}
+
+function renderRewardScaleFields(scales) {
+  // Preserve whatever the user already typed for a term that's still
+  // present after a task change (fine-tuning bases share the same reward
+  // vocabulary almost always) — only terms that no longer exist get
+  // dropped, silently, same as any other field that stops applying.
+  const prevValues = {};
+  trainRewardScales.querySelectorAll('input').forEach((el) => {
+    if (el.value.trim() !== '') prevValues[el.dataset.term] = el.value;
+  });
+
+  trainRewardScales.innerHTML = '';
+  for (const [term, defaultValue] of Object.entries(scales).sort(([a], [b]) => a.localeCompare(b))) {
+    const wrap = document.createElement('div');
+    wrap.className = 'reward-scale-field';
+    const label = document.createElement('label');
+    label.textContent = term;
+    label.htmlFor = `train-reward-${term}`;
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.step = 'any';
+    input.id = `train-reward-${term}`;
+    input.dataset.term = term;
+    input.placeholder = String(defaultValue);
+    if (prevValues[term] !== undefined) input.value = prevValues[term];
+    input.addEventListener('input', updateCommandPreview);
+    input.addEventListener('change', updateCommandPreview);
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    trainRewardScales.appendChild(wrap);
+  }
+}
+
+function rewardScaleOverrides() {
+  const overrides = {};
+  trainRewardScales.querySelectorAll('input').forEach((el) => {
+    const raw = el.value.trim();
+    if (raw !== '') overrides[el.dataset.term] = parseFloat(raw);
+  });
+  return Object.keys(overrides).length ? overrides : null;
+}
+
 function refreshTrainingCatalog() {
   call('training_catalog').then((catalog) => {
     trainingCatalog = catalog;
@@ -1320,6 +1396,7 @@ function refreshTrainingCatalog() {
     renderVariableChrome();
 
     if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
+    refreshRewardScaleFields();
     updateCommandPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
@@ -1355,10 +1432,11 @@ function composeTrainingParams() {
   const pushDir = trainPushDir.value || null;
   const entropyCoefRaw = trainEntropyCoef.value.trim();
   const entropyCoef = entropyCoefRaw === '' ? null : parseFloat(entropyCoefRaw);
+  const rewardScales = rewardScaleOverrides();
   return {
     name, task, iterations: Number.isFinite(iterations) ? iterations : null,
     minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
-    height, push, pushVel, pushInterval, pushDir, entropyCoef,
+    height, push, pushVel, pushInterval, pushDir, entropyCoef, rewardScales,
   };
 }
 
@@ -1390,6 +1468,11 @@ function updateCommandPreview() {
   if (p.pushInterval !== null) parts.push(`--push_interval_s ${p.pushInterval}`);
   if (p.pushDir) parts.push(`--push_dir ${p.pushDir}`);
   if (p.entropyCoef !== null) parts.push(`--entropy_coef ${p.entropyCoef}`);
+  if (p.rewardScales) {
+    for (const [term, value] of Object.entries(p.rewardScales).sort(([a], [b]) => a.localeCompare(b))) {
+      parts.push(`--reward_scale ${term} ${value}`);
+    }
+  }
   trainCmdPreview.textContent = parts.join(' ');
 }
 
@@ -1410,6 +1493,7 @@ btnNewPolicy.addEventListener('click', () => {
 [trainBase, trainTask].forEach((el) => {
   el.addEventListener('change', () => {
     if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
+    refreshRewardScaleFields();
   });
 });
 [trainIters, trainMinutes, trainEnvs].forEach((el) => {
@@ -1442,7 +1526,7 @@ createPolicyForm.addEventListener('submit', (e) => {
     base_height_target: p.height,
     push_robots: p.push === null ? null : p.push === 'on',
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
-    entropy_coef: p.entropyCoef,
+    entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
   }).then(() => {
     createPolicyForm.reset();
     createPolicyForm.hidden = true;
@@ -1475,8 +1559,18 @@ function renderTrainingJobs(jobs) {
     jobs.some((j) => j.status === 'done' && !renderedTrainingJobsKey.includes(`${j.id}:done`));
   renderedTrainingJobsKey = key;
 
+  // A finished job's whole story (command, paths, metrics) now lives in
+  // the resulting policy's own info popup — see openPolicyInfo() /
+  // TrainingManager.finalize_policy(). Nothing here ever prunes
+  // TrainingManager.jobs, so without this filter every "done" card would
+  // just accumulate in this panel forever, duplicating (with less detail)
+  // what the Policies list's ⓘ button already shows. 'running' (live
+  // progress) and 'failed' (needs attention, not recorded anywhere else)
+  // still show here — those aren't policies yet.
+  const visibleJobs = jobs.filter((j) => j.status !== 'done');
+
   trainingJobsEl.innerHTML = '';
-  for (const job of jobs) {
+  for (const job of visibleJobs) {
     const row = document.createElement('div');
     row.className = `job-row ${job.status}`;
     const head = document.createElement('div');
@@ -1518,6 +1612,238 @@ function renderTrainingJobs(jobs) {
   // swap_experiment.py's drain_finished_training()) — refresh the catalog
   // so it's immediately choosable as a fine-tuning base too.
   if (justFinished) refreshTrainingCatalog();
+}
+
+// ---- policy info popup ----
+// Backed by ControlService.policy_info() (legged_gym/control/service.py),
+// which reads policies/<name>/meta.json — written once, at the end of
+// TrainingManager.finalize_policy(), from the job that produced the policy
+// PLUS a parse of that job's own .log file (see
+// legged_gym/control/training.py's parse_training_log()). Nothing here
+// talks to the log file directly; everything shown is already baked into
+// meta.json by the time this popup can open. A policy with no meta.json at
+// all (an externally-sourced checkpoint, e.g. `stable`) gets the "no
+// training info" empty state instead of an error — see policy_info()'s own
+// docstring for why that's a None, not a raised error.
+
+const policyInfoOverlay = $('#policy-info-overlay');
+const policyInfoTitle = $('#policy-info-title');
+const policyInfoBody = $('#policy-info-body');
+const policyInfoClose = $('#policy-info-close');
+
+function openPolicyInfo(name) {
+  policyInfoTitle.textContent = name;
+  policyInfoBody.innerHTML = 'Loading…';
+  policyInfoOverlay.hidden = false;
+  policyInfoOpen = true;
+  setKeysArmed();
+  call('policy_info', { name }).then((info) => {
+    policyInfoBody.innerHTML = '';
+    policyInfoBody.appendChild(info ? renderPolicyInfo(info) : renderPolicyInfoEmpty());
+  }).catch((e) => {
+    policyInfoBody.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'info-empty';
+    p.textContent = `Couldn't load info: ${e.message}`;
+    policyInfoBody.appendChild(p);
+  });
+}
+
+function closePolicyInfo() {
+  policyInfoOverlay.hidden = true;
+  policyInfoOpen = false;
+  setKeysArmed();
+}
+
+policyInfoClose.addEventListener('click', closePolicyInfo);
+policyInfoOverlay.addEventListener('click', (e) => { if (e.target === policyInfoOverlay) closePolicyInfo(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && policyInfoOpen) closePolicyInfo(); }, true);
+
+function renderPolicyInfoEmpty() {
+  const p = document.createElement('p');
+  p.className = 'info-empty';
+  p.textContent = 'No training info recorded for this policy — it was registered from a checkpoint '
+    + "trained outside this UI (e.g. an externally-sourced .pt with no local training history), "
+    + 'so there is no command/log to show.';
+  return p;
+}
+
+function fmtDate(epochSeconds) {
+  if (epochSeconds == null) return '–';
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+function fmtDuration(seconds) {
+  if (seconds == null) return '–';
+  const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function infoSection(titleText) {
+  const section = document.createElement('div');
+  section.className = 'info-section';
+  const h = document.createElement('h3');
+  h.textContent = titleText;
+  section.appendChild(h);
+  return section;
+}
+
+function kvList(pairs) {
+  const dl = document.createElement('dl');
+  dl.className = 'info-kv';
+  for (const [k, v] of pairs) {
+    if (v == null || v === '') continue;
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    dl.appendChild(dt); dl.appendChild(dd);
+  }
+  return dl;
+}
+
+// Plain inline SVG polylines — no charting dependency, three series (noise
+// std / reward / episode length) on independent 0–max scales (their units
+// aren't comparable) sharing one x-axis (iteration). Didactic over
+// precise: this is "did it trend the right way", not a dashboard.
+function renderSeriesChart(series) {
+  const width = 560, height = 100, pad = 4;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  svg.classList.add('info-chart');
+
+  const iterations = series.map((p) => p.iteration);
+  const xMin = Math.min(...iterations), xMax = Math.max(...iterations) || 1;
+  const xScale = (it) => pad + (width - 2 * pad) * (xMax === xMin ? 0 : (it - xMin) / (xMax - xMin));
+
+  const seriesSpecs = [
+    { key: 'noise_std', color: 'var(--danger, #d9534f)' },
+    { key: 'reward', color: 'var(--accent2)' },
+    { key: 'episode_length', color: 'var(--accent, #c77b2f)' },
+  ];
+  for (const spec of seriesSpecs) {
+    const values = series.map((p) => p[spec.key]);
+    const yMax = Math.max(...values, 1e-6), yMin = Math.min(...values, 0);
+    const yScale = (v) => height - pad - (height - 2 * pad) * ((v - yMin) / ((yMax - yMin) || 1));
+    const points = series.map((p) => `${xScale(p.iteration).toFixed(1)},${yScale(p[spec.key]).toFixed(1)}`).join(' ');
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+    line.setAttribute('points', points);
+    line.setAttribute('fill', 'none');
+    line.setAttribute('stroke', spec.color);
+    line.setAttribute('stroke-width', '1.5');
+    svg.appendChild(line);
+  }
+  return svg;
+}
+
+function renderRewardTerms(terms) {
+  const wrap = document.createElement('div');
+  wrap.className = 'info-terms';
+  const maxAbs = Math.max(...Object.values(terms).map(Math.abs), 1e-9);
+  for (const [term, value] of Object.entries(terms).sort(([, a], [, b]) => Math.abs(b) - Math.abs(a))) {
+    const row = document.createElement('div');
+    row.className = 'info-term-row';
+    const name = document.createElement('span');
+    name.className = 'info-term-name';
+    name.textContent = term;
+    name.title = term;
+    const track = document.createElement('div');
+    track.className = 'info-term-bar-track';
+    const bar = document.createElement('div');
+    bar.className = 'info-term-bar';
+    // Track spans [-maxAbs, +maxAbs] centered at 50% — a term's bar grows
+    // right from center if it rewards (positive), left if it penalizes.
+    const halfPct = (Math.abs(value) / maxAbs) * 50;
+    bar.style.width = `${halfPct}%`;
+    bar.style.left = value >= 0 ? '50%' : `${50 - halfPct}%`;
+    bar.style.background = value >= 0 ? 'var(--accent2)' : 'var(--danger, #d9534f)';
+    track.appendChild(bar);
+    const val = document.createElement('span');
+    val.className = 'info-term-val';
+    val.textContent = value.toFixed(4);
+    row.appendChild(name); row.appendChild(track); row.appendChild(val);
+    wrap.appendChild(row);
+  }
+  return wrap;
+}
+
+function renderPolicyInfo(info) {
+  const frag = document.createDocumentFragment();
+
+  const provenance = infoSection('Provenance');
+  provenance.appendChild(kvList([
+    ['Task', info.task],
+    ['Cloned from', info.base_policy],
+    ['Trained via', info.trained_via],
+    ['Created', fmtDate(info.created_at)],
+  ]));
+  if (info.command) {
+    const cmd = document.createElement('code');
+    cmd.className = 'info-cmd';
+    cmd.textContent = info.command;
+    provenance.appendChild(cmd);
+  }
+  frag.appendChild(provenance);
+
+  if (info.entropy_coef != null || (info.reward_scale_overrides && Object.keys(info.reward_scale_overrides).length)) {
+    const tuning = infoSection('Tuning overrides (vs. task defaults)');
+    const pairs = [['entropy_coef', info.entropy_coef]];
+    for (const [k, v] of Object.entries(info.reward_scale_overrides || {})) pairs.push([`reward: ${k}`, v]);
+    tuning.appendChild(kvList(pairs));
+    frag.appendChild(tuning);
+  }
+
+  const run = infoSection('Training run');
+  run.appendChild(kvList([
+    ['Iterations', info.iterations_done],
+    ['Requested budget', info.max_iterations ? `${info.max_iterations} iterations` : (info.max_minutes ? `${info.max_minutes} min` : null)],
+    ['Wall time', fmtDuration(info.elapsed_s)],
+    ['Parallel envs', info.num_envs],
+  ]));
+  frag.appendChild(run);
+
+  if (info.metrics?.final) {
+    const results = infoSection('Result');
+    const statRow = document.createElement('div');
+    statRow.className = 'info-stat-row';
+    const stats = [
+      ['episode_length', 'Episode length', info.metrics.final.episode_length?.toFixed(1)],
+      ['reward', 'Mean reward', info.metrics.final.reward?.toFixed(3)],
+      ['noise_std', 'Action noise std', info.metrics.final.noise_std?.toFixed(3)],
+    ];
+    for (const [, label, val] of stats) {
+      const box = document.createElement('div');
+      box.className = 'info-stat';
+      const v = document.createElement('div'); v.className = 'val'; v.textContent = val ?? '–';
+      const l = document.createElement('div'); l.className = 'lbl'; l.textContent = label;
+      box.appendChild(v); box.appendChild(l);
+      statRow.appendChild(box);
+    }
+    results.appendChild(statRow);
+
+    if (info.metrics.series?.length > 1) {
+      results.appendChild(renderSeriesChart(info.metrics.series));
+      const caption = document.createElement('div');
+      caption.className = 'info-chart-caption';
+      caption.textContent = `over ${info.metrics.series[0].iteration}→${info.metrics.series[info.metrics.series.length - 1].iteration} iterations — noise std / reward / episode length`;
+      results.appendChild(caption);
+    }
+    frag.appendChild(results);
+  }
+
+  if (info.metrics?.final_reward_terms) {
+    const terms = infoSection('What the reward actually optimized (final iteration)');
+    terms.appendChild(renderRewardTerms(info.metrics.final_reward_terms));
+    frag.appendChild(terms);
+  }
+
+  const paths = infoSection('Files');
+  paths.appendChild(kvList([
+    ['Checkpoint', info.checkpoint_path],
+    ['Fine-tunable from', info.has_train_checkpoint ? 'yes (train_checkpoint.pt)' : 'no'],
+    ['Full log', info.log_path],
+  ]));
+  frag.appendChild(paths);
+
+  return frag;
 }
 
 // ---- boot ----

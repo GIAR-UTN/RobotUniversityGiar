@@ -69,6 +69,23 @@ class ControlService:
         if self.training is not None:
             self.training.forget_source(name)
 
+    def policy_info(self, name: str) -> Optional[dict]:
+        """Backs the Policies list's "info" popup — everything known about
+        how `name` came to exist: the exact command that trained it, what
+        it was cloned from, entropy_coef, file paths, and (when available)
+        the parsed `Mean action noise std` / `Mean reward` / `Mean episode
+        length` trend plus final reward-term breakdown. Returns None rather
+        than raising for a policy with no `policies/<name>/meta.json` (e.g.
+        `stable`, an external checkpoint with no training history at all —
+        see TrainingManager.finalize_policy()'s docstring) — the UI shows
+        "no training info available" for that case instead of an error."""
+        if self.training is None:
+            return None
+        try:
+            return self.training.policy_info(name)
+        except (FileNotFoundError, OSError):
+            return None
+
     def status(self) -> dict:
         s = self.supervisor.status
         s["paused"] = self.paused
@@ -187,7 +204,8 @@ class ControlService:
                         max_push_vel_xy: Optional[float] = None,
                         push_interval_s: Optional[float] = None,
                         push_dir: Optional[str] = None,
-                        entropy_coef: Optional[float] = None) -> str:
+                        entropy_coef: Optional[float] = None,
+                        reward_scale_overrides: Optional[dict] = None) -> str:
         """Launches a new training job; returns its job id. Training runs
         out-of-process (see TrainingManager) — this call returns immediately,
         the job's progress shows up in status()['training_jobs'], and the
@@ -204,7 +222,13 @@ class ControlService:
         entropy_coef overrides PPO's exploration-noise bonus weight — watch
         for a run whose action noise std climbs instead of shrinks (visible
         live via web_train.py's log); that's this knob set too high for how
-        weak the task's actual reward signal is, not a bug to fix elsewhere."""
+        weak the task's actual reward signal is, not a bug to fix elsewhere.
+        reward_scale_overrides overrides any subset of the task's own
+        <Cfg>.rewards.scales — see TrainingManager.task_defaults()'s
+        'reward_scales' for the full set this task defines and its current
+        default for each, and web_train.py's --reward_scale for the
+        per-term sign convention (positive rewards more of that term,
+        negative penalizes it)."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         return self.training.start(
@@ -215,6 +239,7 @@ class ControlService:
             entropy_coef=entropy_coef,
             max_push_vel_xy=max_push_vel_xy, push_interval_s=push_interval_s,
             push_dir=push_dir,
+            reward_scale_overrides=reward_scale_overrides,
         )
 
     def task_defaults(self, task: str) -> dict:

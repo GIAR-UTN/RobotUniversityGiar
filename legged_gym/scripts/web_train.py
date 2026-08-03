@@ -86,6 +86,15 @@ def main():
                          help="bias push direction relative to the robot's heading instead of sampling it "
                               "isotropically (default) — named for where the shove comes from, e.g. 'behind' "
                               "shoves the robot forward")
+    parser.add_argument('--reward_scale', type=str, nargs=2, action='append', default=None,
+                         metavar=('NAME', 'VALUE'),
+                         help="override one reward-term weight, e.g. --reward_scale alive 0.3 — repeatable, "
+                              "one flag per term. NAME is any attribute of the task's own "
+                              "<Cfg>.rewards.scales (e.g. alive, base_height, tracking_lin_vel, action_rate, "
+                              "dof_pos_limits — see the task's *_config.py for the full list and what each "
+                              "one actually penalizes/rewards). A positive scale rewards more of that term, "
+                              "negative penalizes it; magnitude is relative to the other terms, not absolute — "
+                              "there's no fixed 'good' value, only relative-to-what-it-was-before.")
     parser.add_argument('--entropy_coef', type=float, default=None,
                          help="PPO's exploration-noise bonus weight (default: the task's own train_cfg.algorithm.entropy_coef). "
                               "Too high relative to a weak task reward and the action noise std can grow "
@@ -125,6 +134,12 @@ def main():
         env_cfg.domain_rand.push_interval_s = cli.push_interval_s
     if cli.push_dir is not None:
         env_cfg.domain_rand.push_dir = cli.push_dir
+    if cli.reward_scale:
+        for name, value in cli.reward_scale:
+            if not hasattr(env_cfg.rewards.scales, name):
+                parser.error(f"unknown reward scale '{name}' for task '{cli.task}' — "
+                              f"see {type(env_cfg.rewards.scales).__name__} for the valid names")
+            setattr(env_cfg.rewards.scales, name, float(value))
     if cli.entropy_coef is not None:
         train_cfg.algorithm.entropy_coef = cli.entropy_coef
 
