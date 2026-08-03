@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from .base_config import BaseConfig
 
 # Type aliases for common config patterns
@@ -194,6 +194,13 @@ class LeggedRobotCfg(BaseConfig):
         push_robots: bool = True
         push_interval_s: int = 15
         max_push_vel_xy: float = 1.0
+        # Biases push direction relative to the robot's own heading instead
+        # of sampling isotropically. None (default) reproduces the original
+        # fully-random behavior. One of 'behind'/'front'/'left'/'right' —
+        # named for where the shove comes FROM (e.g. 'behind' shoves the
+        # robot forward) — see Simulator.sample_push_vel_xy() for the angle
+        # mapping shared by every simulator backend.
+        push_dir: Optional[str] = None
         # randomize the position of Center of Mass (CoM) to simulate modeling errors
         randomize_com_displacement: bool = True
         com_pos_x_range: List[float] = [-0.01, 0.01]

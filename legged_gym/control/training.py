@@ -208,9 +208,28 @@ class TrainingManager:
         return {
             "tasks": tasks,
             "base_policies": [
-                {"name": name, **info} for name, info in sorted(self.policy_sources.items())
+                {"name": name, "base_height_target": self._task_base_height(info["task"]), **info}
+                for name, info in sorted(self.policy_sources.items())
             ],
         }
+
+    def _task_base_height(self, task: str) -> Optional[float]:
+        from legged_gym.utils import task_registry
+        try:
+            env_cfg, _ = task_registry.get_cfgs(name=task)
+        except Exception:  # noqa: BLE001 - a broken/unregistered cfg shouldn't break the catalog
+            return None
+        return getattr(env_cfg.rewards, "base_height_target", None)
+
+    def task_defaults(self, task: str) -> dict:
+        """Reference values the Create Policy panel reads off a task's own
+        config — WITHOUT running the sim — so 'relative' target fields (e.g.
+        raise/lower the pelvis by N cm) have something concrete to add a
+        delta to. This is the task's config default, not necessarily the
+        exact value a specific checkpoint was actually trained with (a prior
+        job may have overridden it) — the best available reference short of
+        loading and stepping that checkpoint."""
+        return {"base_height_target": self._task_base_height(task)}
 
     # ---- launching ----
 
@@ -223,7 +242,8 @@ class TrainingManager:
                base_height_target: Optional[float] = None,
                push_robots: Optional[bool] = None,
                max_push_vel_xy: Optional[float] = None,
-               push_interval_s: Optional[float] = None) -> str:
+               push_interval_s: Optional[float] = None,
+               push_dir: Optional[str] = None) -> str:
         policy_name = (policy_name or "").strip()
         if not policy_name:
             raise ValueError("policy_name is required")
@@ -284,6 +304,8 @@ class TrainingManager:
             argv += ["--max_push_vel_xy", str(max_push_vel_xy)]
         if push_interval_s is not None:
             argv += ["--push_interval_s", str(push_interval_s)]
+        if push_dir is not None:
+            argv += ["--push_dir", push_dir]
 
         # Exactly what a human would type, modulo the interpreter path and
         # `-u` — this string is what the web UI already showed as a preview

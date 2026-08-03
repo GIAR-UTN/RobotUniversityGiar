@@ -166,8 +166,7 @@ class IsaacGymSimulator(Simulator):
             self._terrain_types[env_ids]]
     
     def push_robots(self):
-        max_vel = self._cfg.domain_rand.max_push_vel_xy
-        self._rand_push_vels[:, :2] = torch_rand_float(-max_vel, max_vel, (self._num_envs, 2), device=self._device)
+        self._rand_push_vels[:, :2] = self.sample_push_vel_xy()
         self._root_states[:, 7:9] += self._rand_push_vels[:, :2] # set random base velocity in xy plane
         self._gym.set_actor_root_state_tensor(self._sim, gymtorch.unwrap_tensor(self._root_states))
         self._last_base_lin_vel[:] = self._base_lin_vel[:]

@@ -123,7 +123,8 @@ class ControlService:
                         base_height_target: Optional[float] = None,
                         push_robots: Optional[bool] = None,
                         max_push_vel_xy: Optional[float] = None,
-                        push_interval_s: Optional[float] = None) -> str:
+                        push_interval_s: Optional[float] = None,
+                        push_dir: Optional[str] = None) -> str:
         """Launches a new training job; returns its job id. Training runs
         out-of-process (see TrainingManager) — this call returns immediately,
         the job's progress shows up in status()['training_jobs'], and the
@@ -145,7 +146,16 @@ class ControlService:
             base_policy=base_policy, cmd_vx=cmd_vx, cmd_vy=cmd_vy, cmd_yaw=cmd_yaw,
             base_height_target=base_height_target, push_robots=push_robots,
             max_push_vel_xy=max_push_vel_xy, push_interval_s=push_interval_s,
+            push_dir=push_dir,
         )
+
+    def task_defaults(self, task: str) -> dict:
+        """Reference values (e.g. the task's own default pelvis height) for
+        the Create Policy panel's 'relative' target fields — see
+        TrainingManager.task_defaults for what these are and aren't."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        return self.training.task_defaults(task)
 
     def system_info(self) -> dict:
         """What this server's machine actually is — CPU, RAM, GPU
@@ -190,15 +200,19 @@ class ControlService:
             raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_command")
         set_command_fn(vx, vy, yaw)
 
-    def set_random_events(self, push_robots: bool, auto_commands: bool) -> None:
+    def set_random_events(self, push_robots: bool, auto_commands: bool,
+                           push_dir: Optional[str] = None) -> None:
         """Independently toggles random pushes and command auto-resampling
         — see SimAdapter.set_random_events. Turning both off is what lets
         you drive the robot deliberately instead of watching it react to
-        the same randomized stressors used during training."""
+        the same randomized stressors used during training. push_dir biases
+        push direction the same way Create Policy's training-time push_dir
+        does (None/'behind'/'front'/'left'/'right') — kept as the same
+        vocabulary on purpose, see Simulator.sample_push_vel_xy()."""
         fn = getattr(self.adapter, "set_random_events", None)
         if fn is None:
             raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_random_events")
-        fn(push_robots, auto_commands)
+        fn(push_robots, auto_commands, push_dir)
 
     def estop(self) -> None:
         """Emergency stop. Trips safety (which forces the damping fallback —

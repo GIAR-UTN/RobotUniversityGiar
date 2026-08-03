@@ -1,9 +1,18 @@
 from abc import ABC, abstractmethod
+import math
 import torch
 from torch import Tensor
 import numpy as np
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
-from legged_gym.utils.math_utils import dr_normalize
+from legged_gym.utils.math_utils import dr_normalize, quat_apply_yaw, torch_rand_float
+
+# domain_rand.push_dir presets — angle (deg) of the applied push force in
+# the robot's own horizontal (yaw-only) frame; 0 = +local_x (forward),
+# rotating toward +local_y (left). Named for where the shove comes FROM
+# (matches the web UI's wording), since the force vector points the
+# opposite way from the hit — 'behind' shoves the robot forward.
+PUSH_DIR_BIAS_DEG = {"behind": 0.0, "front": 180.0, "left": -90.0, "right": 90.0}
+PUSH_DIR_SPREAD_DEG = 60.0  # cone width around the bias — biased, not a fixed vector
 
 """ ********** Base Simulator ********** """
 class Simulator(ABC):
@@ -88,6 +97,32 @@ class Simulator(ABC):
         """Apply perturbation velocity to the base of the robot as domain randomization.
         """
         return
+
+    def sample_push_vel_xy(self) -> Tensor:
+        """World-frame (num_envs, 2) push velocity for one push_robots() call
+        — the sampling logic every backend's push_robots() delegates to, so
+        'behind'/'front'/'left'/'right' behave identically in Isaac Gym,
+        Genesis and Isaac Lab. With domain_rand.push_dir unset (default),
+        this reproduces the original isotropic torch_rand_float(-max, max)
+        sampling exactly. With a direction set, it samples a magnitude/angle
+        cone around that direction in the robot's own heading frame (see
+        PUSH_DIR_BIAS_DEG) and rotates it into world frame with
+        quat_apply_yaw, so 'behind' means behind the robot regardless of
+        which way it's currently facing — requires self._base_quat to be
+        populated (every backend sets this in _init_buffers())."""
+        max_push_vel_xy = self._cfg.domain_rand.max_push_vel_xy
+        push_dir = getattr(self._cfg.domain_rand, "push_dir", None)
+        if not push_dir:
+            return torch_rand_float(-max_push_vel_xy, max_push_vel_xy, (self._num_envs, 2), self._device)
+        if push_dir not in PUSH_DIR_BIAS_DEG:
+            raise ValueError(f"unknown push_dir '{push_dir}' — expected one of {sorted(PUSH_DIR_BIAS_DEG)}")
+        bias = math.radians(PUSH_DIR_BIAS_DEG[push_dir])
+        half_spread = math.radians(PUSH_DIR_SPREAD_DEG) / 2.0
+        mag = torch_rand_float(0.0, max_push_vel_xy, (self._num_envs, 1), self._device)
+        angle = bias + (torch.rand(self._num_envs, 1, device=self._device) - 0.5) * (2 * half_spread)
+        local = torch.cat([mag * torch.cos(angle), mag * torch.sin(angle), torch.zeros_like(mag)], dim=1)
+        world = quat_apply_yaw(self._base_quat, local)
+        return world[:, :2]
     
     @abstractmethod
     def push_links(self):

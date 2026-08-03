@@ -251,11 +251,9 @@ class GenesisSimulator(Simulator):
             self._terrain_types[env_ids]]
 
     def push_robots(self):
-        max_push_vel_xy = self._cfg.domain_rand.max_push_vel_xy
         # in Genesis, base link also has DOF, it's 6DOF if not fixed.
         dofs_vel = self._robot.get_dofs_velocity().to(self._device)  # (num_envs, num_dof) [0:3] ~ base_link_vel
-        push_vel = torch_rand_float(-max_push_vel_xy,
-                                     max_push_vel_xy, (self._num_envs, 2), self._device)
+        push_vel = self.sample_push_vel_xy()
         self._rand_push_vels[:, :2] = push_vel.detach().clone()
         dofs_vel[:, :2] += push_vel
         self._robot.set_dofs_velocity(dofs_vel)

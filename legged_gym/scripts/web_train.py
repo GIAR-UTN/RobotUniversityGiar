@@ -21,10 +21,12 @@ Three "target" concepts the UI exposes map directly onto flags here:
     envelope (env_cfg.commands.ranges) the policy is trained across — a
     measured quantity (m/s, rad/s), not a reward-shaping knob.
   - stability target: --base_height_target/--push_robots/--max_push_vel_xy/
-    --push_interval_s override env_cfg.rewards.base_height_target and
-    env_cfg.domain_rand.* directly — for training a policy to hold a
+    --push_interval_s/--push_dir override env_cfg.rewards.base_height_target
+    and env_cfg.domain_rand.* directly — for training a policy to hold a
     SPECIFIC pelvis height (e.g. matching a crouch checkpoint's height,
-    rather than the task's own default) under push disturbances.
+    rather than the task's own default) under push disturbances, optionally
+    biased from one direction (--push_dir) instead of every direction at
+    once — see Simulator.sample_push_vel_xy() for the angle convention.
 
 Time budget is EITHER or BOTH of --max_iterations and --max_minutes —
 whichever is hit first stops training (see the chunked learn() loop below).
@@ -80,6 +82,10 @@ def main():
                          help="peak push velocity (m/s) when --push_robots on")
     parser.add_argument('--push_interval_s', type=float, default=None,
                          help="seconds between pushes when --push_robots on")
+    parser.add_argument('--push_dir', type=str, default=None, choices=['behind', 'front', 'left', 'right'],
+                         help="bias push direction relative to the robot's heading instead of sampling it "
+                              "isotropically (default) — named for where the shove comes from, e.g. 'behind' "
+                              "shoves the robot forward")
     parser.add_argument('--result_path', type=str, required=True,
                          help="JSON {policy_path, task, name, iterations_done, stopped_reason} written here on success — the parent process polls for this file rather than parsing stdout")
     cli = parser.parse_args()
@@ -106,6 +112,8 @@ def main():
         env_cfg.domain_rand.max_push_vel_xy = cli.max_push_vel_xy
     if cli.push_interval_s is not None:
         env_cfg.domain_rand.push_interval_s = cli.push_interval_s
+    if cli.push_dir is not None:
+        env_cfg.domain_rand.push_dir = cli.push_dir
 
     args = argparse.Namespace(
         task=cli.task, headless=cli.headless, cpu=cli.cpu, num_envs=cli.num_envs,

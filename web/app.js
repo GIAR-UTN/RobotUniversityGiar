@@ -51,6 +51,7 @@ const policyList = $('#policy-list');
 
 const chkPush = $('#chk-push');
 const chkAutoCmd = $('#chk-auto-cmd');
+const simPushDir = $('#sim-push-dir');
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
@@ -211,6 +212,7 @@ function applyStatus(status) {
   let auto = false;
   if (status.random_events) {
     chkPush.checked = status.random_events.push_robots;
+    if (document.activeElement !== simPushDir) simPushDir.value = status.random_events.push_dir || '';
     auto = status.random_events.auto_commands;
     chkAutoCmd.checked = auto;
     // While auto, the HUDs are a read-only display of what the sim is doing
@@ -363,7 +365,7 @@ function engageManualIfNeeded() {
   // command* specifically — it does NOT touch the "Random pushes" checkbox,
   // so a training-style shove can still knock you around while you drive.
   if (latestStatus?.random_events?.auto_commands !== false) {
-    send('set_random_events', { push_robots: chkPush.checked, auto_commands: false });
+    send('set_random_events', { push_robots: chkPush.checked, auto_commands: false, push_dir: simPushDir.value || null });
   }
 }
 
@@ -427,10 +429,13 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 chkPush.addEventListener('change', () => {
-  send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked });
+  send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked, push_dir: simPushDir.value || null });
+});
+simPushDir.addEventListener('change', () => {
+  send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked, push_dir: simPushDir.value || null });
 });
 chkAutoCmd.addEventListener('change', () => {
-  send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked });
+  send('set_random_events', { push_robots: chkPush.checked, auto_commands: chkAutoCmd.checked, push_dir: simPushDir.value || null });
   // Going manual right now should take the HUDs' CURRENT position as the
   // first command, rather than waiting for the user to nudge one first.
   if (!chkAutoCmd.checked) sendCruiseCommand();
@@ -864,9 +869,16 @@ const trainVxLo = $('#train-vx-lo'), trainVxHi = $('#train-vx-hi');
 const trainVyLo = $('#train-vy-lo'), trainVyHi = $('#train-vy-hi');
 const trainYawLo = $('#train-yaw-lo'), trainYawHi = $('#train-yaw-hi');
 const trainHeight = $('#train-height');
+const trainHeightModeTabs = $('#train-height-mode');
+const trainHeightAbsolute = $('#train-height-absolute');
+const trainHeightRelative = $('#train-height-relative');
+const trainHeightReference = $('#train-height-reference');
+const trainHeightDir = $('#train-height-dir');
+const trainHeightDelta = $('#train-height-delta');
 const trainPush = $('#train-push');
 const trainPushVel = $('#train-push-vel');
 const trainPushInterval = $('#train-push-interval');
+const trainPushDir = $('#train-push-dir');
 const trainCmdPreview = $('#train-cmd-preview');
 const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
@@ -919,6 +931,63 @@ function showTrainError(msg) {
   trainError.classList.toggle('show', !!msg);
 }
 
+// ---- pelvis height: absolute value vs. relative to a reference ----
+// The reference is read from the task's (or clone-from base's task's) own
+// config — legged_gym/control/training.py's task_defaults()/catalog() —
+// never from running the sim, so it's the config default, not necessarily
+// the exact value a specific checkpoint trained with.
+let heightMode = 'absolute';
+let heightReference = null; // {value: number|null, label: string} | null
+
+function findBaseHeightTarget(baseName) {
+  const p = trainingCatalog?.base_policies.find((b) => b.name === baseName);
+  return p ? p.base_height_target : undefined;
+}
+
+function renderHeightReference() {
+  trainHeightReference.textContent = (!heightReference || heightReference.value == null)
+    ? 'Reference: – (pick a task or clone-from base first)'
+    : `Reference: ${heightReference.value.toFixed(3)} m (${heightReference.label})`;
+  updateCommandPreview();
+}
+
+function refreshHeightReference() {
+  const base = trainBase.value, task = trainTask.value;
+  if (base) {
+    heightReference = { value: findBaseHeightTarget(base) ?? null, label: `${base}'s task default` };
+    renderHeightReference();
+    return;
+  }
+  if (!task) { heightReference = null; renderHeightReference(); return; }
+  call('task_defaults', { task }).then((d) => {
+    heightReference = { value: d.base_height_target ?? null, label: `${task}'s default` };
+    renderHeightReference();
+  }).catch(() => { heightReference = null; renderHeightReference(); });
+}
+
+trainHeightModeTabs.querySelectorAll('button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    heightMode = btn.dataset.mode;
+    trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+    trainHeightAbsolute.hidden = heightMode !== 'absolute';
+    trainHeightRelative.hidden = heightMode !== 'relative';
+    if (heightMode === 'relative') refreshHeightReference();
+    updateCommandPreview();
+  });
+});
+
+function resolveHeight() {
+  if (heightMode === 'absolute') {
+    const raw = trainHeight.value.trim();
+    return raw === '' ? null : parseFloat(raw);
+  }
+  const deltaRaw = trainHeightDelta.value.trim();
+  if (deltaRaw === '') return null; // no delta entered — leave the target unset (task default)
+  if (!heightReference || heightReference.value == null) return undefined; // can't resolve yet — validation error
+  const sign = trainHeightDir.value === 'lower' ? -1 : 1;
+  return heightReference.value + sign * parseFloat(deltaRaw);
+}
+
 function refreshTrainingCatalog() {
   call('training_catalog').then((catalog) => {
     trainingCatalog = catalog;
@@ -941,6 +1010,7 @@ function refreshTrainingCatalog() {
     }
     if (catalog.base_policies.some((p) => p.name === prevBase)) trainBase.value = prevBase;
 
+    if (heightMode === 'relative') refreshHeightReference();
     updateCommandPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
@@ -967,17 +1037,17 @@ function composeTrainingParams() {
   const cmdVx = rangePair(trainVxLo, trainVxHi);
   const cmdVy = rangePair(trainVyLo, trainVyHi);
   const cmdYaw = rangePair(trainYawLo, trainYawHi);
-  const heightRaw = trainHeight.value.trim();
-  const height = heightRaw === '' ? null : parseFloat(heightRaw);
+  const height = resolveHeight();
   const push = trainPush.value || null; // '' -> null -> "leave task default"
   const pushVelRaw = trainPushVel.value.trim();
   const pushVel = pushVelRaw === '' ? null : parseFloat(pushVelRaw);
   const pushIntervalRaw = trainPushInterval.value.trim();
   const pushInterval = pushIntervalRaw === '' ? null : parseFloat(pushIntervalRaw);
+  const pushDir = trainPushDir.value || null;
   return {
     name, task, iterations: Number.isFinite(iterations) ? iterations : null,
     minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
-    height, push, pushVel, pushInterval,
+    height, push, pushVel, pushInterval, pushDir,
   };
 }
 
@@ -1001,10 +1071,12 @@ function updateCommandPreview() {
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
   if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);
-  if (p.height !== null) parts.push(`--base_height_target ${p.height}`);
+  if (p.height === undefined) parts.push('--base_height_target <no reference height yet — pick a task or clone-from base>');
+  else if (p.height !== null) parts.push(`--base_height_target ${p.height.toFixed(3)}`);
   if (p.push) parts.push(`--push_robots ${p.push}`);
   if (p.pushVel !== null) parts.push(`--max_push_vel_xy ${p.pushVel}`);
   if (p.pushInterval !== null) parts.push(`--push_interval_s ${p.pushInterval}`);
+  if (p.pushDir) parts.push(`--push_dir ${p.pushDir}`);
   trainCmdPreview.textContent = parts.join(' ');
 }
 
@@ -1017,9 +1089,12 @@ btnNewPolicy.addEventListener('click', () => {
 
 [trainName, trainBase, trainTask, trainIters, trainMinutes, trainEnvs,
  trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi,
- trainHeight, trainPush, trainPushVel, trainPushInterval].forEach((el) => {
+ trainHeight, trainHeightDir, trainHeightDelta, trainPush, trainPushVel, trainPushInterval, trainPushDir].forEach((el) => {
   el.addEventListener('input', updateCommandPreview);
   el.addEventListener('change', updateCommandPreview);
+});
+[trainBase, trainTask].forEach((el) => {
+  el.addEventListener('change', () => { if (heightMode === 'relative') refreshHeightReference(); });
 });
 [trainIters, trainMinutes, trainEnvs].forEach((el) => {
   el.addEventListener('input', updateEstimate);
@@ -1038,6 +1113,9 @@ createPolicyForm.addEventListener('submit', (e) => {
   if (p.cmdVx === undefined || p.cmdVy === undefined || p.cmdYaw === undefined) {
     return showTrainError('Fill in both ends of a command range, or leave the whole pair blank.');
   }
+  if (p.height === undefined) {
+    return showTrainError('No reference height to raise/lower from yet — pick a task or a clone-from base.');
+  }
 
   showTrainError('');
   btnStartTraining.disabled = true;
@@ -1047,11 +1125,15 @@ createPolicyForm.addEventListener('submit', (e) => {
     base_policy: p.base, cmd_vx: p.cmdVx, cmd_vy: p.cmdVy, cmd_yaw: p.cmdYaw,
     base_height_target: p.height,
     push_robots: p.push === null ? null : p.push === 'on',
-    max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval,
+    max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
   }).then(() => {
     createPolicyForm.reset();
     createPolicyForm.hidden = true;
     btnNewPolicy.textContent = '+ New policy…';
+    heightMode = 'absolute';
+    trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'absolute'));
+    trainHeightAbsolute.hidden = false;
+    trainHeightRelative.hidden = true;
   }).catch((e) => {
     showTrainError(e.message);
   }).finally(() => {
