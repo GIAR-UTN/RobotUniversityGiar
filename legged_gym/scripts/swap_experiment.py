@@ -140,16 +140,24 @@ def main():
         belongs on this thread, not the socket thread."""
         for job in training.poll():
             try:
+                # Copies both checkpoints out of rsl_rl's log_dir into their
+                # own policies/<name>/ folder and registers the result as a
+                # Clone-from source — see TrainingManager.finalize_policy()'s
+                # docstring. Load THAT path, not job.policy_path, so what's
+                # running matches what's registered.
+                final_checkpoint = training.finalize_policy(
+                    job.policy_name, task=job.task, checkpoint=job.policy_path,
+                    train_checkpoint=job.train_checkpoint_path,
+                )
                 new_policy = load_policy(
-                    job.policy_name, job.policy_path,
+                    job.policy_name, final_checkpoint,
                     num_obs=env_cfg.env.num_observations,
                     hidden_size=hidden_size_for_new_policies, num_envs=env.num_envs,
                     description=f"Trained via the control web ({job.command})",
                 )
                 supervisor.add_policy(new_policy)
-                training.register_source(job.policy_name, task=job.task, checkpoint=job.policy_path)
                 print(f"[training] '{job.policy_name}' finished and is now selectable "
-                      f"(job {job.id}, exported to {job.policy_path})")
+                      f"(job {job.id}, exported to {final_checkpoint})")
             except Exception as e:  # noqa: BLE001 - a bad export must not crash the sim loop
                 job.status = "failed"
                 job.error = f"training finished but the policy failed to load: {e}"

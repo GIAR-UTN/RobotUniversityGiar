@@ -1087,6 +1087,7 @@ const trainPush = $('#train-push');
 const trainPushVel = $('#train-push-vel');
 const trainPushInterval = $('#train-push-interval');
 const trainPushDir = $('#train-push-dir');
+const trainEntropyCoef = $('#train-entropy-coef');
 const trainCmdPreview = $('#train-cmd-preview');
 const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
@@ -1352,10 +1353,12 @@ function composeTrainingParams() {
   const pushIntervalRaw = trainPushInterval.value.trim();
   const pushInterval = pushIntervalRaw === '' ? null : parseFloat(pushIntervalRaw);
   const pushDir = trainPushDir.value || null;
+  const entropyCoefRaw = trainEntropyCoef.value.trim();
+  const entropyCoef = entropyCoefRaw === '' ? null : parseFloat(entropyCoefRaw);
   return {
     name, task, iterations: Number.isFinite(iterations) ? iterations : null,
     minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
-    height, push, pushVel, pushInterval, pushDir,
+    height, push, pushVel, pushInterval, pushDir, entropyCoef,
   };
 }
 
@@ -1386,6 +1389,7 @@ function updateCommandPreview() {
   if (p.pushVel !== null) parts.push(`--max_push_vel_xy ${p.pushVel}`);
   if (p.pushInterval !== null) parts.push(`--push_interval_s ${p.pushInterval}`);
   if (p.pushDir) parts.push(`--push_dir ${p.pushDir}`);
+  if (p.entropyCoef !== null) parts.push(`--entropy_coef ${p.entropyCoef}`);
   trainCmdPreview.textContent = parts.join(' ');
 }
 
@@ -1398,7 +1402,8 @@ btnNewPolicy.addEventListener('click', () => {
 
 [trainName, trainBase, trainTask, trainIters, trainMinutes, trainEnvs,
  trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi,
- trainHeight, trainHeightDir, trainHeightDelta, trainPush, trainPushVel, trainPushInterval, trainPushDir].forEach((el) => {
+ trainHeight, trainHeightDir, trainHeightDelta, trainPush, trainPushVel, trainPushInterval, trainPushDir,
+ trainEntropyCoef].forEach((el) => {
   el.addEventListener('input', updateCommandPreview);
   el.addEventListener('change', updateCommandPreview);
 });
@@ -1437,6 +1442,7 @@ createPolicyForm.addEventListener('submit', (e) => {
     base_height_target: p.height,
     push_robots: p.push === null ? null : p.push === 'on',
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
+    entropy_coef: p.entropyCoef,
   }).then(() => {
     createPolicyForm.reset();
     createPolicyForm.hidden = true;

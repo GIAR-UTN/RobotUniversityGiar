@@ -673,6 +673,12 @@
                 <option value="right">from the right (shoves it left)</option>
               </select>
             </div>
+
+            <div class="field-row">
+              <label>Exploration noise (entropy_coef)</label>
+              <input type="number" id="train-entropy-coef" step="0.001" min="0" placeholder="task default (0.01)">
+              <p class="field-hint">How much randomness PPO keeps injecting into actions as it trains — higher explores more, lower settles into a fixed behavior sooner. This should shrink toward 0 as training converges; if instead it keeps <em>growing</em> the whole run (watch "Mean action noise std" in a job's log — it should trend down, never up), the policy gets more erratic and jittery the longer it trains instead of better. That's this set too high for how weak this task's actual reward signal is — lower it (e.g. 0.001&ndash;0.003) rather than training longer.</p>
+            </div>
           </div>
 
           <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>

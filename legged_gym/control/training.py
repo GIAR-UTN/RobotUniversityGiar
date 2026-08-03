@@ -23,6 +23,7 @@ import dataclasses
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -34,6 +35,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAIN_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_train.py"
 JOBS_DIR = REPO_ROOT / "logs" / "_web_training"
 HISTORY_PATH = JOBS_DIR / "history.json"
+# One self-contained folder per policy trained through this UI — see
+# finalize_policy()'s docstring for why this replaced leaving the exported
+# checkpoint sitting wherever rsl_rl's log_dir happened to be.
+POLICIES_DIR = REPO_ROOT / "policies"
 
 
 def _cpu_brand() -> str:
@@ -87,6 +92,8 @@ class TrainingJob:
     finished_at: Optional[float] = None
     error: Optional[str] = None
     policy_path: Optional[str] = None
+    train_checkpoint_path: Optional[str] = None  # rsl_rl's raw model_N.pt for this run,
+                                                  # if web_train.py found one — see poll()
 
     def to_dict(self) -> dict:
         return {
@@ -280,31 +287,80 @@ class TrainingManager:
         candidates.sort(key=_iter_num)
         return os.path.join(log_dir, candidates[-1])
 
-    def register_source(self, name: str, task: str, checkpoint: Optional[str]) -> None:
+    def register_source(self, name: str, task: str, checkpoint: Optional[str],
+                         train_checkpoint: Optional[str] = None) -> None:
+        """`train_checkpoint` is the raw rsl_rl checkpoint to resume PPO
+        from (see finalize_policy()'s docstring for how a fresh training
+        job gets one). Pass None (the --policy CLI path, via
+        swap_experiment.py) to fall back to guessing it from `checkpoint`'s
+        directory layout — the only option for a checkpoint that was never
+        produced by this UI in the first place (e.g. an externally-sourced
+        one with no raw training history at all, which correctly stays
+        un-fine-tunable either way)."""
         self.policy_sources[name] = {
             "task": task, "checkpoint": checkpoint,
-            "train_checkpoint": self._train_checkpoint_from_export(checkpoint),
+            "train_checkpoint": train_checkpoint or self._train_checkpoint_from_export(checkpoint),
         }
 
+    def finalize_policy(self, name: str, task: str, checkpoint: str,
+                         train_checkpoint: Optional[str]) -> str:
+        """Called once a training job finishes (see swap_experiment.py's
+        drain_finished_training()) to copy its two checkpoints out of
+        rsl_rl's log_dir — which is logging/TensorBoard scratch space, not
+        somewhere a policy is meant to live long-term — into one
+        self-contained `policies/<name>/` folder: `checkpoint.pt` (the
+        deployable export, hot-loaded into the supervisor) alongside
+        `train_checkpoint.pt` (the raw PPO state, fine-tunable via
+        Clone-from) and a small `meta.json`. This is what makes Clone-from
+        for anything trained through this UI *always* work — no more
+        walking back from an exported path guessing whether its log_dir
+        still exists (see _train_checkpoint_from_export()'s docstring for
+        the bad old way, still used as a fallback for --policy-supplied
+        checkpoints this UI never produced). Copies rather than moves, so
+        the original log_dir (TensorBoard events, every intermediate
+        model_N.pt) is untouched. Returns the new checkpoint path — load
+        THAT into the supervisor, not the original export, so what's
+        running matches what's registered."""
+        dest_dir = POLICIES_DIR / name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest_checkpoint = dest_dir / "checkpoint.pt"
+        shutil.copyfile(checkpoint, dest_checkpoint)
+        dest_train_checkpoint = None
+        if train_checkpoint and os.path.isfile(train_checkpoint):
+            dest_train_checkpoint = dest_dir / "train_checkpoint.pt"
+            shutil.copyfile(train_checkpoint, dest_train_checkpoint)
+        with open(dest_dir / "meta.json", "w") as f:
+            json.dump({"task": task, "created_at": time.time(), "trained_via": "control web"}, f)
+        self.register_source(
+            name, task=task, checkpoint=str(dest_checkpoint),
+            train_checkpoint=str(dest_train_checkpoint) if dest_train_checkpoint else None,
+        )
+        return str(dest_checkpoint)
+
     def forget_source(self, name: str) -> None:
-        """Drops a policy from the clone-from catalog and deletes its
-        exported checkpoint file — the counterpart to register_source(),
+        """Drops a policy from the clone-from catalog and deletes its files
+        on disk — the counterpart to register_source()/finalize_policy(),
         for discarding a training experiment that didn't work out (see
-        ControlService.delete_policy()). Deliberately only deletes
-        `checkpoint` (the exported .pt actually referenced by the catalog/
-        loadable into the supervisor) — NOT `train_checkpoint` (one of
-        several model_N.pt snapshots sharing that run's log_dir alongside
-        its TensorBoard event file); leaving those is harmless disk usage,
-        not anything exposed in the UI, and avoids this method reaching
-        into a whole run directory to guess what else is safe to remove.
-        Best-effort on the file removal — a source with no checkpoint on
-        this machine, or one already deleted, isn't an error; the point is
-        the CATALOG no longer listing it, not enforcing the file existed."""
+        ControlService.delete_policy()). For a policy finalize_policy()
+        created, `checkpoint` lives in its own dedicated `policies/<name>/`
+        folder with nothing else in it, so the whole folder (checkpoint +
+        train_checkpoint + meta.json) is removed. For anything registered
+        the old way — a bare --policy CLI path — only that one file is
+        removed, same as before; there's no dedicated folder to reach into,
+        and no other file to guess about. Best-effort — a source with no
+        checkpoint on this machine, or one already deleted, isn't an
+        error; the point is the CATALOG no longer listing it, not
+        enforcing the file existed."""
         source = self.policy_sources.pop(name, None)
         if source is None:
             return
         checkpoint = source.get("checkpoint")
-        if checkpoint:
+        if not checkpoint:
+            return
+        policy_dir = POLICIES_DIR / name
+        if Path(checkpoint).parent == policy_dir:
+            shutil.rmtree(policy_dir, ignore_errors=True)
+        else:
             try:
                 os.remove(checkpoint)
             except OSError:
@@ -385,7 +441,8 @@ class TrainingManager:
                push_robots: Optional[bool] = None,
                max_push_vel_xy: Optional[float] = None,
                push_interval_s: Optional[float] = None,
-               push_dir: Optional[str] = None) -> str:
+               push_dir: Optional[str] = None,
+               entropy_coef: Optional[float] = None) -> str:
         policy_name = (policy_name or "").strip()
         if not policy_name:
             raise ValueError("policy_name is required")
@@ -404,6 +461,8 @@ class TrainingManager:
             raise ValueError("max_minutes must be positive")
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
+        if entropy_coef is not None and entropy_coef < 0:
+            raise ValueError("entropy_coef can't be negative")
 
         from_checkpoint = None
         if base_policy:
@@ -457,6 +516,8 @@ class TrainingManager:
             argv += ["--push_interval_s", str(push_interval_s)]
         if push_dir is not None:
             argv += ["--push_dir", push_dir]
+        if entropy_coef is not None:
+            argv += ["--entropy_coef", str(entropy_coef)]
 
         # Exactly what a human would type, modulo the interpreter path and
         # `-u` — this string is what the web UI already showed as a preview
@@ -534,6 +595,7 @@ class TrainingManager:
                 with open(job.result_path) as f:
                     result = json.load(f)
                 job.policy_path = result["policy_path"]
+                job.train_checkpoint_path = result.get("train_checkpoint_path")
                 job.iterations_done = result.get("iterations_done")
                 job.status = "done"
                 newly_done.append(job)

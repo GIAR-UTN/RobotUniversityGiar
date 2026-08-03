@@ -86,6 +86,12 @@ def main():
                          help="bias push direction relative to the robot's heading instead of sampling it "
                               "isotropically (default) — named for where the shove comes from, e.g. 'behind' "
                               "shoves the robot forward")
+    parser.add_argument('--entropy_coef', type=float, default=None,
+                         help="PPO's exploration-noise bonus weight (default: the task's own train_cfg.algorithm.entropy_coef). "
+                              "Too high relative to a weak task reward and the action noise std can grow "
+                              "instead of shrink over training — an unstable run gets MORE erratic the longer "
+                              "it goes, not less (watch 'Mean action noise std' in the log; it should trend "
+                              "down, never up). Lower this if that happens.")
     parser.add_argument('--result_path', type=str, required=True,
                          help="JSON {policy_path, task, name, iterations_done, stopped_reason} written here on success — the parent process polls for this file rather than parsing stdout")
     parser.add_argument('--progress_path', type=str, default=None,
@@ -119,6 +125,8 @@ def main():
         env_cfg.domain_rand.push_interval_s = cli.push_interval_s
     if cli.push_dir is not None:
         env_cfg.domain_rand.push_dir = cli.push_dir
+    if cli.entropy_coef is not None:
+        train_cfg.algorithm.entropy_coef = cli.entropy_coef
 
     args = argparse.Namespace(
         task=cli.task, headless=cli.headless, cpu=cli.cpu, num_envs=cli.num_envs,
@@ -129,7 +137,11 @@ def main():
     )
 
     env, env_cfg = task_registry.make_env(name=cli.task, args=args, env_cfg=env_cfg)
-    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=cli.task, args=args)
+    # train_cfg passed explicitly — without it make_alg_runner() re-fetches
+    # a fresh, un-overridden copy by task name, silently dropping
+    # --entropy_coef (same mistake env_cfg avoids by being passed to
+    # make_env() above).
+    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=cli.task, args=args, train_cfg=train_cfg)
 
     if cli.from_checkpoint:
         print(f"Fine-tuning from: {cli.from_checkpoint} (optimizer state NOT carried over)")
@@ -202,10 +214,24 @@ def main():
         raise RuntimeError(f"export_policy() reported success but no .pt file was found in {export_dir}")
     policy_path = exported[-1]
 
+    # The raw rsl_rl checkpoint for THIS run — OnPolicyRunner.learn() always
+    # ends its final chunk by saving to exactly this path (see
+    # on_policy_runner.py's learn(), last line), so unlike
+    # TrainingManager._train_checkpoint_from_export()'s after-the-fact
+    # directory-walk (for checkpoints this script didn't produce), there's
+    # nothing to guess here — we just wrote it. Lets the caller
+    # (TrainingManager.finalize_policy()) hand this straight to Clone-from
+    # instead of leaving every fresh policy in the same "no raw checkpoint
+    # found" limbo external/legacy ones can fall into.
+    train_checkpoint_path = os.path.join(log_dir, f'model_{ppo_runner.current_learning_iteration}.pt')
+    if not os.path.isfile(train_checkpoint_path):
+        train_checkpoint_path = None
+
     with open(cli.result_path, 'w') as f:
         json.dump({
             "policy_path": policy_path, "task": cli.task, "name": cli.name,
             "iterations_done": iterations_done, "stopped_reason": stopped_reason,
+            "train_checkpoint_path": train_checkpoint_path,
         }, f)
     print(f"Done. Exported to {policy_path}")
 
