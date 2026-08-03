@@ -11,7 +11,8 @@ let latestStatus = null;
 let lastStatusJSON = null; // dedupe key — status() pushes at ~10Hz whether or not anything changed
 let msgId = 1;
 let keymap = {};
-let keyByPolicy = {}; // policy name -> bound key, precomputed once at boot (not per render)
+let keyByPolicy = {}; // policy name -> shortcut key, recomputed on every render from LIST POSITION
+let policyByKey = {}; // inverse of keyByPolicy, for keydown dispatch — see recomputePolicyShortcuts()
 let renderedPolicyNames = null; // policies list actually painted into the DOM right now
 let renderedTrainingJobsKey = null; // like renderedPolicyNames — dedupe key excluding elapsed_s
                                      // (elapsed_s would otherwise change on every ~10Hz status
@@ -154,6 +155,14 @@ function connect() {
 function policyButtonRow(name, active) {
   const row = document.createElement('div');
   row.className = 'policy-row';
+  row.dataset.policy = name;
+
+  const handle = document.createElement('span');
+  handle.className = 'drag-handle';
+  handle.setAttribute('aria-label', 'Reorder');
+  handle.title = 'Drag to reorder — shortcut keys follow position (top = 0)';
+  handle.textContent = '⋮⋮';
+  row.appendChild(handle);
 
   const btn = document.createElement('button');
   btn.className = 'policy-btn' + (name === active ? ' active' : '');
@@ -204,6 +213,72 @@ function policyButtonRow(name, active) {
   return row;
 }
 
+// ---- policy order + shortcut assignment ----
+// Shortcuts are NOT tied to a policy's name (keymap.json used to do that) —
+// they're tied to POSITION in this drag-reorderable list, so reordering is
+// the rebind UI: top slot is always '0', then '9' down to '1' for the rest.
+// Capped at 10 policies for now (one digit key per slot); anything beyond
+// that just has no shortcut.
+const POLICY_ORDER_KEY = 'giar.policyOrder.v1';
+const POLICY_SHORTCUT_KEYS = ['0', '9', '8', '7', '6', '5', '4', '3', '2', '1'];
+
+function loadPolicyOrder() {
+  const raw = localStorage.getItem(POLICY_ORDER_KEY);
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return null; }
+}
+
+function savePolicyOrder(names) {
+  localStorage.setItem(POLICY_ORDER_KEY, JSON.stringify(names));
+}
+
+// Applies the saved drag order on top of the backend's raw name list —
+// names the user has never seen before (a fresh --policy) land at the end
+// in backend order; names the user deleted just drop out here for free.
+function applyPolicyOrder(rawNames) {
+  const saved = loadPolicyOrder();
+  if (!saved) return rawNames;
+  const rawSet = new Set(rawNames);
+  const ordered = saved.filter((n) => rawSet.has(n));
+  const orderedSet = new Set(ordered);
+  for (const name of rawNames) {
+    if (!orderedSet.has(name)) ordered.push(name);
+  }
+  return ordered;
+}
+
+function recomputePolicyShortcuts(names) {
+  keyByPolicy = {};
+  policyByKey = {};
+  names.forEach((name, i) => {
+    const key = POLICY_SHORTCUT_KEYS[i];
+    if (!key) return;
+    keyByPolicy[name] = key;
+    policyByKey[key] = name;
+  });
+}
+
+function renderPolicyList(names, active) {
+  recomputePolicyShortcuts(names);
+  policyList.innerHTML = '';
+  for (const name of names) {
+    policyList.appendChild(policyButtonRow(name, active));
+  }
+  initPolicyDrag();
+}
+
+function onPolicyReorder() {
+  const names = [...policyList.querySelectorAll('.policy-row')].map((r) => r.dataset.policy);
+  savePolicyOrder(names);
+  // Re-render (rather than patch in place) so the keycaps painted on each
+  // row immediately reflect the new position -> key assignment.
+  renderPolicyList(names, latestStatus?.active);
+}
+
+function initPolicyDrag() {
+  makeSortable(policyList, '.policy-row', ':scope > .drag-handle', onPolicyReorder);
+}
+
 function applyStatus(status) {
   latestStatus = status;
 
@@ -217,14 +292,13 @@ function applyStatus(status) {
   // The policy list itself rarely changes (only when --policy set or the
   // active/pending name changes) — rebuilding it from scratch every push
   // is wasted DOM churn, so only touch it when the visible set changed.
-  const names = status.policies || [];
-  const namesKey = names.join(' ') + ' ' + status.active;
+  // Display order (and therefore shortcut assignment) is the user's saved
+  // drag order, not the raw backend order — see applyPolicyOrder().
+  const rawNames = status.policies || [];
+  const namesKey = rawNames.join(' ') + ' ' + status.active;
   if (namesKey !== renderedPolicyNames) {
     renderedPolicyNames = namesKey;
-    policyList.innerHTML = '';
-    for (const name of names) {
-      policyList.appendChild(policyButtonRow(name, status.active));
-    }
+    renderPolicyList(applyPolicyOrder(rawNames), status.active);
   }
 
   $('#btn-pause').firstChild.textContent = status.paused ? 'Resume ' : 'Pause ';
@@ -706,10 +780,13 @@ window.addEventListener('blur', () => {
 // Shared by real keydown/keyup and keycap click/pointer handlers, so the
 // action-dispatch logic exists in exactly one place.
 function dispatchKeyAction(key) {
+  // Policy-switch shortcuts are looked up first: they're assigned by list
+  // position (recomputePolicyShortcuts()), not present in `keymap` at all.
+  const policyName = policyByKey[key];
+  if (policyName) { send('request_switch', { name: policyName }); return; }
   const binding = keymap[key];
   if (!binding) return;
-  if (binding.action === 'switch') send('request_switch', { name: binding.policy });
-  else if (binding.action === 'pause_toggle') send(latestStatus?.paused ? 'resume' : 'pause');
+  if (binding.action === 'pause_toggle') send(latestStatus?.paused ? 'resume' : 'pause');
   else if (binding.action === 'restart') $('#btn-restart').click();
 }
 
@@ -743,10 +820,10 @@ document.addEventListener('keydown', (e) => {
   if (!keysArmed || isTypingTarget(e)) return;
   if (SCROLL_KEYS.has(e.key)) e.preventDefault();
   const binding = keymap[e.key];
-  if (!binding) return;
+  if (!binding && !policyByKey[e.key]) return;
   e.preventDefault();
   setKeycapActive(e.key, true);
-  if (binding.action === 'move') {
+  if (binding?.action === 'move') {
     if (heldMoveKeys.has(e.key)) return; // ignore OS key-repeat, already engaged
     heldMoveKeys.add(e.key);
     engageManualIfNeeded();
@@ -776,8 +853,12 @@ function bindKeycapActions() {
   document.querySelectorAll('.keycap[data-key]').forEach((cap) => {
     const key = cap.dataset.key;
     const binding = keymap[key];
-    if (!binding) return;
-    if (binding.action === 'move') {
+    // Policy-switch keycaps (the static Keyboard-legend digits) aren't in
+    // `keymap` and `policyByKey` isn't populated yet at boot — bind by
+    // static key-space membership instead; dispatchKeyAction() resolves the
+    // actual policy at click time, once a status push has arrived.
+    if (!binding && !POLICY_SHORTCUT_KEYS.includes(key)) return;
+    if (binding?.action === 'move') {
       cap.addEventListener('pointerdown', () => {
         cap.classList.add('active');
         heldMoveKeys.add(key);
@@ -795,50 +876,66 @@ function bindKeycapActions() {
   });
 }
 
-// ---- draggable panel sections (reorder + persist) ----
+// ---- generic drag-to-reorder ----
+// Shared by the draggable panel sections and the Policies list: pick up an
+// item by its .drag-handle, reflow live among siblings as the pointer
+// crosses their vertical midpoints, then hand off to a caller-supplied
+// onReorder() to persist the new order (and, for policies, to recompute
+// shortcut keys from it).
 
-const PANEL_ORDER_KEY = 'giar.panelOrder.v1';
 let dragState = null;
 
-function onHandleDown(e) {
+function onDragHandleDown(e) {
   const handle = e.currentTarget;
-  const section = handle.closest('.panel-section');
+  const { container, itemSelector, item, onReorder } = handle._sortableCtx;
   handle.setPointerCapture(e.pointerId);
-  dragState = { section, pointerId: e.pointerId };
-  section.classList.add('dragging');
-  document.addEventListener('pointermove', onHandleMove);
-  document.addEventListener('pointerup', onHandleUp, { once: true });
+  dragState = { container, itemSelector, item, onReorder, pointerId: e.pointerId };
+  item.classList.add('dragging');
+  document.addEventListener('pointermove', onDragHandleMove);
+  document.addEventListener('pointerup', onDragHandleUp, { once: true });
 }
 
-function onHandleMove(e) {
+function onDragHandleMove(e) {
   if (!dragState) return;
-  const { section } = dragState;
-  const siblings = [...panel.querySelectorAll('.panel-section:not(.dragging)')];
+  const { container, itemSelector, item } = dragState;
+  const siblings = [...container.querySelectorAll(itemSelector)].filter((el) => el !== item);
   for (const sib of siblings) {
     const r = sib.getBoundingClientRect();
     const mid = r.top + r.height / 2;
-    if (e.clientY < mid && (sib.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-      panel.insertBefore(section, sib);
+    if (e.clientY < mid && (sib.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      container.insertBefore(item, sib);
       break;
     }
-    if (e.clientY > mid && (section.compareDocumentPosition(sib) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-      panel.insertBefore(section, sib.nextSibling);
+    if (e.clientY > mid && (item.compareDocumentPosition(sib) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      container.insertBefore(item, sib.nextSibling);
       break;
     }
   }
 }
 
-function onHandleUp() {
-  dragState.section.classList.remove('dragging');
-  document.removeEventListener('pointermove', onHandleMove);
-  savePanelOrder();
+function onDragHandleUp() {
+  const { item, onReorder } = dragState;
+  item.classList.remove('dragging');
+  document.removeEventListener('pointermove', onDragHandleMove);
+  onReorder();
   dragState = null;
 }
 
-function initSectionDrag() {
-  document.querySelectorAll('.drag-handle').forEach((handle) => {
-    handle.addEventListener('pointerdown', onHandleDown);
+function makeSortable(container, itemSelector, handleSelector, onReorder) {
+  container.querySelectorAll(itemSelector).forEach((item) => {
+    const handle = item.querySelector(handleSelector);
+    if (!handle) return;
+    handle._sortableCtx = { container, itemSelector, item, onReorder };
+    handle.addEventListener('pointerdown', onDragHandleDown);
   });
+}
+
+// ---- draggable panel sections (reorder + persist) ----
+
+const PANEL_ORDER_KEY = 'giar.panelOrder.v1';
+
+function initSectionDrag() {
+  makeSortable(panel, '.panel-section', ':scope > .section-head > .drag-handle', savePanelOrder);
 }
 
 function savePanelOrder() {
@@ -1427,10 +1524,9 @@ async function boot() {
   keymap = Object.fromEntries(
     Object.entries(km).filter(([k, v]) => v && typeof v === 'object' && !k.startsWith('_'))
   );
-  keyByPolicy = {};
-  for (const [key, binding] of Object.entries(keymap)) {
-    if (binding.action === 'switch' && binding.policy) keyByPolicy[binding.policy] = key;
-  }
+  // Policy-switch shortcuts (keyByPolicy/policyByKey) are NOT loaded from
+  // keymap.json — they're derived from list position on every render; see
+  // recomputePolicyShortcuts().
 
   // The Simulator is the permanent base layer (see the block comment near
   // mountSimIframe()) — mount it once, right here at boot, and never again.

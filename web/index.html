@@ -174,6 +174,8 @@
   .policy-btn.active{border-color:var(--accent2); font-weight:600;}
   .policy-row{display:flex; align-items:center; gap:.35rem; margin-bottom:.4rem;}
   .policy-row .policy-btn{margin-bottom:0; flex:1; min-width:0;}
+  .policy-row .drag-handle{flex:none; font-size:.85rem;}
+  .policy-row.dragging{opacity:.6;}
   .policy-delete-btn{
     flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
     background:var(--bg); color:var(--muted); cursor:pointer; font:inherit; line-height:1;
@@ -407,9 +409,15 @@
               <span class="keycap" data-key="8">8</span>
               <span class="keycap" data-key="7">7</span>
               <span class="keycap" data-key="6">6</span>
-              <span class="keycap" data-key="5">5</span>
             </div>
-            <span class="kbd-caption">switch policy</span>
+            <div class="kbd-row">
+              <span class="keycap" data-key="5">5</span>
+              <span class="keycap" data-key="4">4</span>
+              <span class="keycap" data-key="3">3</span>
+              <span class="keycap" data-key="2">2</span>
+              <span class="keycap" data-key="1">1</span>
+            </div>
+            <span class="kbd-caption">switch policy, top-to-bottom order</span>
           </div>
           <div class="kbd-cluster" data-label="System">
             <div class="kbd-row">
@@ -503,7 +511,7 @@
         <h2>Policies</h2>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Press 0/9/8/7/6/5 or click a policy to switch.</p>
+          <p>Click a policy to switch, or press its shortcut key. Shortcuts are fixed to position, not name — drag &#8942;&#8942; to reorder: top is 0, then 9 down to 1 (up to 10 policies).</p>
         </div>
       </div>
       <div class="section-body">
