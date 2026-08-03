@@ -857,11 +857,16 @@ const trainName = $('#train-name');
 const trainBase = $('#train-base');
 const trainTask = $('#train-task');
 const trainIters = $('#train-iters');
+const trainMinutes = $('#train-minutes');
 const trainEnvs = $('#train-envs');
 const trainEnvsHint = $('#train-envs-hint');
 const trainVxLo = $('#train-vx-lo'), trainVxHi = $('#train-vx-hi');
 const trainVyLo = $('#train-vy-lo'), trainVyHi = $('#train-vy-hi');
 const trainYawLo = $('#train-yaw-lo'), trainYawHi = $('#train-yaw-hi');
+const trainHeight = $('#train-height');
+const trainPush = $('#train-push');
+const trainPushVel = $('#train-push-vel');
+const trainPushInterval = $('#train-push-interval');
 const trainCmdPreview = $('#train-cmd-preview');
 const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
@@ -886,15 +891,25 @@ function updateEstimate() {
   clearTimeout(estimateDebounce);
   estimateDebounce = setTimeout(() => {
     const iterations = parseInt(trainIters.value, 10);
+    const minutes = parseFloat(trainMinutes.value);
     const numEnvs = parseInt(trainEnvs.value, 10);
-    if (!Number.isFinite(iterations) || !Number.isFinite(numEnvs) || iterations <= 0 || numEnvs <= 0) {
-      trainEstimate.textContent = 'Estimated time: –';
+    const hasIters = Number.isFinite(iterations) && iterations > 0;
+    const hasMinutes = Number.isFinite(minutes) && minutes > 0;
+    if (!hasIters && !hasMinutes) {
+      trainEstimate.textContent = 'Estimated time: – (set an iteration count or a minute budget)';
       return;
     }
+    if (!hasIters) {
+      // Minutes-only: nothing to estimate — the time budget IS the answer.
+      trainEstimate.textContent = `Estimated time: time-boxed to ${minutes} minute${minutes === 1 ? '' : 's'} — stops then regardless of iterations reached.`;
+      return;
+    }
+    if (!Number.isFinite(numEnvs) || numEnvs <= 0) { trainEstimate.textContent = 'Estimated time: –'; return; }
     call('estimate_training_time', { max_iterations: iterations, num_envs: numEnvs }).then((est) => {
+      const cap = hasMinutes ? ` (also capped at ${minutes} minute${minutes === 1 ? '' : 's'}, whichever hits first)` : '';
       trainEstimate.textContent = est.basis === 'measured'
-        ? `Estimated time: ~${formatDuration(est.seconds)} (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine)`
-        : 'Estimated time: no runs on this machine yet — the first one calibrates this estimate.';
+        ? `Estimated time: ~${formatDuration(est.seconds)} (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine)${cap}`
+        : `Estimated time: no runs on this machine yet — the first one calibrates this estimate.${cap}`;
     }).catch(() => { trainEstimate.textContent = 'Estimated time: –'; });
   }, 250);
 }
@@ -946,12 +961,24 @@ function composeTrainingParams() {
   const name = trainName.value.trim();
   const task = trainTask.value;
   const iterations = parseInt(trainIters.value, 10);
+  const minutes = parseFloat(trainMinutes.value);
   const numEnvs = parseInt(trainEnvs.value, 10);
   const base = trainBase.value || null;
   const cmdVx = rangePair(trainVxLo, trainVxHi);
   const cmdVy = rangePair(trainVyLo, trainVyHi);
   const cmdYaw = rangePair(trainYawLo, trainYawHi);
-  return { name, task, iterations, numEnvs, base, cmdVx, cmdVy, cmdYaw };
+  const heightRaw = trainHeight.value.trim();
+  const height = heightRaw === '' ? null : parseFloat(heightRaw);
+  const push = trainPush.value || null; // '' -> null -> "leave task default"
+  const pushVelRaw = trainPushVel.value.trim();
+  const pushVel = pushVelRaw === '' ? null : parseFloat(pushVelRaw);
+  const pushIntervalRaw = trainPushInterval.value.trim();
+  const pushInterval = pushIntervalRaw === '' ? null : parseFloat(pushIntervalRaw);
+  return {
+    name, task, iterations: Number.isFinite(iterations) ? iterations : null,
+    minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
+    height, push, pushVel, pushInterval,
+  };
 }
 
 function updateCommandPreview() {
@@ -960,11 +987,13 @@ function updateCommandPreview() {
     'python legged_gym/scripts/web_train.py',
     `--task ${p.task || '<task>'}`,
     `--name ${p.name || '<policy name>'}`,
-    `--max_iterations ${Number.isFinite(p.iterations) ? p.iterations : '<iterations>'}`,
     `--num_envs ${Number.isFinite(p.numEnvs) ? p.numEnvs : '<num_envs>'}`,
     '--headless --cpu',
     '--result_path <assigned by the server>',
   ];
+  if (p.iterations !== null) parts.push(`--max_iterations ${p.iterations}`);
+  if (p.minutes !== null) parts.push(`--max_minutes ${p.minutes}`);
+  if (p.iterations === null && p.minutes === null) parts.push('--max_iterations <or> --max_minutes <required>');
   if (p.base) {
     const source = trainingCatalog?.base_policies.find((b) => b.name === p.base);
     parts.push(`--from_checkpoint ${source?.checkpoint || '<' + p.base + "'s checkpoint>"}`);
@@ -972,6 +1001,10 @@ function updateCommandPreview() {
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
   if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);
+  if (p.height !== null) parts.push(`--base_height_target ${p.height}`);
+  if (p.push) parts.push(`--push_robots ${p.push}`);
+  if (p.pushVel !== null) parts.push(`--max_push_vel_xy ${p.pushVel}`);
+  if (p.pushInterval !== null) parts.push(`--push_interval_s ${p.pushInterval}`);
   trainCmdPreview.textContent = parts.join(' ');
 }
 
@@ -982,12 +1015,13 @@ btnNewPolicy.addEventListener('click', () => {
   if (opening) { showTrainError(''); updateCommandPreview(); updateEstimate(); trainName.focus(); }
 });
 
-[trainName, trainBase, trainTask, trainIters, trainEnvs,
- trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi].forEach((el) => {
+[trainName, trainBase, trainTask, trainIters, trainMinutes, trainEnvs,
+ trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi,
+ trainHeight, trainPush, trainPushVel, trainPushInterval].forEach((el) => {
   el.addEventListener('input', updateCommandPreview);
   el.addEventListener('change', updateCommandPreview);
 });
-[trainIters, trainEnvs].forEach((el) => {
+[trainIters, trainMinutes, trainEnvs].forEach((el) => {
   el.addEventListener('input', updateEstimate);
   el.addEventListener('change', updateEstimate);
 });
@@ -997,7 +1031,9 @@ createPolicyForm.addEventListener('submit', (e) => {
   const p = composeTrainingParams();
   if (!p.name) return showTrainError('Policy name is required.');
   if (!p.task) return showTrainError('Pick a task.');
-  if (!Number.isFinite(p.iterations) || p.iterations <= 0) return showTrainError('Time budget must be a positive number of iterations.');
+  if (p.iterations === null && p.minutes === null) return showTrainError('Set a time budget — iterations, minutes, or both.');
+  if (p.iterations !== null && p.iterations <= 0) return showTrainError('Iterations must be positive.');
+  if (p.minutes !== null && p.minutes <= 0) return showTrainError('Minutes must be positive.');
   if (!Number.isFinite(p.numEnvs) || p.numEnvs <= 0) return showTrainError('Parallel environments must be positive.');
   if (p.cmdVx === undefined || p.cmdVy === undefined || p.cmdYaw === undefined) {
     return showTrainError('Fill in both ends of a command range, or leave the whole pair blank.');
@@ -1006,8 +1042,12 @@ createPolicyForm.addEventListener('submit', (e) => {
   showTrainError('');
   btnStartTraining.disabled = true;
   call('start_training', {
-    policy_name: p.name, task: p.task, max_iterations: p.iterations, num_envs: p.numEnvs,
+    policy_name: p.name, task: p.task, num_envs: p.numEnvs,
+    max_iterations: p.iterations, max_minutes: p.minutes,
     base_policy: p.base, cmd_vx: p.cmdVx, cmd_vy: p.cmdVy, cmd_yaw: p.cmdYaw,
+    base_height_target: p.height,
+    push_robots: p.push === null ? null : p.push === 'on',
+    max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval,
   }).then(() => {
     createPolicyForm.reset();
     createPolicyForm.hidden = true;

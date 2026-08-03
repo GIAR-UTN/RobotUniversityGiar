@@ -488,8 +488,12 @@
             <select id="train-task"></select>
           </div>
           <div class="field-row">
-            <label for="train-iters">Time budget (iterations)</label>
-            <input type="number" id="train-iters" min="1" step="1" value="500">
+            <label>Time budget <span class="hint-inline">(fill either or both — whichever is reached first stops training)</span></label>
+            <div class="range-pair">
+              <input type="number" id="train-iters" min="1" step="1" placeholder="iterations">
+              <span>or</span>
+              <input type="number" id="train-minutes" min="0.1" step="1" placeholder="minutes">
+            </div>
           </div>
           <div class="field-row">
             <label for="train-envs">Parallel environments <span class="hint-inline">(each is one robot trained in parallel)</span></label>
@@ -518,6 +522,21 @@
               <input type="number" id="train-yaw-hi" step="0.1" placeholder="hi">
             </div>
             <p class="field-hint">Leave blank to keep the task's default ranges.</p>
+          </div>
+          <div class="field-row">
+            <label>Stability target</label>
+            <p class="field-hint">Pelvis height (m) the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing height.</p>
+            <input type="number" id="train-height" step="0.01" placeholder="leave blank for the task's default">
+            <p class="field-hint" style="margin-top:.5rem;">Random pushes during training</p>
+            <select id="train-push">
+              <option value="">— task default —</option>
+              <option value="on">force on</option>
+              <option value="off">force off</option>
+            </select>
+            <div class="range-pair" style="margin-top:.3rem;">
+              <input type="number" id="train-push-vel" step="0.1" min="0" placeholder="max push m/s">
+              <input type="number" id="train-push-interval" step="0.5" min="0" placeholder="interval s">
+            </div>
           </div>
           <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
           <code id="train-cmd-preview">python legged_gym/scripts/web_train.py &hellip;</code>

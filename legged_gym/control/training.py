@@ -77,8 +77,10 @@ class TrainingJob:
     log_path: str
     result_path: str
     started_at: float
-    max_iterations: int
+    max_iterations: Optional[int]  # requested cap — None if only --max_minutes was given
+    max_minutes: Optional[float]
     num_envs: int
+    iterations_done: Optional[int] = None  # filled in from result.json on success — see poll()
     status: str = "running"  # running | done | failed
     finished_at: Optional[float] = None
     error: Optional[str] = None
@@ -90,7 +92,9 @@ class TrainingJob:
             "policy_name": self.policy_name,
             "task": self.task,
             "max_iterations": self.max_iterations,
+            "max_minutes": self.max_minutes,
             "num_envs": self.num_envs,
+            "iterations_done": self.iterations_done,
             "command": self.command,
             "status": self.status,
             "started_at": self.started_at,
@@ -210,11 +214,16 @@ class TrainingManager:
 
     # ---- launching ----
 
-    def start(self, policy_name: str, task: str, max_iterations: int, num_envs: int = 64,
+    def start(self, policy_name: str, task: str, num_envs: int = 64,
+               max_iterations: Optional[int] = None, max_minutes: Optional[float] = None,
                base_policy: Optional[str] = None,
                cmd_vx: Optional[Sequence[float]] = None,
                cmd_vy: Optional[Sequence[float]] = None,
-               cmd_yaw: Optional[Sequence[float]] = None) -> str:
+               cmd_yaw: Optional[Sequence[float]] = None,
+               base_height_target: Optional[float] = None,
+               push_robots: Optional[bool] = None,
+               max_push_vel_xy: Optional[float] = None,
+               push_interval_s: Optional[float] = None) -> str:
         policy_name = (policy_name or "").strip()
         if not policy_name:
             raise ValueError("policy_name is required")
@@ -222,10 +231,15 @@ class TrainingManager:
             raise ValueError("'damping' is reserved for the built-in safety fallback")
         if any(j.status == "running" and j.policy_name == policy_name for j in self.jobs.values()):
             raise ValueError(f"a training job for policy '{policy_name}' is already running")
-        max_iterations = int(max_iterations)
+        if max_iterations is None and max_minutes is None:
+            raise ValueError("give at least one of max_iterations / max_minutes")
+        max_iterations = int(max_iterations) if max_iterations is not None else None
+        max_minutes = float(max_minutes) if max_minutes is not None else None
         num_envs = int(num_envs)
-        if max_iterations <= 0:
+        if max_iterations is not None and max_iterations <= 0:
             raise ValueError("max_iterations must be positive")
+        if max_minutes is not None and max_minutes <= 0:
+            raise ValueError("max_minutes must be positive")
         if num_envs <= 0:
             raise ValueError("num_envs must be positive")
 
@@ -246,11 +260,14 @@ class TrainingManager:
             self.python_exe, "-u", str(TRAIN_SCRIPT),
             "--task", task,
             "--name", policy_name,
-            "--max_iterations", str(max_iterations),
             "--num_envs", str(num_envs),
             "--headless", "--cpu",
             "--result_path", str(result_path),
         ]
+        if max_iterations is not None:
+            argv += ["--max_iterations", str(max_iterations)]
+        if max_minutes is not None:
+            argv += ["--max_minutes", str(max_minutes)]
         if from_checkpoint:
             argv += ["--from_checkpoint", from_checkpoint]
         if cmd_vx:
@@ -259,6 +276,14 @@ class TrainingManager:
             argv += ["--cmd_vy_range", str(cmd_vy[0]), str(cmd_vy[1])]
         if cmd_yaw:
             argv += ["--cmd_yaw_range", str(cmd_yaw[0]), str(cmd_yaw[1])]
+        if base_height_target is not None:
+            argv += ["--base_height_target", str(base_height_target)]
+        if push_robots is not None:
+            argv += ["--push_robots", "on" if push_robots else "off"]
+        if max_push_vel_xy is not None:
+            argv += ["--max_push_vel_xy", str(max_push_vel_xy)]
+        if push_interval_s is not None:
+            argv += ["--push_interval_s", str(push_interval_s)]
 
         # Exactly what a human would type, modulo the interpreter path and
         # `-u` — this string is what the web UI already showed as a preview
@@ -266,12 +291,22 @@ class TrainingManager:
         display_command = "python " + " ".join(argv[2:])
 
         log_f = open(log_path, "w")
-        proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=log_f, stderr=subprocess.STDOUT)
+        # Pin PYTHONPATH to THIS repo checkout explicitly rather than trusting
+        # whatever the parent process happened to be launched with — an
+        # editable `pip install -e` of legged_gym elsewhere (e.g. a sibling
+        # checkout of this same repo) would otherwise silently win, running
+        # web_train.py's file from here against a DIFFERENT legged_gym
+        # package. Bit us once already getting the control server itself to
+        # run against the right checkout — not leaving it to chance twice.
+        env = dict(os.environ)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
+        proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=log_f, stderr=subprocess.STDOUT, env=env)
 
         job = TrainingJob(
             id=job_id, policy_name=policy_name, task=task, command=display_command,
             log_path=str(log_path), result_path=str(result_path), started_at=time.time(),
-            max_iterations=max_iterations, num_envs=num_envs,
+            max_iterations=max_iterations, max_minutes=max_minutes, num_envs=num_envs,
         )
         self.jobs[job_id] = job
         self._procs[job_id] = proc
@@ -302,13 +337,18 @@ class TrainingManager:
                 with open(job.result_path) as f:
                     result = json.load(f)
                 job.policy_path = result["policy_path"]
+                job.iterations_done = result.get("iterations_done")
                 job.status = "done"
                 newly_done.append(job)
-                self._history.append({
-                    "task": job.task, "max_iterations": job.max_iterations,
-                    "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
-                })
-                self._save_history()
+                # Record actual iterations completed, not the requested cap —
+                # with a --max_minutes budget those can differ a lot, and
+                # estimate() needs the real throughput to be useful.
+                if job.iterations_done:
+                    self._history.append({
+                        "task": job.task, "max_iterations": job.iterations_done,
+                        "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
+                    })
+                    self._save_history()
             except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
                 job.status = "failed"
                 job.error = f"training process exited cleanly but its result file was unreadable: {e}"

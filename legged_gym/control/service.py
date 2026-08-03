@@ -115,21 +115,36 @@ class ControlService:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         return self.training.catalog(compatible_tasks=self._compatible_training_tasks())
 
-    def start_training(self, policy_name: str, task: str, max_iterations: int, num_envs: int = 64,
+    def start_training(self, policy_name: str, task: str, num_envs: int = 64,
+                        max_iterations: Optional[int] = None, max_minutes: Optional[float] = None,
                         base_policy: Optional[str] = None,
                         cmd_vx: Optional[list] = None, cmd_vy: Optional[list] = None,
-                        cmd_yaw: Optional[list] = None) -> str:
+                        cmd_yaw: Optional[list] = None,
+                        base_height_target: Optional[float] = None,
+                        push_robots: Optional[bool] = None,
+                        max_push_vel_xy: Optional[float] = None,
+                        push_interval_s: Optional[float] = None) -> str:
         """Launches a new training job; returns its job id. Training runs
         out-of-process (see TrainingManager) — this call returns immediately,
         the job's progress shows up in status()['training_jobs'], and the
         resulting policy is hot-loaded into the supervisor automatically once
         it finishes (see swap_experiment.py's per-tick poll_finished_training()
-        drain, mirroring how restart_requested is drained today)."""
+        drain, mirroring how restart_requested is drained today).
+
+        Time budget is either or both of max_iterations/max_minutes —
+        whichever is hit first stops training (see web_train.py's chunked
+        learn() loop). base_height_target/push_robots/max_push_vel_xy/
+        push_interval_s are the "stability target" knobs — override the
+        task's own reward/domain-rand defaults, e.g. to hold a fine-tuning
+        base's crouched height instead of the task's standing height."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         return self.training.start(
-            policy_name=policy_name, task=task, max_iterations=max_iterations, num_envs=num_envs,
+            policy_name=policy_name, task=task, num_envs=num_envs,
+            max_iterations=max_iterations, max_minutes=max_minutes,
             base_policy=base_policy, cmd_vx=cmd_vx, cmd_vy=cmd_vy, cmd_yaw=cmd_yaw,
+            base_height_target=base_height_target, push_robots=push_robots,
+            max_push_vel_xy=max_push_vel_xy, push_interval_s=push_interval_s,
         )
 
     def system_info(self) -> dict:
