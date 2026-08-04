@@ -1309,8 +1309,13 @@ function resolveHeight() {
 function refreshRewardScaleFields() {
   const base = trainBase.value, task = trainTask.value;
   const effectiveTask = task || trainingCatalog?.base_policies.find((b) => b.name === base)?.task;
-  if (!effectiveTask) { renderRewardScaleFields({}); return; }
-  call('task_defaults', { task: effectiveTask }).then((d) => {
+  if (!effectiveTask) { renderRewardScaleFields({}); return Promise.resolve(); }
+  // Returns the promise (rather than firing-and-forgetting like every other
+  // "refresh a task-dependent field" helper in this file) so
+  // restoreTrainFormConfig() can wait for these inputs to exist before
+  // writing a saved value into them — they don't exist until this async
+  // fetch resolves and renderRewardScaleFields() builds the DOM.
+  return call('task_defaults', { task: effectiveTask }).then((d) => {
     renderRewardScaleFields(d.reward_scales || {});
   }).catch(() => renderRewardScaleFields({}));
 }
@@ -1356,6 +1361,127 @@ function rewardScaleOverrides() {
   return Object.keys(overrides).length ? overrides : null;
 }
 
+// ---- auto-naming a new policy after its clone-from base ----
+// Default is "<base>_<n>", n incrementing past whatever's already taken —
+// e.g. cloning from "stable_step_two" suggests "stable_step_two_2", cloning
+// from "stable_step_3" suggests "stable_step_4" (a trailing number gets
+// incremented in place instead of appended again). Shown as the Name
+// field's placeholder, never written into the field itself — typing an
+// explicit name always wins (composeTrainingParams() only falls back to
+// this when the field is left blank), same as every other "leave blank for
+// a computed default" field in this form.
+const DEFAULT_NAME_PLACEHOLDER = 'e.g. cautious_v2';
+
+function suggestedPolicyName() {
+  const base = trainBase.value;
+  if (!base) return null;
+  const known = new Set([
+    ...(trainingCatalog?.base_policies || []).map((p) => p.name),
+    ...(latestStatus?.policies || []),
+  ]);
+  const m = base.match(/^(.*?)(\d+)$/);
+  const prefix = m ? m[1] : `${base}_`;
+  let n = m ? parseInt(m[2], 10) + 1 : 2;
+  let candidate = `${prefix}${n}`;
+  while (known.has(candidate)) { n += 1; candidate = `${prefix}${n}`; }
+  return candidate;
+}
+
+function refreshNamePlaceholder() {
+  trainName.placeholder = suggestedPolicyName() || DEFAULT_NAME_PLACEHOLDER;
+  updateCommandPreview(); // the preview's --name should track the same fallback
+}
+
+// ---- remembering the last-used Create Policy config across sessions ----
+// "recordar la config anterior" — every field except the (now auto-named)
+// policy name itself gets snapshotted to localStorage on a successful
+// submit and restored the next time the panel opens, so repeating a
+// curriculum step (same task/base/entropy_coef/reward weights, just a new
+// name and maybe a longer budget) doesn't mean retyping the whole form.
+const TRAIN_FORM_STORAGE_KEY = 'giar.trainFormConfig.v1';
+
+function snapshotTrainFormConfig() {
+  const rewardScales = {};
+  trainRewardScales.querySelectorAll('input').forEach((el) => {
+    if (el.value.trim() !== '') rewardScales[el.dataset.term] = el.value;
+  });
+  return {
+    task: trainTask.value, base: trainBase.value,
+    numEnvs: trainEnvs.value, iters: trainIters.value, minutes: trainMinutes.value,
+    vxLo: trainVxLo.value, vxHi: trainVxHi.value,
+    vyLo: trainVyLo.value, vyHi: trainVyHi.value,
+    yawLo: trainYawLo.value, yawHi: trainYawHi.value,
+    varKey: trainVarSelect.value, targetMode,
+    height: trainHeight.value, heightDir: trainHeightDir.value, heightDelta: trainHeightDelta.value,
+    extremeDir,
+    push: trainPush.value, pushVel: trainPushVel.value, pushInterval: trainPushInterval.value, pushDir: trainPushDir.value,
+    entropyCoef: trainEntropyCoef.value,
+    rewardScales,
+  };
+}
+
+function saveTrainFormConfig() {
+  try { localStorage.setItem(TRAIN_FORM_STORAGE_KEY, JSON.stringify(snapshotTrainFormConfig())); } catch { /* best-effort */ }
+}
+
+function loadTrainFormConfig() {
+  try {
+    const raw = localStorage.getItem(TRAIN_FORM_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+// Applies a saved config on top of whatever refreshTrainingCatalog() just
+// populated the selects with — task/base are only restored if that name
+// still exists (a deleted policy silently falls back to whatever's
+// already selected, same "don't offer something no longer real" rule
+// forget_source()/refreshTrainingCatalog() already follow elsewhere).
+function restoreTrainFormConfig() {
+  const cfg = loadTrainFormConfig();
+  if (!cfg) return;
+
+  if (cfg.task && trainingCatalog?.tasks?.includes(cfg.task)) trainTask.value = cfg.task;
+  if (cfg.base && trainingCatalog?.base_policies?.some((p) => p.name === cfg.base)) trainBase.value = cfg.base;
+  trainEnvs.value = cfg.numEnvs || '';
+  trainIters.value = cfg.iters || '';
+  trainMinutes.value = cfg.minutes || '';
+  trainVxLo.value = cfg.vxLo || ''; trainVxHi.value = cfg.vxHi || '';
+  trainVyLo.value = cfg.vyLo || ''; trainVyHi.value = cfg.vyHi || '';
+  trainYawLo.value = cfg.yawLo || ''; trainYawHi.value = cfg.yawHi || '';
+  if (cfg.varKey && trainingCatalog?.variables?.[cfg.varKey]) trainVarSelect.value = cfg.varKey;
+  targetMode = cfg.targetMode || 'absolute';
+  trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === targetMode));
+  trainHeightAbsolute.hidden = targetMode !== 'absolute';
+  trainHeightRelative.hidden = targetMode !== 'relative';
+  trainHeightExtreme.hidden = targetMode !== 'extreme';
+  trainHeight.value = cfg.height || '';
+  trainHeightDir.value = cfg.heightDir || 'raise';
+  trainHeightDelta.value = cfg.heightDelta || '';
+  extremeDir = cfg.extremeDir || 'lowest';
+  trainExtremeDirTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.dir === extremeDir));
+  trainPush.value = cfg.push || '';
+  trainPushVel.value = cfg.pushVel || '';
+  trainPushInterval.value = cfg.pushInterval || '';
+  trainPushDir.value = cfg.pushDir || '';
+  trainEntropyCoef.value = cfg.entropyCoef || '';
+
+  renderVariableChrome();
+  refreshTargetReference();
+  refreshNamePlaceholder();
+  // Reward-scale inputs don't exist until this resolves (they're rebuilt
+  // from the restored task/base) — write the saved overrides in once they
+  // do, rather than racing renderRewardScaleFields()'s own DOM rebuild.
+  refreshRewardScaleFields().then(() => {
+    if (cfg.rewardScales) {
+      for (const [term, val] of Object.entries(cfg.rewardScales)) {
+        const el = trainRewardScales.querySelector(`input[data-term="${term}"]`);
+        if (el) el.value = val;
+      }
+    }
+    updateCommandPreview();
+  });
+}
+
 function refreshTrainingCatalog() {
   call('training_catalog').then((catalog) => {
     trainingCatalog = catalog;
@@ -1397,6 +1523,7 @@ function refreshTrainingCatalog() {
 
     if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
     refreshRewardScaleFields();
+    refreshNamePlaceholder();
     updateCommandPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
@@ -1414,7 +1541,11 @@ function rangePair(loEl, hiEl) {
 }
 
 function composeTrainingParams() {
-  const name = trainName.value.trim();
+  // Blank Name field = auto-name from the clone-from base (see
+  // suggestedPolicyName()); typing an explicit name always overrides it.
+  // Only from-scratch runs with nothing typed fall through to '' — nothing
+  // to base a suggestion on there, so that's still a validation error.
+  const name = trainName.value.trim() || suggestedPolicyName() || '';
   const task = trainTask.value;
   const iterations = parseInt(trainIters.value, 10);
   const minutes = parseFloat(trainMinutes.value);
@@ -1480,7 +1611,14 @@ btnNewPolicy.addEventListener('click', () => {
   const opening = createPolicyForm.hidden;
   createPolicyForm.hidden = !opening;
   btnNewPolicy.textContent = opening ? 'Cancel' : '+ New policy…';
-  if (opening) { showTrainError(''); updateCommandPreview(); updateEstimate(); trainName.focus(); }
+  if (opening) {
+    showTrainError('');
+    restoreTrainFormConfig(); // last-used config, if any — see its own docstring
+    refreshNamePlaceholder();
+    updateCommandPreview();
+    updateEstimate();
+    trainName.focus();
+  }
 });
 
 [trainName, trainBase, trainTask, trainIters, trainMinutes, trainEnvs,
@@ -1494,6 +1632,7 @@ btnNewPolicy.addEventListener('click', () => {
   el.addEventListener('change', () => {
     if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
     refreshRewardScaleFields();
+    refreshNamePlaceholder(); // the auto-name suggestion tracks "Clone from"
   });
 });
 [trainIters, trainMinutes, trainEnvs].forEach((el) => {
@@ -1528,6 +1667,7 @@ createPolicyForm.addEventListener('submit', (e) => {
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
   }).then(() => {
+    saveTrainFormConfig(); // snapshot BEFORE reset() clears every field below
     createPolicyForm.reset();
     createPolicyForm.hidden = true;
     btnNewPolicy.textContent = '+ New policy…';
