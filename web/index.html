@@ -7,6 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='16' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='42' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='10' y='18' width='44' height='34' rx='10' fill='%2316202b'/%3E%3Ccircle cx='24' cy='34' r='5' fill='%23d9531a'/%3E%3Ccircle cx='40' cy='34' r='5' fill='%23d9531a'/%3E%3Crect x='26' y='44' width='12' height='4' rx='2' fill='%23d9531a'/%3E%3C/svg%3E">
 <style>
   :root{
+    color-scheme: light;
     --bg:#eef2f6;
     --bg-raised:#e2e9ef;
     --ink:#16202b;
@@ -24,6 +25,7 @@
     --cap-shadow:rgba(22,32,43,.28);
   }
   :root[data-theme="dark"]{
+    color-scheme: dark;
     --bg:#0b1116;
     --bg-raised:#121a21;
     --ink:#dbe4ea;
@@ -41,6 +43,7 @@
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
+      color-scheme: dark;
       --bg:#0b1116;
       --bg-raised:#121a21;
       --ink:#dbe4ea;
@@ -243,8 +246,17 @@
      see REWARD_TERM_GLOSSARY in app.js. Plain CSS, no JS positioning: pins
      above the row so it never gets clipped by the dock's own scroll. */
   .info-term-name{
-    font-family:ui-monospace,monospace; color:var(--ink-soft); white-space:nowrap; overflow:hidden;
-    text-overflow:ellipsis; position:relative; cursor:help; border-bottom:1px dotted var(--muted);
+    position:relative; cursor:help; border-bottom:1px dotted var(--muted);
+  }
+  /* Ellipsis-clipping lives on this INNER span, not on .info-term-name
+     itself — overflow:hidden on the same element that hosts the ::after
+     tooltip below would clip the popup too (it's still a descendant box
+     for clipping purposes even though it's positioned outside visually),
+     which is exactly the "only see the ? cursor, no tooltip" bug this
+     split fixes. */
+  .info-term-name-label{
+    display:block; font-family:ui-monospace,monospace; color:var(--ink-soft);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
   .info-term-name:hover::after, .info-term-name:focus-visible::after{
     content:attr(data-tip); position:absolute; left:0; bottom:100%; margin-bottom:6px; z-index:10;

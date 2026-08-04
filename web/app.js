@@ -295,6 +295,10 @@ function initPolicyDrag() {
 }
 
 function applyStatus(status) {
+  // Captured before latestStatus is overwritten below — used just after to
+  // detect an active-policy change from ANY source (row click, keyboard
+  // shortcut, another connected client) and follow it in the info dock.
+  const previousActive = latestStatus?.active;
   latestStatus = status;
 
   let color = status.ramping ? '🟡' : '🟢';
@@ -314,6 +318,18 @@ function applyStatus(status) {
   if (namesKey !== renderedPolicyNames) {
     renderedPolicyNames = namesKey;
     renderPolicyList(applyPolicyOrder(rawNames), status.active);
+  }
+
+  // Keep the info dock following the active policy: if it's open and was
+  // showing whatever used to be active, and the switch happened (row
+  // click, keyboard shortcut, another client — anything, not just the
+  // dock's own ↑/↓ nav, which already does this itself via stepPolicyInfo),
+  // reload it onto the new active policy. Doesn't fire if the dock is
+  // pinned to inspect a DIFFERENT, non-active policy opened via its ⓘ
+  // button — that stays put, matching the existing "inspecting != running"
+  // behavior documented on stepPolicyInfo().
+  if (policyInfoOpen && status.active !== previousActive && policyInfoCurrentName === previousActive) {
+    openPolicyInfo(status.active);
   }
 
   $('#btn-pause').firstChild.textContent = status.paused ? 'Resume ' : 'Pause ';
@@ -2016,9 +2032,12 @@ function renderRewardTerms(terms) {
     row.className = 'info-term-row';
     const name = document.createElement('span');
     name.className = 'info-term-name';
-    name.textContent = term;
     name.tabIndex = 0;
     name.setAttribute('data-tip', REWARD_TERM_GLOSSARY[term] || `No description written for "${term}" yet.`);
+    const nameLabel = document.createElement('span');
+    nameLabel.className = 'info-term-name-label';
+    nameLabel.textContent = term;
+    name.appendChild(nameLabel);
     const track = document.createElement('div');
     track.className = 'info-term-bar-track';
     const bar = document.createElement('div');
