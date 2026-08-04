@@ -1630,13 +1630,33 @@ const policyInfoOverlay = $('#policy-info-overlay');
 const policyInfoTitle = $('#policy-info-title');
 const policyInfoBody = $('#policy-info-body');
 const policyInfoClose = $('#policy-info-close');
+const policyInfoPrev = $('#policy-info-prev');
+const policyInfoNext = $('#policy-info-next');
+
+let policyInfoCurrentName = null; // whichever policy the popup is showing right now —
+                                   // drives the up/down (prev/next) nav buttons below
+
+// The up/down buttons walk the SAME order as the Policies list (drag order,
+// top to bottom) — reading it straight off the live DOM (like
+// onPolicyReorder() already does) rather than keeping a second copy of the
+// order in sync, so it can never drift from what the user actually sees.
+function policyOrderNames() {
+  return [...policyList.querySelectorAll('.policy-row')].map((r) => r.dataset.policy);
+}
 
 function openPolicyInfo(name) {
+  policyInfoCurrentName = name;
   policyInfoTitle.textContent = name;
   policyInfoBody.innerHTML = 'Loading…';
   policyInfoOverlay.hidden = false;
   policyInfoOpen = true;
   setKeysArmed();
+
+  const order = policyOrderNames();
+  const idx = order.indexOf(name);
+  policyInfoPrev.disabled = idx <= 0;
+  policyInfoNext.disabled = idx === -1 || idx >= order.length - 1;
+
   call('policy_info', { name }).then((info) => {
     policyInfoBody.innerHTML = '';
     policyInfoBody.appendChild(info ? renderPolicyInfo(info) : renderPolicyInfoEmpty());
@@ -1649,15 +1669,35 @@ function openPolicyInfo(name) {
   });
 }
 
+function stepPolicyInfo(delta) {
+  const order = policyOrderNames();
+  const idx = order.indexOf(policyInfoCurrentName);
+  if (idx === -1) return;
+  const nextIdx = idx + delta;
+  if (nextIdx < 0 || nextIdx >= order.length) return;
+  openPolicyInfo(order[nextIdx]);
+}
+
 function closePolicyInfo() {
   policyInfoOverlay.hidden = true;
   policyInfoOpen = false;
+  policyInfoCurrentName = null;
   setKeysArmed();
 }
 
 policyInfoClose.addEventListener('click', closePolicyInfo);
+policyInfoPrev.addEventListener('click', () => stepPolicyInfo(-1));
+policyInfoNext.addEventListener('click', () => stepPolicyInfo(1));
 policyInfoOverlay.addEventListener('click', (e) => { if (e.target === policyInfoOverlay) closePolicyInfo(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && policyInfoOpen) closePolicyInfo(); }, true);
+document.addEventListener('keydown', (e) => {
+  if (!policyInfoOpen) return;
+  if (e.key === 'Escape') { closePolicyInfo(); return; }
+  // ArrowUp/ArrowDown double as the same "row above/below" nav as the
+  // buttons — comparing a chart against its neighbor shouldn't require
+  // reaching for the mouse every time.
+  if (e.key === 'ArrowUp') { e.preventDefault(); stepPolicyInfo(-1); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); stepPolicyInfo(1); }
+}, true);
 
 function renderPolicyInfoEmpty() {
   const p = document.createElement('p');

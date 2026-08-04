@@ -187,11 +187,16 @@
     padding:.8rem 1rem; border-bottom:1px solid var(--line); background:var(--bg-raised);
   }
   .modal-head h2{margin:0; font-size:1rem;}
+  .modal-nav{display:flex; align-items:center; gap:.35rem; flex:none;}
   .modal-close{
     flex:none; width:28px; height:28px; border-radius:6px; border:1px solid var(--line);
     background:var(--bg); color:var(--muted); cursor:pointer; font-size:1.1rem; line-height:1;
   }
-  .modal-close:hover{border-color:var(--danger); color:var(--danger);}
+  .modal-close:hover:not(:disabled){border-color:var(--danger); color:var(--danger);}
+  #policy-info-prev:hover:not(:disabled), #policy-info-next:hover:not(:disabled){
+    border-color:var(--accent2); color:var(--accent2);
+  }
+  .modal-nav button:disabled{opacity:.3; cursor:not-allowed;}
   #policy-info-body{padding:1rem;}
   .info-empty{color:var(--muted); font-size:.85rem;}
   .info-section{margin-bottom:1rem;}
@@ -772,7 +777,11 @@
   <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="policy-info-title">
     <div class="modal-head">
       <h2 id="policy-info-title">Policy</h2>
-      <button type="button" id="policy-info-close" class="modal-close" aria-label="Close">&times;</button>
+      <div class="modal-nav">
+        <button type="button" id="policy-info-prev" class="modal-close" aria-label="Previous policy (up)" title="Previous policy — same as the row above in Policies">&uarr;</button>
+        <button type="button" id="policy-info-next" class="modal-close" aria-label="Next policy (down)" title="Next policy — same as the row below in Policies">&darr;</button>
+        <button type="button" id="policy-info-close" class="modal-close" aria-label="Close">&times;</button>
+      </div>
     </div>
     <div id="policy-info-body">Loading&hellip;</div>
   </div>
