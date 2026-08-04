@@ -64,11 +64,7 @@ resources/terrains/*.stl
 # GIAR fork additions
 .venv/
 plot.png
-*.onnx
 outputs/
 
 # Environment variables (local secrets / runtime config)
 .env
-
-# Policies folder
-policies

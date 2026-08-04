@@ -1,0 +1,575 @@
+
+pytorch2.13.0:íË
+è
+obs
+val_0	unsqueezenode_unsqueeze"	UnsqueezeJ\
+	namespaceO: legged_gym.utils.helpers.PolicyExporterLSTM/unsqueeze: aten.unsqueeze.defaultJk
+pkg.torch.onnx.class_hierarchyI['legged_gym.utils.helpers.PolicyExporterLSTM', 'aten.unsqueeze.default']Jä
+pkg.torch.onnx.fx_nodep%unsqueeze : [num_users=1] = call_function[target=torch.ops.aten.unsqueeze.default](args = (%x, 0), kwargs = {})J/
+pkg.torch.onnx.name_scopes['', 'unsqueeze']J—
+pkg.torch.onnx.stack_trace≤File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+Ü
+	hidden_in
+val_0
+val_2
+val_0val_3node_Slice_3"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+Ñ
+cell_in
+val_0
+val_2
+val_0val_4node_Slice_4"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ê
+memory.weight_ih_l0
+val_0
+val_1
+val_0val_5node_Slice_5"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ê
+memory.weight_ih_l0
+val_1
+val_7
+val_0val_8node_Slice_8"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ì
+memory.weight_ih_l0
+val_7
+val_11
+val_0val_12node_Slice_12"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+î
+memory.weight_ih_l0
+val_11
+val_15
+val_0val_16node_Slice_16"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+í
+memory.weight_hh_l0
+val_0
+val_1
+val_0val_17node_Slice_17"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+í
+memory.weight_hh_l0
+val_1
+val_7
+val_0val_19node_Slice_19"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ì
+memory.weight_hh_l0
+val_7
+val_11
+val_0val_22node_Slice_22"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+î
+memory.weight_hh_l0
+val_11
+val_15
+val_0val_25node_Slice_25"SliceJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ï
+val_5
+val_16
+val_8
+val_12val_26node_Concat_26"Concat*
+axis †Jr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ó
+val_17
+val_25
+val_19
+val_22val_27node_Concat_27"Concat*
+axis †Jr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ˇ
+val_26
+val_0val_28node_Unsqueeze_28"	UnsqueezeJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ˇ
+val_27
+val_0val_29node_Unsqueeze_29"	UnsqueezeJr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+Ä	
+	unsqueeze
+val_28
+val_29
+val_51
+ 
+val_3
+val_4val_52
+hidden_outcell_outnode_lstm__2"LSTM*
+hidden_size@†*
+layout †*
+	direction"forward†*
+input_forget †Jr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+ã
+val_52val_53node_Transpose_52"	Transpose*
+perm@ @@@†Jr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+å
+val_53
+val_65getitemnode_lstm__0"Reshape*
+	allowzero †Jr
+	namespacee: legged_gym.utils.helpers.PolicyExporterLSTM/memory: torch.nn.modules.rnn.LSTM/lstm: aten.lstm.inputJÅ
+pkg.torch.onnx.class_hierarchy_['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.rnn.LSTM', 'aten.lstm.input']J£
+pkg.torch.onnx.fx_nodeà%lstm : [num_users=3] = call_function[target=torch.ops.aten.lstm.input](args = (%unsqueeze, [%hidden_state, %cell_state], [%p_memory_weight_ih_l0, %p_memory_weight_hh_l0, %p_memory_bias_ih_l0, %p_memory_bias_hh_l0], True, 1, 0.0, False, False, False), kwargs = {})J4
+pkg.torch.onnx.name_scopes['', 'memory', 'lstm']JÛ
+pkg.torch.onnx.stack_trace‘File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 364, in forward
+    out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/rnn.py", line 1164, in forward
+    result = _VF.lstm(
+›
+getitem
+val_0squeezenode_squeeze"SqueezeJT
+	namespaceG: legged_gym.utils.helpers.PolicyExporterLSTM/squeeze: aten.squeeze.dimJe
+pkg.torch.onnx.class_hierarchyC['legged_gym.utils.helpers.PolicyExporterLSTM', 'aten.squeeze.dim']Jà
+pkg.torch.onnx.fx_noden%squeeze : [num_users=1] = call_function[target=torch.ops.aten.squeeze.dim](args = (%getitem, 0), kwargs = {})J-
+pkg.torch.onnx.name_scopes['', 'squeeze']J≥
+pkg.torch.onnx.stack_traceîFile "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 365, in forward
+    return self.actor(out.squeeze(0)), h, c
+¯	
+squeeze
+actor.0.weight
+actor.0.biaslinearnode_linear"Gemm*
+beta  Ä?†*
+transB†*
+alpha  Ä?†*
+transA †J¨
+	namespaceû: legged_gym.utils.helpers.PolicyExporterLSTM/actor: torch.nn.modules.container.Sequential/actor.0: torch.nn.modules.linear.Linear/linear: aten.linear.defaultJ¥
+pkg.torch.onnx.class_hierarchyë['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J¨
+pkg.torch.onnx.fx_nodeë%linear : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%squeeze, %p_actor_0_weight, %p_actor_0_bias), kwargs = {})J@
+pkg.torch.onnx.name_scopes"['', 'actor', 'actor.0', 'linear']Jù
+pkg.torch.onnx.stack_trace˛File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 365, in forward
+    return self.actor(out.squeeze(0)), h, c
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
+    return F.linear(input, self.weight, self.bias)
+¸
+linearval_70node_Elu_69"Elu*
+alpha  Ä?†Jß
+	namespaceô: legged_gym.utils.helpers.PolicyExporterLSTM/actor: torch.nn.modules.container.Sequential/actor.1: torch.nn.modules.activation.ELU/elu: aten.elu.defaultJ≤
+pkg.torch.onnx.class_hierarchyè['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.ELU', 'aten.elu.default']JÖ
+pkg.torch.onnx.fx_nodek%elu : [num_users=1] = call_function[target=torch.ops.aten.elu.default](args = (%linear, 1.0), kwargs = {})J=
+pkg.torch.onnx.name_scopes['', 'actor', 'actor.1', 'elu']J†
+pkg.torch.onnx.stack_traceÅFile "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 365, in forward
+    return self.actor(out.squeeze(0)), h, c
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 619, in forward
+    return F.elu(input, self.alpha, self.inplace)
+˝	
+val_70
+actor.2.weight
+actor.2.biaslinear_1node_linear_1"Gemm*
+beta  Ä?†*
+transB†*
+alpha  Ä?†*
+transA †JÆ
+	namespace†: legged_gym.utils.helpers.PolicyExporterLSTM/actor: torch.nn.modules.container.Sequential/actor.2: torch.nn.modules.linear.Linear/linear_1: aten.linear.defaultJ¥
+pkg.torch.onnx.class_hierarchyë['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.linear.Linear', 'aten.linear.default']J™
+pkg.torch.onnx.fx_nodeè%linear_1 : [num_users=1] = call_function[target=torch.ops.aten.linear.default](args = (%elu, %p_actor_2_weight, %p_actor_2_bias), kwargs = {})JB
+pkg.torch.onnx.name_scopes$['', 'actor', 'actor.2', 'linear_1']Jù
+pkg.torch.onnx.stack_trace˛File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 365, in forward
+    return self.actor(out.squeeze(0)), h, c
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/linear.py", line 134, in forward
+    return F.linear(input, self.weight, self.bias)
+Ã	
+linear_1
+min_val_cast
+max_val_castactionsn4"ClipJ∂
+	namespace®: legged_gym.utils.helpers.PolicyExporterLSTM/actor: torch.nn.modules.container.Sequential/actor.3: torch.nn.modules.activation.Hardtanh/hardtanh: aten.hardtanh.defaultJº
+pkg.torch.onnx.class_hierarchyô['legged_gym.utils.helpers.PolicyExporterLSTM', 'torch.nn.modules.container.Sequential', 'torch.nn.modules.activation.Hardtanh', 'aten.hardtanh.default']Jú
+pkg.torch.onnx.fx_nodeÅ%hardtanh : [num_users=1] = call_function[target=torch.ops.aten.hardtanh.default](args = (%linear_1, -100.0, 100.0), kwargs = {})JB
+pkg.torch.onnx.name_scopes$['', 'actor', 'actor.3', 'hardtanh']Jµ
+pkg.torch.onnx.stack_traceñFile "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/legged_gym/utils/helpers.py", line 365, in forward
+    return self.actor(out.squeeze(0)), h, c
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/.venv/lib/python3.12/site-packages/torch/nn/modules/activation.py", line 294, in forward
+    return F.hardtanh(input, self.min_val, self.max_val, self.inplace)
+main_graph*] @Bactor.0.weightj#
+locationpolicy_lstm_1.onnx.dataj
+offset3584j
+length8192p*ï Bactor.0.biasJÄﬂ€∞=È/eæ√ˇªLàx=úã[=TÄ=Ï0òº‚!æ‘7≥;xó=´ìA>1Æ=édfΩ÷«æ◊¸=m4êº1H—=πˇæéqﬁ<ÁΩèΩú>ƒ<XdLª˛©º<I∆éΩ‡ÿ˛ª5I<˙€D>¶óΩ_Ù=ØZnΩÀº´ΩG:$=*Z Bactor.2.weightj#
+locationpolicy_lstm_1.onnx.dataj
+offset0j
+length1536p*DBactor.2.biasJ0pKE>¯4>‹ﬁ˝ΩVπıΩ¨õ:>ï#È=rÓÜ<∏{æDq˙ºáœ>ÔõΩ∑ˆ9Ω*eÄ/Bmemory.weight_ih_l0j#
+locationpolicy_lstm_1.onnx.dataj
+offset11776j
+length48128p*eÄ@Bmemory.weight_hh_l0j#
+locationpolicy_lstm_1.onnx.dataj
+offset59904j
+length65536p*Bval_7JÄ       *Bval_11J¿       *Bval_15J       *VÄBval_51j#
+locationpolicy_lstm_1.onnx.dataj
+offset1536j
+length2048p*&Bval_65J              @       *Bmin_val_castJ  »¬*Bmax_val_castJ  »B*Bval_0J        *Bval_1J@       *Bval_2J       Zª
+obs
+
+
+/"=
+/pkg.torch.export.graph_signature.InputSpec.kind
+USER_INPUT"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"&
+!pkg.torch.onnx.original_node_namexZ–
+	hidden_in
+
+
+
+@"=
+/pkg.torch.export.graph_signature.InputSpec.kind
+USER_INPUT"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"1
+!pkg.torch.onnx.original_node_namehidden_stateZÃ
+cell_in
+
+
+
+@"=
+/pkg.torch.export.graph_signature.InputSpec.kind
+USER_INPUT"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"/
+!pkg.torch.onnx.original_node_name
+cell_statebH
+actions
+
+
+"-
+!pkg.torch.onnx.original_node_namehardtanhbë
+
+hidden_out
+
+
+
+@"?
+0pkg.torch.export.graph_signature.OutputSpec.kindUSER_OUTPUT".
+!pkg.torch.onnx.original_node_name	getitem_1bè
+cell_out
+
+
+
+@"?
+0pkg.torch.export.graph_signature.OutputSpec.kindUSER_OUTPUT".
+!pkg.torch.onnx.original_node_name	getitem_2j‘
+actor.0.weight
+
+ 
+@"<
+/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
+!pkg.torch.onnx.original_node_namep_actor_0_weightjÃ
+actor.0.bias
+
+
+ "<
+/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
+!pkg.torch.onnx.original_node_namep_actor_0_biasj‘
+actor.2.weight
+
+
+ "<
+/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"5
+!pkg.torch.onnx.original_node_namep_actor_2_weightjÃ
+actor.2.bias
+
+
+"<
+/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone"3
+!pkg.torch.onnx.original_node_namep_actor_2_biasjﬂ
+memory.weight_ih_l0
+	
+Ä
+/"<
+/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone":
+!pkg.torch.onnx.original_node_namep_memory_weight_ih_l0jﬂ
+memory.weight_hh_l0
+	
+Ä
+@"<
+/pkg.torch.export.graph_signature.InputSpec.kind	PARAMETER"=
+5pkg.torch.export.graph_signature.InputSpec.persistentNone":
+!pkg.torch.onnx.original_node_namep_memory_weight_hh_l0j_
+val_7
+
+
+"J
+$pkg.onnxscript.optimizer.folded_from"['hidden_state', 'val_1', 'val_6']ja
+val_11
+
+
+"K
+$pkg.onnxscript.optimizer.folded_from#['hidden_state', 'val_1', 'val_10']ja
+val_15
+
+
+"K
+$pkg.onnxscript.optimizer.folded_from#['hidden_state', 'val_1', 'val_14']jÄ
+val_51
+	
+
+Ä"‰
+$pkg.onnxscript.optimizer.folded_fromª['hidden_state', 'memory.bias_hh_l0', 'memory.bias_ih_l0', 'val_0', 'val_1', 'val_10', 'val_14', 'val_30', 'val_31', 'val_32', 'val_33', 'val_34', 'val_35', 'val_36', 'val_37', 'val_38', 'val_39', 'val_40', 'val_41', 'val_42', 'val_43', 'val_44', 'val_45', 'val_46', 'val_47', 'val_48', 'val_49', 'val_50', 'val_6']j 
+val_65
+
+
+"≥
+$pkg.onnxscript.optimizer.folded_fromä['val_0', 'val_2', 'val_53', 'val_54', 'val_55', 'val_56', 'val_57', 'val_58', 'val_59', 'val_60', 'val_61', 'val_62', 'val_63', 'val_64']jK
+min_val_cast
+ "3
+$pkg.onnxscript.optimizer.folded_from['min_val']jK
+max_val_cast
+ "3
+$pkg.onnxscript.optimizer.folded_from['max_val']j
+val_0
+
+
+jM
+val_1
+
+
+"8
+$pkg.onnxscript.optimizer.folded_from['hidden_state']j
+val_2
+
+
+j
+	unsqueeze
+
+
+
+/j
+val_3
+
+
+
+@j
+val_4
+
+
+
+@j
+val_5
+
+@
+/j
+val_8
+
+@
+/j
+val_12
+
+@
+/j
+val_16
+
+@
+/j
+val_17
+
+@
+@j
+val_19
+
+@
+@j
+val_22
+
+@
+@j
+val_25
+
+@
+@j
+val_26
+	
+Ä
+/j
+val_27
+	
+Ä
+@j
+val_28
+
+
+Ä
+/j
+val_29
+
+
+Ä
+@j 
+val_52
+
+
+
+
+@j 
+val_53
+
+
+
+
+@j
+getitem
+
+
+
+@j
+squeeze
+
+
+@j
+linear
+
+
+ j
+val_70
+
+
+ j
+linear_1
+
+
+ÇÑ
+0pkg.torch.export.ExportedProgram.graph_signatureœ
+# inputs
+p_actor_0_weight: PARAMETER target='actor.0.weight'
+p_actor_0_bias: PARAMETER target='actor.0.bias'
+p_actor_2_weight: PARAMETER target='actor.2.weight'
+p_actor_2_bias: PARAMETER target='actor.2.bias'
+p_memory_weight_ih_l0: PARAMETER target='memory.weight_ih_l0'
+p_memory_weight_hh_l0: PARAMETER target='memory.weight_hh_l0'
+p_memory_bias_ih_l0: PARAMETER target='memory.bias_ih_l0'
+p_memory_bias_hh_l0: PARAMETER target='memory.bias_hh_l0'
+x: USER_INPUT
+hidden_state: USER_INPUT
+cell_state: USER_INPUT
+
+# outputs
+hardtanh: USER_OUTPUT
+getitem_1: USER_OUTPUT
+getitem_2: USER_OUTPUT
+Ç8
+2pkg.torch.export.ExportedProgram.range_constraints{}B
+ 

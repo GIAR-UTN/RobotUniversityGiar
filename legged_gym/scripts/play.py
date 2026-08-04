@@ -263,7 +263,7 @@ def export_policy(alg_runner, path: str, args, env_cfg, train_cfg, task_type):
         # PolicyExporterLSTM (already defined in helpers.py, just never dispatched to here)
         # exports the LSTM + MLP together and expects (obs, hidden_state, cell_state).
         exporter = PolicyExporterLSTM(alg_runner.alg.actor_critic)
-        exporter.export(path)
+        exporter.export(path, env_cfg, args.export_onnx)
     else:
         exporter = PolicyExporter(alg_runner.alg.actor_critic)
         exporter.export(path, env_cfg, args.export_onnx, train_cfg)

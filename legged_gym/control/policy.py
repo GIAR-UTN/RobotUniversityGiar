@@ -1,9 +1,9 @@
 """
 Policy backends + the Policy wrapper PolicySupervisor actually holds.
 
-Two jit export conventions exist in the wild for this repo's G1 checkpoints
-(this was discovered the hard way while building the swap demo — see the
-commit history / README for the story):
+Two jit export conventions exist in the wild for this repo's G1 TorchScript
+checkpoints (this was discovered the hard way while building the swap demo —
+see the commit history / README for the story):
   - "explicit state":  forward(obs, h, c) -> (action, h, c) — what this
     fork's own play.py exports (legged_gym/utils/helpers.py:PolicyExporterLSTM,
     once play.py is told to use it for a recurrent policy).
@@ -12,15 +12,36 @@ commit history / README for the story):
     This is the convention unitree_rl_gym's own shipped checkpoints use
     (deploy/pre_train/*/motion.pt).
 
-load_policy() auto-detects which one a given .pt file is and wraps it so the
-rest of the codebase never needs to know the difference.
+A third format, ONNX, is the wider ecosystem's real interchange standard for
+everything that isn't PyTorch-native (Isaac Lab exports both jit and onnx from
+every run; community G1 releases like NVIDIA's GR00T-WholeBodyControl or
+mjlab-trained tricks ship onnx only). `.onnx` checkpoints are handled the same
+way: auto-detected from the file's declared inputs, wrapped behind the same
+PolicyBackend protocol as the two jit conventions above, so PolicySupervisor
+never needs to know which of the three it's holding. Two onnx shapes exist,
+mirroring the jit split:
+  - stateless: a single input tensor (obs) -> a single output (action).
+  - explicit state: obs + N state input tensors -> action + N updated state
+    tensors, in matching order (this repo's own onnx export uses this for its
+    LSTM policies — see PolicyExporterLSTM.export()).
+
+load_policy() auto-detects which of these five shapes a given checkpoint file
+is and wraps it so the rest of the codebase never needs to know the
+difference.
 """
 from __future__ import annotations
 
 import dataclasses
 from typing import Protocol
 
+import numpy as np
 import torch
+
+try:
+    import onnxruntime
+    HAS_ONNXRUNTIME = True
+except ImportError:
+    HAS_ONNXRUNTIME = False
 
 
 class PolicyBackend(Protocol):
@@ -74,6 +95,76 @@ class InternalStatePolicy:
         self.module.cell_state.zero_()
 
 
+def _fixed_dim(dim, fallback: int) -> int:
+    """onnxruntime reports symbolic batch dims (e.g. 'batch') as non-int —
+    fall back to 1 (this whole control stack runs num_envs=1, see
+    swap_experiment.py) rather than propagate a string into torch.zeros."""
+    return dim if isinstance(dim, int) else fallback
+
+
+class OnnxStatelessPolicy:
+    """Single input (obs) -> single output (action). No hidden state to
+    carry, so reset() is a no-op — this is the common shape for MLP (non-
+    recurrent) policies exported straight from Isaac Lab/mjlab/etc."""
+
+    def __init__(self, session):
+        self.session = session
+        self.obs_name = session.get_inputs()[0].name
+        self.out_name = session.get_outputs()[0].name
+
+    def step(self, obs: torch.Tensor) -> torch.Tensor:
+        obs_np = obs.detach().cpu().numpy().astype(np.float32)
+        (action_np,) = self.session.run([self.out_name], {self.obs_name: obs_np})
+        return torch.from_numpy(action_np)
+
+    def reset(self) -> None:
+        pass
+
+
+class OnnxExplicitStatePolicy:
+    """obs + N state inputs -> action + N updated state outputs, in matching
+    order — the onnx analogue of this file's ExplicitStatePolicy. Covers
+    recurrent (LSTM/GRU) policies exported with hidden state as explicit
+    tensor I/O rather than baked into the graph."""
+
+    def __init__(self, session, num_envs: int):
+        inputs = session.get_inputs()
+        outputs = session.get_outputs()
+        self.session = session
+        self.obs_name = inputs[0].name
+        self.action_name = outputs[0].name
+        self.state_in_names = [i.name for i in inputs[1:]]
+        self.state_out_names = [o.name for o in outputs[1:]]
+        self.state_shapes = [
+            [_fixed_dim(d, num_envs if idx == 1 else 1) for idx, d in enumerate(i.shape)]
+            for i in inputs[1:]
+        ]
+        self.states = [np.zeros(shape, dtype=np.float32) for shape in self.state_shapes]
+
+    def step(self, obs: torch.Tensor) -> torch.Tensor:
+        obs_np = obs.detach().cpu().numpy().astype(np.float32)
+        feed = {self.obs_name: obs_np}
+        feed.update(zip(self.state_in_names, self.states))
+        outputs = self.session.run([self.action_name, *self.state_out_names], feed)
+        action_np, self.states = outputs[0], outputs[1:]
+        return torch.from_numpy(action_np)
+
+    def reset(self) -> None:
+        self.states = [np.zeros(shape, dtype=np.float32) for shape in self.state_shapes]
+
+
+def load_onnx_backend(path: str, num_envs: int) -> PolicyBackend:
+    if not HAS_ONNXRUNTIME:
+        raise RuntimeError(
+            f"Cannot load '{path}': onnx checkpoints require the 'onnxruntime' package "
+            "(pip install onnxruntime — see README's community-policy section)."
+        )
+    session = onnxruntime.InferenceSession(path, providers=["CPUExecutionProvider"])
+    if len(session.get_inputs()) == 1:
+        return OnnxStatelessPolicy(session)
+    return OnnxExplicitStatePolicy(session, num_envs)
+
+
 class ZeroActionBackend:
     """The 'damping' fallback: always outputs a zero action, i.e. hold at
     default_dof_pos with whatever Kp/Kd the env config has, no target
@@ -104,6 +195,8 @@ def damping_policy(num_envs: int, num_actions: int, device: str = "cpu") -> Poli
 
 
 def load_policy_backend(path: str, hidden_size: int, num_envs: int, device: str = "cpu") -> PolicyBackend:
+    if path.endswith(".onnx"):
+        return load_onnx_backend(path, num_envs)
     module = torch.jit.load(path, map_location=device)
     if hasattr(module, "hidden_state") and hasattr(module, "cell_state"):
         return InternalStatePolicy(module)

@@ -18,7 +18,8 @@ dependencies = [
                 'rich-argparse',
                 'viser',
                 'fastapi',
-                'uvicorn'
+                'uvicorn',
+                'onnxruntime'
 ]
 
 [project.optional-dependencies]

@@ -1,17 +1,23 @@
 """
-Fine-tune g1_cautious FROM an already-trained g1 (default) checkpoint, instead of from
-random init. Unlike plain train.py --resume (which only resumes within the SAME task's
-log root), this loads a checkpoint from a DIFFERENT task's directory (g1 -> g1_cautious)
-by calling ppo_runner.load() directly with an explicit path.
+Fine-tune a g1_* task FROM an already-trained checkpoint, instead of from random init.
+Unlike plain train.py --resume (which only resumes within the SAME task's log root and
+config), this loads a checkpoint from any path — same task (continuing under a revised
+reward, e.g. g1_crouch v1 -> v2) or a different one (g1 -> g1_cautious) — by calling
+ppo_runner.load() directly with an explicit path.
 
-The optimizer state is intentionally NOT loaded (load_optimizer=False): A's Adam momentum
-was accumulated under a different reward function, and carrying it over would bias early
-fine-tuning steps toward A's old objective instead of adapting cleanly to B's new one.
+The optimizer state is intentionally NOT loaded (load_optimizer=False): the source
+checkpoint's Adam momentum was accumulated under a different reward function (or a
+revised one), and carrying it over would bias early fine-tuning steps toward the old
+objective instead of adapting cleanly to the new one.
 
 Usage:
-    python legged_gym/scripts/finetune_cautious.py \
+    python legged_gym/scripts/finetune_cautious.py --task g1_cautious \
         --from_checkpoint logs/g1/<run>/model_1800.pt \
         --max_iterations 1000 --headless --cpu --num_envs=64
+
+    python legged_gym/scripts/finetune_cautious.py --task g1_crouch \
+        --from_checkpoint logs/g1_crouch/<run>/model_1000.pt \
+        --max_iterations 1500 --headless --cpu --num_envs=64
 """
 import argparse
 import os
@@ -22,18 +28,20 @@ from legged_gym.utils import task_registry
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune g1_cautious from a g1 checkpoint")
+    parser = argparse.ArgumentParser(description="Fine-tune a g1_* task from an existing checkpoint")
+    parser.add_argument('--task', type=str, default='g1_cautious',
+                         help="registered task to train under (e.g. g1_cautious, g1_crouch)")
     parser.add_argument('--from_checkpoint', type=str, required=True,
-                         help="path to the g1 (default) checkpoint to start from")
+                         help="path to the checkpoint to start from")
     parser.add_argument('--max_iterations', type=int, default=1000,
-                         help="additional iterations to train under the cautious reward")
+                         help="additional iterations to train under this task's reward")
     parser.add_argument('--headless', action='store_true', default=True)
     parser.add_argument('--cpu', action='store_true', default=True)
     parser.add_argument('--num_envs', type=int, default=64)
     cli = parser.parse_args()
 
     args = argparse.Namespace(
-        task="g1_cautious", headless=cli.headless, cpu=cli.cpu, num_envs=cli.num_envs,
+        task=cli.task, headless=cli.headless, cpu=cli.cpu, num_envs=cli.num_envs,
         max_iterations=cli.max_iterations, resume=False, sync_wandb=False, export_onnx=False,
         debug=False, load_run=None, ckpt=-1, use_joystick=False, joystick_type='xbox',
         follow_robot=False, viewer='native', viser_port=8080, motion_file=None,

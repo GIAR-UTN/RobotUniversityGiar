@@ -37,6 +37,7 @@ Every step above is a real, separate open-source project — see [UPSTREAM_READM
 - Trained a Unitree G1 (humanoid) walking policy from scratch in Genesis on an M1 Pro Mac (no CUDA), using this fork's own `g1` task — 1800 PPO iterations total.
 - Also confirmed unitree_rl_gym's own **shipped pretrained G1 checkpoint** (`deploy/pre_train/g1/motion.pt`) is drop-in compatible with this fork's Genesis env (same URDF, same joint order, same PD gains) — it's dramatically more stable (~0.77-0.78m base height held for hundreds of steps) than anything trainable in a few minutes locally, and is used as the "stable" reference policy.
 - Fine-tuned a second policy ("cautious") from that trained checkpoint under a reward that penalizes torque/joint-velocity much more heavily — a genuine derivative of the first policy, not an independent training run.
+- Trained a fourth, genuinely new skill from scratch ("crouch"): a static squat instead of a walk — zero velocity commands, no gait to learn, so it converged in 1000 PPO iterations (~15 min on this Mac's CPU) vs. the 1800 iterations the from-scratch walk needed, and survived the demo's default random pushes without tripping the safety governor.
 - Built `legged_gym/control/`: a small, backend-agnostic package (`RobotAdapter` / `PolicySupervisor` / `SafetyGovernor` / `Selector` / `ControlService`) that lets you load N policies, switch between them live with a smooth cross-fade instead of a hard cut, gate switches through a safety check, and drive all of it from either a human clicking a button or an autonomous rule/network — same call, same code path.
 - Wired that up to a live demo: a `viser` (web-based 3D viewer) page with Restart / Pause / per-policy switch buttons and a live "active policy" label, running against Genesis.
 - Left `deploy_real/real_adapter.py` as a carefully-ported but **explicitly untested** real-hardware adapter — this repo was built with no unitree_sdk2py installed and no physical robot attached, so real-hardware verification is the natural next step for whoever picks this up on actual hardware.
@@ -93,16 +94,36 @@ The compose file mounts `./policies:/workspace/policies:ro` so checkpoint files 
 
 ```bash
 python legged_gym/scripts/train.py --task=g1 --headless --cpu --num_envs=64 --max_iterations=1800
-python legged_gym/scripts/play.py --task=g1 --headless --cpu --num_envs=1 --load_run=<run_name>
-# play.py exports logs/g1/<run_name>/exported/policy_lstm_1.pt — a portable TorchScript file
+python legged_gym/scripts/play.py --task=g1 --headless --cpu --num_envs=1 --load_run=<run_name> --export_onnx
+# play.py exports logs/g1/<run_name>/exported/policy_lstm_1.pt  (TorchScript) and
+#                  logs/g1/<run_name>/exported/policy_lstm_1.onnx (ONNX, --export_onnx only)
+# both are loadable directly by load_policy() / swap_experiment.py — see §5a for sharing across a team.
+```
+
+**Before deleting any `logs/<task>/<run>/` directory**, copy its final raw checkpoint (`model_<N>.pt` — the one with optimizer + critic state, NOT the exported inference-only `policy_lstm_1.pt`) into `./checkpoints/<task>/`, git-tracked, if there's any chance you'll want to keep training that run later:
+
+```bash
+mkdir -p checkpoints/<task>
+cp logs/<task>/<run_name>/model_<N>.pt checkpoints/<task>/model_<N>.pt
+```
+
+`logs/` is gitignored (training scratch — hundreds of intermediate checkpoints per run) and gets cleaned up; `checkpoints/` is not — it's the durable, resumable copy. Resume/fine-tune from it with `finetune_cautious.py` (despite the name, it's generic — see its docstring):
+
+```bash
+python legged_gym/scripts/finetune_cautious.py --task <task> \
+    --from_checkpoint checkpoints/<task>/model_<N>.pt \
+    --max_iterations <more> --headless --cpu --num_envs=64
 ```
 
 ### Run the policy-switching demo
 
 ```bash
 python legged_gym/scripts/swap_experiment.py \
-    --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
-    --policy cautious:logs/g1_cautious/<run_name>/exported/policy_lstm_1.pt \
+    --policy stable:./policies/stable.pt \
+    --policy cautious:./policies/cautious.pt \
+    --policy scratch_wobbly:./policies/scratch_wobbly.pt \
+    --policy undertrained_dummy:./policies/undertrained_dummy.pt \
+    --policy crouch:./policies/crouch.pt \
     --active stable
 # then open http://localhost:9006
 ```
@@ -113,8 +134,11 @@ Add `--control_port <PORT>` to also start the unified control web (see §4a belo
 
 ```bash
 python legged_gym/scripts/swap_experiment.py \
-    --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
-    --policy cautious:logs/g1_cautious/<run_name>/exported/policy_lstm_1.pt \
+    --policy stable:./policies/stable.pt \
+    --policy cautious:./policies/cautious.pt \
+    --policy scratch_wobbly:./policies/scratch_wobbly.pt \
+    --policy undertrained_dummy:./policies/undertrained_dummy.pt \
+    --policy crouch:./policies/crouch.pt \
     --active stable --control_port 9013
 # then open http://localhost:9013
 ```
@@ -206,6 +230,44 @@ For *this* fork, adopting full ROS 2 today would mean bolting a colcon workspace
 - **`ObsSpec` enforcement is a warning, not a hard stop**: `PolicySupervisor` checks the incoming observation's shape against each policy's declared spec and warns on mismatch, but doesn't refuse to proceed — every policy you load side-by-side today must genuinely share one observation space (which is true for `stable`/`cautious`/`damping` above, but won't automatically be true for an arbitrary new skill).
 - **Episode-reset doesn't reset policy hidden states**: `SimAdapter.send_action()` ignores the env's own `dones` signal (used for RL training's episode termination). Fine for this demo — `SafetyGovernor` already reacts to a fall directly via `projected_gravity` — but a hidden state that should have been cleared on an env-internal reset currently isn't; worth fixing before using this for anything resembling an evaluation run.
 - **GPU supported with workarounds**: Genesis on CUDA works via runtime monkey-patches in `genesis_simulator.py` that compensate for Genesis's internal `sanitize_index` CPU-forcing bug. CPU remains the primary tested path (this fork was originally built for Genesis on a GPU-less Mac), but GPU mode is functional.
+- **`load_policy()` now accepts ONNX as well as TorchScript** (`policy.py`: `OnnxStatelessPolicy` / `OnnxExplicitStatePolicy`, auto-detected the same way the two jit conventions are, dispatched purely on the `.onnx`/`.pt` file extension — verified bit-identical output against this repo's own TorchScript export for a recurrent policy, see commit history). This closes the actual gap identified below: TorchScript-only vs. the ecosystem's real norm of "export both jit and onnx, pick per consumer" (confirmed against Isaac Lab's `exporter.py`, which exports both from every run). `docker-entrypoint.sh` auto-discovers `*.onnx` from `./policies/` exactly like `*.pt`.
+- **External pretrained G1 policies still aren't automatically drop-in — but the remaining gap is obs/action-space compatibility, not file format.** Format is no longer the blocker (see above); every policy loaded side-by-side must still genuinely share this fork's `G1RoughCfg` observation encoding and action space (12 leg DOF, LSTM hidden_size=64 for the recurrent case). Checked against real public G1 releases:
+  - **[NVIDIA GEAR-SONIC / GR00T-WholeBodyControl](https://github.com/NVlabs/GR00T-WholeBodyControl)** (HF: `nvidia/GEAR-SONIC`) — real ONNX checkpoints, loadable format-wise now, but built around GR00T's own whole-body obs/action encoding, not `G1RoughCfg`'s — would need obs-layout verification (and likely retraining/fine-tuning against our layout) before it's safe to run.
+  - **[hardware-pathon-ai/unitree-g1-phase1-locomotion](https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion)** — real MIT-licensed `.pt` weights, but only 15/29 DOF active (arms frozen) — action space still doesn't match.
+  - **[mujocolab/g1_spinkick_example](https://github.com/mujocolab/g1_spinkick_example)** — real ONNX checkpoint, loadable format-wise, but it's a **full-body** (legs + arms + torso) policy against our **legs-only (12 DOF)** action space — this is a genuine action-space mismatch an adapter can't paper over. Reproducing this trick means extending `G1RoughCfg` to full-body DOF and retraining with trick-specific (motion-imitation) reward shaping in our own pipeline, not loading their checkpoint.
+  - **ExBody2 / OmniH2O / HumanPlus / HOVER** — G1-relevant motion-imitation research with public code, but no confirmed public checkpoint release was found (verify each repo directly; this may change).
+- **Reward-curve summaries aren't enough to trust a checkpoint — watch it.** A real incident: a `g1_crouch` retrain (deeper squat + re-enabled commands/pushes, all at once) looked plausible enough from the training log to consider done, but measured directly in sim it was actually falling roughly once a second — the per-iteration summary didn't make that obvious, only stepping through it and counting real resets did. Before trusting a new checkpoint (and especially before deleting the `logs/<task>/<run>/` directory it lives in — see below), watch it: `python legged_gym/scripts/play.py --task=<task> --load_run=<run> --ckpt=<N> --viewer=viser --viser_port=9006` opens any single checkpoint live in the browser, not just the final one (docs/index.html §14 has the full recipe and a gotcha about `exported/` getting overwritten on every review).
+- **Never delete a `logs/<task>/<run>/` directory without archiving its final raw checkpoint first.** Lost one this way once — `rm -rf`'d a training run's log directory that held the only raw checkpoint (optimizer + critic state) worth resuming from, and the exported inference-only `.pt` in `policies/` wasn't a substitute. Convention now: copy anything worth keeping to `./checkpoints/<task>/` (git-tracked, unlike gitignored `logs/`) before any cleanup — see §2 "Train a policy".
+
+### 5a. Team workflow: mixed OS, mixed hardware, shared training compute
+
+This is a real, common pattern in the G1/humanoid-RL community, not a workaround specific to this fork: `mjlab` (the framework behind the spin-kick example above) explicitly requires an NVIDIA GPU for training and documents macOS as evaluation-only — i.e. train-on-a-GPU-box / run-anywhere is the norm, not an adaptation forced by this team's hardware mix.
+
+Recommended split for a team with Mac/Linux/Windows laptops plus occasional access to a powerful (possibly remote/cloud) GPU server:
+
+1. **Train** wherever the GPU is (Genesis already runs on CUDA today via `GENESIS_BACKEND=cuda`, with documented workarounds — see above). Training is the only step that needs a real GPU here.
+2. **Export both formats** from that run — `play.py --export_onnx` now produces `policy_lstm_1.pt` *and* `policy_lstm_1.onnx` side by side (§2 "Train a policy"). This mirrors Isaac Lab's own convention rather than inventing a new one.
+3. **Share the checkpoint** the way the wider community does — a shared HuggingFace model repo or a wandb artifact (this repo already logs to `wandb`, see `train.py --sync_wandb`) both work; git-lfs also works for a smaller team, but isn't required.
+4. **Anyone on any OS runs it** — drop the `.pt` or `.onnx` file into `./policies/` (auto-discovered by `docker-entrypoint.sh`) or pass it directly via `swap_experiment.py --policy <name>:<path>`. No GPU, no specific OS, and no format conversion needed on the receiving end — Genesis itself runs CPU-only on a GPU-less Mac exactly as it does today.
+
+### 5b. Time-boxed training "packages"
+
+The reusable answer to requests shaped like *"give me N minutes improving X"* or *"N minutes improving Y, sacrificing at most P% of X"* — `legged_gym/scripts/train_package.py` (see its own docstring for full detail). Two objectives today:
+
+```bash
+# Improve ONLY stability (crouch_depth reward off) — writes checkpoints/<task>/stability_baseline.json,
+# the reference every later "bounded" package is measured against.
+python legged_gym/scripts/train_package.py --task g1_crouch --minutes 20 --objective stability
+
+# Improve depth (the open-ended crouch_depth reward, see _reward_crouch_depth in legged_robot.py —
+# proportional to current height, NO fixed target height, "as low as it can sustain") while sacrificing
+# at most 5% of that baseline's stability. Resume from the previous package's checkpoint to not waste it.
+python legged_gym/scripts/train_package.py --task g1_crouch --minutes 20 \
+    --objective stability_bounded --max_sacrifice_pct 5 \
+    --from_checkpoint checkpoints/g1_crouch/g1_crouch_stability.pt
+```
+
+How the bound is actually enforced (PPO reward weights aren't a hard constraint mechanism, so this doesn't pretend to be one): **stability_score** is measured directly — across every parallel env, over a real post-training rollout, the fraction of steps that did *not* end in an environment reset (a fall, by the training env's own termination condition — not the demo's looser `SafetyGovernor` tilt check). Several checkpoints spaced through the run are each scored this way; whichever has the lowest mean height *among those scoring within the sacrifice bound* is kept — never just the final checkpoint, and never a checkpoint that silently broke the bound (if none qualify, the report says so explicitly instead of picking one anyway). Both formats are exported and archived exactly per §2/§5a: `policies/<task>_<objective>.{pt,onnx}` and `checkpoints/<task>/<task>_<objective>.pt`, plus a full JSON report of every candidate considered.
 
 ---
 
@@ -217,10 +279,12 @@ The reason `ControlService` is deliberately a small, explicit set of methods (`r
 
 ## 7. The full didactic write-up
 
-For the from-zero explanation of everything this README assumes you already know — what a Unitree robot's motors actually are, what PD control and PPO and sim2sim/sim2real mean, walked through with real code from this repo and an interactive demo — see **[docs/index.html](docs/index.html)**.
+For the from-zero explanation of everything this README assumes you already know — what a Unitree robot's motors actually are, what PD control and PPO and sim2sim/sim2real mean, walked through with real code from this repo and an interactive demo — see **[docs/index.html](docs/index.html)**. Its final section, **§14 "Working as a team"**, covers reviewing a training checkpoint live before trusting it (the mistake that section exists to prevent — see §5 below), the up-to-date Docker instructions, and which platform (Mac/Linux/Windows) is comfortable for which role.
 
 ---
 
 ## Credits & license
 
 This fork sits on top of (in order): [legged_gym](https://github.com/leggedrobotics/legged_gym) (ETH Zürich Robotic Systems Lab), [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) (Unitree Robotics), and [LeggedGym-Ex](https://github.com/lupinjia/LeggedGym-Ex) (lupinjia) — see [UPSTREAM_README.md](UPSTREAM_README.md) for the full acknowledgements list this fork inherits. Licensed under the same terms as upstream — see [LICENSE](LICENSE).
+
+Within this fork, the Docker Compose setup (§2) — `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`'s policy auto-discovery, and working CUDA passthrough — was contributed by [Ramiro R. C. (RawthiL)](https://github.com/RawthiL), not the original author: the first real external contribution to this repo, and the reason a Linux/Windows teammate doesn't need a native Python+Genesis setup at all.

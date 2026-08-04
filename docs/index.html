@@ -374,6 +374,7 @@
       <div class="grp">This fork</div>
       <li><a href="#genesis-fork">Running on Genesis instead</a></li>
       <li><a href="#control-arch">Switching policies live</a></li>
+      <li><a href="#team">Working as a team</a></li>
       <div class="grp">Reference</div>
       <li><a href="#glossary">Glossary</a></li>
       <li><a href="#credits">Credits &amp; license</a></li>
@@ -976,6 +977,41 @@ def step(self, obs):
         </div>
 
         <p>What's genuinely unfinished, honestly stated: <code>deploy_real/real_adapter.py</code> (the real-hardware version of this) is ported carefully against <code>unitree_rl_gym</code>'s own deploy code but is <strong>untested</strong> — this fork was built with no physical G1 and no <code>unitree_sdk2py</code> installed. The physical button-gated safety sequence and the autonomous <code>Selector</code> (today just a tilt-threshold rule; a learned gating network is the active research direction — see RPG and SkillBlender in the README) are both left as the clearly-marked next steps.</p>
+      </section>
+
+      <section id="team">
+        <div class="num">§14 — this fork</div>
+        <h2>Working as a team</h2>
+        <p>This fork is developed by a small team split across Mac, Linux, and Windows, with occasional access to a much more powerful (sometimes remote) GPU machine for training. None of what follows is a hard rule — Genesis itself runs identically (just slower) on a GPU-less laptop as it does on a workstation, and Docker erases most of the remaining OS differences — but it's worth being explicit about where each platform is genuinely more comfortable, so people default to the path of least friction instead of fighting their own machine.</p>
+
+        <h3>Watch a checkpoint before trusting it</h3>
+        <p>A real mistake from this fork's own history: a training run's reward curves looked reasonable enough to plan around, but the policy was actually falling roughly once a second — the reward-curve summary just didn't make that obvious. The fix that should have happened earlier: <em>look at it</em>, not just the numbers, before committing more time to it.</p>
+        <details class="code-box">
+          <summary><span>Review any single checkpoint, live, in the browser</span> <span class="file">legged_gym/scripts/play.py</span></summary>
+          <pre><code>python legged_gym/scripts/play.py --task=g1_crouch --cpu --num_envs=1 \
+    --load_run=&lt;run_name&gt; --ckpt=200 \
+    --viewer=viser --viser_port=9006
+# open http://localhost:9006 — omit --ckpt for the latest checkpoint in that run.
+# Genesis's own native window has a rendering bug on this Mac/asset combination,
+# so --viewer=viser (a web view) is what actually works, same as the swap demo.</code></pre>
+        </details>
+        <div class="aside">
+          <div class="label">One gotcha</div>
+          Every <code>play.py</code> run — including one just for reviewing a checkpoint — overwrites that run's <code>exported/</code> folder with whatever <code>--ckpt</code> you just loaded. If you're comparing several iterations and want to keep one, copy its exported <code>.pt</code>/<code>.onnx</code> out (to <code>checkpoints/</code> or <code>policies/</code>) before reviewing a different one, or the next review silently clobbers it.
+        </div>
+
+        <h3>Docker, kept current</h3>
+        <p>The Docker Compose setup this whole demo runs on — <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>docker-entrypoint.sh</code>'s auto-discovery of every checkpoint in <code>./policies/</code>, and working CUDA passthrough — was contributed by <a href="https://github.com/RawthiL" target="_blank" rel="noopener">Ramiro R. C. (RawthiL)</a>, not the original author: real evidence the "everyone adds what they can" model below is already working, not just an aspiration. See the root <a href="https://github.com/josetabuyo/LeggedGym-Ex#docker-compose-recommended-for-reproducible-runs" target="_blank" rel="noopener">README's Docker Compose section</a> for the full up-to-date instructions (GPU overlay, environment variables, what gets mounted) — it's kept current as the control stack grows, most recently to auto-discover <code>.onnx</code> checkpoints (community releases that only ship ONNX) exactly like <code>.pt</code> ones.</p>
+
+        <h3>Who's comfortable where</h3>
+        <div class="plate">
+          <table>
+            <tr><td class="k">Mac (this machine)</td><td>The reference platform for developing the codebase itself — this is where <code>legged_gym/control/</code>, the web UI, and every policy in this write-up were actually built and debugged, CPU-only, no CUDA. Stays the priority platform for anyone touching the architecture, not just because it's the original author's machine, but because it's the most exercised path.</td></tr>
+            <tr><td class="k">Linux + NVIDIA GPU</td><td>The natural home for real training runs — <code>GENESIS_BACKEND=cuda</code> (native or via <code>docker-compose.gpu.yml</code>) turns a CPU-only multi-hour run into minutes. Whoever has GPU access is best positioned to own longer/harder training (full gaits, curricula, anything a Mac would take too long on), then export and share the checkpoint — see the root README's team-workflow section.</td></tr>
+            <tr><td class="k">Windows</td><td>Via Docker Desktop + WSL2, identical to the other two — the control web UI is just a browser tab, no native windowing involved. A comfortable seat for reviewing/switching policies, driving the control demo, and contributing to the web/control-service code without building a native Python+Genesis environment at all.</td></tr>
+          </table>
+          <div class="cap">Comfort, not a wall: any of these can do any role — train, review, or drive the control web — the split above is about where it's easiest, not what's allowed.</div>
+        </div>
       </section>
 
       <section id="glossary">

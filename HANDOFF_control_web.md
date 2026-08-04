@@ -19,11 +19,15 @@ README is preserved as `UPSTREAM_README.md`.
 
 ### 1.2 Trained policies
 
-| Name | What it is | Path |
-|---|---|---|
-| `stable` | unitree_rl_gym's shipped pretrained G1 checkpoint. Verified drop-in compatible with this fork's Genesis env (same URDF, joint order, PD gains). Dramatically more stable than our from-scratch run; treated as the reference policy. | `/Users/josetabuyo/Development/GIAR/unitree_rl_gym/deploy/pre_train/g1/motion.pt` (separate clone of the ORIGINAL unitree_rl_gym repo) |
-| `cautious` | Fine-tuned by **resuming from the stable checkpoint's weights** under a reward that heavily penalizes torque/joint-velocity. Config: `G1CautiousCfg` in `legged_gym/envs/g1/g1_config.py`, task name `g1_cautious`. | `logs/g1_cautious/<run>/exported/policy_lstm_1.pt` |
-| (g1 from-scratch) | 1800 PPO iterations from scratch on Genesis/CPU (task `g1`). Works but wobblier; superseded by `stable` as reference. | `logs/g1/...` |
+| Name | What it is | Path | Real / dummy |
+|---|---|---|---|
+| `stable` | unitree_rl_gym's shipped pretrained G1 checkpoint. Verified drop-in compatible with this fork's Genesis env (same URDF, joint order, PD gains). Dramatically more stable than our from-scratch run; treated as the reference policy. | `/Users/josetabuyo/Development/GIAR/unitree_rl_gym/deploy/pre_train/g1/motion.pt` (separate clone of the ORIGINAL unitree_rl_gym repo) | Real |
+| `cautious` | Fine-tuned by **resuming from the stable checkpoint's weights** under a reward that heavily penalizes torque/joint-velocity. Config: `G1CautiousCfg` in `legged_gym/envs/g1/g1_config.py`, task name `g1_cautious`. | `logs/g1_cautious/Jul21_16-19-46_/exported/policy_lstm_1.pt` | Dummy — exists to exercise the switch mechanism, not a genuinely useful gait |
+| `scratch_wobbly` | 1800 PPO iterations from scratch on Genesis/CPU (task `g1`, no fine-tune, no borrowed weights). Works but wobblier than `stable`; kept as a real (if inferior) independently-trained alternative rather than just a superseded run. | `logs/g1/Jul21_15-55-39_/exported/policy_lstm_1.pt` | Real |
+| `undertrained_dummy` | Same `g1` task, checkpointed at only 300 of 1800 iterations — barely past random initial behavior. A second, more extreme test dummy for exercising the switch/cross-fade/safety path against a genuinely bad policy (distinct from `cautious`, which is deliberately conservative rather than bad). | `logs/g1/Jul21_13-49-44_/exported/policy_lstm_1.pt` | Dummy |
+| `crouch` | Genuinely new skill, trained from scratch in this fork (not a fine-tune of `stable`): holds a static squat (`base_height_target=0.6` vs. `stable`'s ~0.78m) instead of walking. Config: `G1CrouchCfg`/`G1CrouchCfgPPO` in `legged_gym/envs/g1/g1_config.py`, task `g1_crouch` — velocity commands pinned to zero (no gait to learn) and training-time pushes disabled for faster first convergence (see class docstring). 1000 PPO iterations, ~15 min on this Mac's CPU (num_envs=64) — converged much faster than `scratch_wobbly`'s 1800-iteration walk, as expected for a static-balance vs. full-gait task. Survived the swap demo's default random pushes/commands in a headless smoke test without tripping `SafetyGovernor`. | `logs/g1_crouch/Jul28_13-46-44_/exported/policy_lstm_1.pt` | Real |
+
+All five share the same observation/action space (`G1RoughCfg`, LSTM hidden_size=64) so they're safe to load side-by-side — see README §5's `ObsSpec` note. Files are copied (not symlinked) into `./policies/*.pt`, auto-discovered by `docker-entrypoint.sh` (each filename-without-`.pt` becomes the `--policy` name) and loadable directly via `swap_experiment.py --policy <name>:./policies/<name>.pt`.
 
 ### 1.3 Control architecture — `legged_gym/control/`
 
@@ -35,8 +39,16 @@ Backend-agnostic, sim/real-symmetric. All paths relative to repo root.
   (reset/get_state/send_action/record), `SimAdapter` (wraps a Genesis/MuJoCo legged_gym env — working, tested).
 - **`legged_gym/control/policy.py`** — `ExplicitStatePolicy` (forward(obs,h,c)→(action,h,c), this fork's
   export convention) and `InternalStatePolicy` (forward(obs)→action, unitree_rl_gym's convention);
-  `load_policy()` auto-detects. `ObsSpec` dataclass + enforcement (warns on mismatch). `damping_policy()` —
-  zero-action emergency fallback skill.
+  `load_policy()` auto-detects, dispatching on file extension first (`.onnx` vs `.pt`). **ONNX support added**:
+  `OnnxStatelessPolicy` (single obs→action tensor) and `OnnxExplicitStatePolicy` (obs+N state tensors→
+  action+N updated state tensors, mirroring `ExplicitStatePolicy`), both via `onnxruntime`, auto-detected from
+  the loaded model's declared input count. Verified bit-identical output against this fork's own TorchScript
+  LSTM export across 5 recurrent steps. `PolicyExporterLSTM.export()` (`legged_gym/utils/helpers.py`) now also
+  emits `policy_lstm_1.onnx` when `--export_onnx` is passed to `play.py` (previously silently ignored for
+  recurrent policies — a real gap, now fixed). `ObsSpec` dataclass + enforcement (warns on mismatch).
+  `damping_policy()` — zero-action emergency fallback skill. See README §5/§5a for the community-format
+  rationale (Isaac Lab exports both jit+onnx from every run; unitree_rl_gym's own deploy scripts use
+  `torch.jit.load`, confirming TorchScript was never the outlier — ONNX was just the missing second half).
 - **`legged_gym/control/supervisor.py`** — `PolicySupervisor`. `request_switch(name)` only records intent;
   `confirm_pending_switch()` (called ONLY by SafetyGovernor) begins a linear cross-fade of actions over
   `ramp_ticks` (default 15) — never a hard cut.
@@ -82,8 +94,10 @@ Current invocation:
 
 ```bash
 python legged_gym/scripts/swap_experiment.py \
-    --policy stable:/Users/josetabuyo/Development/GIAR/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
-    --policy cautious:logs/g1_cautious/<run>/exported/policy_lstm_1.pt \
+    --policy stable:./policies/stable.pt \
+    --policy cautious:./policies/cautious.pt \
+    --policy scratch_wobbly:./policies/scratch_wobbly.pt \
+    --policy undertrained_dummy:./policies/undertrained_dummy.pt \
     --active stable --viser_port 9006 --docs_port 9007
 ```
 

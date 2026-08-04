@@ -15,8 +15,10 @@ fi
 # ---------------------------------------------------------------------------
 # Automatic launch of swap_experiment.py
 # ---------------------------------------------------------------------------
-# Policies are auto-discovered from /workspace/policies/*.pt.
-# Each .pt file is registered as --policy <basename_without_ext>:<path>.
+# Policies are auto-discovered from /workspace/policies/*.pt and *.onnx.
+# Each file is registered as --policy <basename_without_ext>:<path> — .onnx
+# checkpoints (e.g. community releases that only ship ONNX) work exactly like
+# .pt ones, see legged_gym/control/policy.py.
 #
 # Configure via environment variables in docker-compose.yml or a .env file:
 #
@@ -38,9 +40,10 @@ POLICIES_DIR="/workspace/policies"
 POLICY_NAMES=()
 
 if [ -d "$POLICIES_DIR" ]; then
-    for pt_file in "$POLICIES_DIR"/*.pt; do
+    for pt_file in "$POLICIES_DIR"/*.pt "$POLICIES_DIR"/*.onnx; do
         [ -f "$pt_file" ] || continue
-        name=$(basename "$pt_file" .pt)
+        name=$(basename "$pt_file")
+        name="${name%.*}"
         POLICY_NAMES+=("$name")
         ARGS+=("--policy" "${name}:${pt_file}")
     done

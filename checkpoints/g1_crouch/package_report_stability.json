@@ -1,0 +1,24 @@
+{
+  "task": "g1_crouch",
+  "objective": "stability",
+  "minutes_requested": 20.0,
+  "max_iterations": 1163,
+  "train_wall_seconds": 939.0329582691193,
+  "crouch_depth_scale": 2.0,
+  "candidates": [
+    {
+      "iteration": 1163,
+      "path": "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/logs/g1_crouch/Jul28_16-08-14_/model_1163.pt",
+      "stability_score": 0.98828125,
+      "mean_height": 0.675569995045662
+    }
+  ],
+  "winner": {
+    "iteration": 1163,
+    "path": "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/logs/g1_crouch/Jul28_16-08-14_/model_1163.pt",
+    "stability_score": 0.98828125,
+    "mean_height": 0.675569995045662
+  },
+  "exported_policy": "policies/g1_crouch_stability.pt",
+  "archived_checkpoint": "checkpoints/g1_crouch/g1_crouch_stability.pt"
+}

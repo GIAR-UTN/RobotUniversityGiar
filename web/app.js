@@ -13,9 +13,30 @@ let msgId = 1;
 let keymap = {};
 let keyByPolicy = {}; // policy name -> bound key, precomputed once at boot (not per render)
 let renderedPolicyNames = null; // policies list actually painted into the DOM right now
-let keysArmed = false; // true while the Simulator/Real-robot tab is active —
-                        // keyboard shortcuts always work in that mode, and
-                        // never while reading Docs; see selectView() below
+let keysArmed = true; // true whenever no drawer is open over the simulator —
+                       // keyboard shortcuts must not fire while reading Docs
+                       // (e.g. arrow-key scrolling shouldn't drive the
+                       // robot); see openDrawer()/closeDrawer() below
+
+// ---- Simulator is a permanent base layer ----
+// Two earlier approaches both failed here: (1) tab-switching the Simulator
+// out of view left its viser <iframe> alive and rendering forever in the
+// background — the CPU/GPU contention from that is what originally made the
+// page unresponsive; (2) destroying/recreating that iframe on tab switch (to
+// fix #1) backfired worse — tearing down a live WebGL context synchronously
+// froze the renderer hard (~180% CPU, unresponsive 40+ seconds) under real
+// host load. DO NOT hide, resize, or remove the Simulator's iframe on
+// navigation. It is mounted once at boot and never touched again. Docs (and,
+// later, Real-robot) are drawers that slide in OVER it instead — see
+// index.html's .drawer CSS — so the simulator view itself never changes.
+let viserPort = null; // filled in from /config at boot
+
+function mountSimIframe() {
+  if (!viserPort) return;
+  const iframe = document.createElement('iframe');
+  iframe.src = `http://localhost:${viserPort}/`;
+  $('#view-sim').appendChild(iframe);
+}
 
 const $ = (sel) => document.querySelector(sel);
 const panel = $('#panel');
@@ -146,7 +167,7 @@ function applyStatus(status) {
   restartBtn.disabled = !restartAvailable;
   restartBtn.title = restartAvailable ? '' : `not available on backend "${status.backend}"`;
 
-  const realTab = document.querySelector('nav button[data-view="real"]');
+  const realTab = document.querySelector('nav button[data-drawer="real"]');
   const realPlaceholder = $('#real-placeholder');
   if (status.backend === 'real') {
     realTab.disabled = false;
@@ -253,20 +274,37 @@ function updateCommandUI() {
 
 // ---- tabs ----
 
-function selectView(name) {
-  document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
-  document.querySelectorAll('#tabs button').forEach((b) => b.classList.remove('active'));
-  $(`#view-${name}`).classList.add('active');
-  document.querySelector(`#tabs button[data-view="${name}"]`).classList.add('active');
-  // The control sidebar (and its keyboard shortcuts) only make sense while
-  // actively driving the robot — Simulator or Real-robot — not while
-  // reading Docs, which gets the full viewport width instead.
-  keysArmed = name === 'sim' || name === 'real';
-  document.body.classList.toggle('controls-active', keysArmed);
+// A drawer (Docs, later Real-robot) slides in OVER the permanently-mounted
+// Simulator — see the CSS-level comment in index.html. Only one open at a
+// time; clicking the already-open drawer's button retracts it instead of
+// re-opening it (the toggle behavior asked for). Keyboard shortcuts are
+// armed only while no drawer is open, so reading Docs can't accidentally
+// drive the robot.
+let openDrawerName = null;
+
+function setKeysArmed() {
+  keysArmed = openDrawerName === null;
 }
 
-document.querySelectorAll('#tabs button').forEach((btn) => {
-  btn.addEventListener('click', () => { if (!btn.disabled) selectView(btn.dataset.view); });
+function closeDrawer() {
+  if (!openDrawerName) return;
+  document.getElementById(`drawer-${openDrawerName}`).classList.remove('open');
+  document.querySelector(`#tabs button[data-drawer="${openDrawerName}"]`).classList.remove('active');
+  openDrawerName = null;
+  setKeysArmed();
+}
+
+function openDrawer(name) {
+  if (openDrawerName === name) { closeDrawer(); return; }
+  closeDrawer();
+  document.getElementById(`drawer-${name}`).classList.add('open');
+  document.querySelector(`#tabs button[data-drawer="${name}"]`).classList.add('active');
+  openDrawerName = name;
+  setKeysArmed();
+}
+
+document.querySelectorAll('#tabs button[data-drawer]').forEach((btn) => {
+  btn.addEventListener('click', () => { if (!btn.disabled) openDrawer(btn.dataset.drawer); });
 });
 
 // ---- controls panel buttons ----
@@ -717,10 +755,10 @@ async function boot() {
     if (binding.action === 'switch' && binding.policy) keyByPolicy[binding.policy] = key;
   }
 
-  const simView = $('#view-sim');
-  const iframe = document.createElement('iframe');
-  iframe.src = `http://localhost:${config.viser_port}/`;
-  simView.appendChild(iframe);
+  // The Simulator is the permanent base layer (see the block comment near
+  // mountSimIframe()) — mount it once, right here at boot, and never again.
+  viserPort = config.viser_port;
+  mountSimIframe();
 
   // Clamp the HUDs (and, via commandRanges, the arrow keys) to the exact
   // velocity envelope this policy was trained across (env_cfg.commands.ranges
@@ -735,8 +773,9 @@ async function boot() {
   initPopovers();
 
   connect();
-  // keysArmed starts false (Docs is the default tab) and flips on whenever
-  // the Simulator/Real-robot tab is selected — see selectView().
+  // keysArmed starts true — no drawer is open at boot, so the (always-
+  // mounted) Simulator is what's showing; see openDrawer()/closeDrawer().
+  setKeysArmed();
 }
 
 boot();

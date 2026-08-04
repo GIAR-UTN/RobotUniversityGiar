@@ -363,10 +363,28 @@ class PolicyExporterLSTM(torch.nn.Module):
     def forward(self, x, hidden_state, cell_state):
         out, (h, c) = self.memory(x.unsqueeze(0), (hidden_state, cell_state))
         return self.actor(out.squeeze(0)), h, c
-    
-    def export(self, path):
+
+    def export(self, path, env_cfg=None, export_onnx=False):
         os.makedirs(path, exist_ok=True)
-        path = os.path.join(path, 'policy_lstm_1.pt')
+        path_pt = os.path.join(path, 'policy_lstm_1.pt')
         self.to('cpu')
         traced_script_module = torch.jit.script(self)
-        traced_script_module.save(path)
+        traced_script_module.save(path_pt)
+
+        # export onnx model if needed — explicit (obs, hidden, cell) -> (action, hidden, cell)
+        # tensor I/O, the same convention Isaac Lab's export_policy_as_onnx() uses for recurrent
+        # policies, so this checkpoint is loadable by any onnxruntime-based consumer, not just
+        # this repo's own control/policy.py.
+        if export_onnx:
+            path_onnx = os.path.join(path, 'policy_lstm_1.onnx')
+            hidden_size = self.memory.hidden_size
+            num_layers = self.memory.num_layers
+            dummy_obs = torch.randn(1, env_cfg.env.num_observations)
+            dummy_h = torch.zeros(num_layers, 1, hidden_size)
+            dummy_c = torch.zeros(num_layers, 1, hidden_size)
+            torch.onnx.export(self, (dummy_obs, dummy_h, dummy_c), path_onnx,
+                              verbose=True,
+                              export_params=True,
+                              input_names=["obs", "hidden_in", "cell_in"],
+                              output_names=["actions", "hidden_out", "cell_out"],
+                              opset_version=18)

@@ -727,6 +727,23 @@ class LeggedRobot(BaseTask):
         rew = torch.square(base_height - self.cfg.rewards.base_height_target)
         return rew
 
+    def _reward_crouch_depth(self) -> Reward:
+        # Open-ended alternative to _reward_base_height: no fixed target, just "lower is
+        # better" (reward increases monotonically as base height decreases). On its own
+        # this pushes the base height to zero; paired with strong enough stability/fall
+        # penalties (termination, orientation, dof_pos_limits, alive), the policy settles
+        # at whatever the lowest *sustainable* height actually is, discovered by training
+        # rather than picked by hand. Use this XOR base_height, not both, for a given task
+        # (set the unused one's scale to 0) — they encode opposite goals for the same DOF.
+        # crouch_depth_reference is just a numerical zero-point (e.g. the robot's own
+        # standing height) so this term is typically small/positive near default posture
+        # instead of always deeply negative — cosmetic for reward-sum bookkeeping
+        # (only_positive_rewards clips the summed reward, not this term alone), not a target.
+        base_height = torch.mean(self.simulator.base_pos[:, 2].unsqueeze(
+            1) - self.simulator.measured_heights, dim=1)
+        reference = getattr(self.cfg.rewards, "crouch_depth_reference", 0.0)
+        return reference - base_height
+
     def _reward_torques(self) -> Reward:
         # Penalize torques
         return torch.sum(torch.square(self.simulator.torques), dim=1)
