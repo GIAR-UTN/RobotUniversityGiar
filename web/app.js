@@ -1728,13 +1728,21 @@ function infoSection(titleText) {
   return section;
 }
 
+// Each pair is [label, value] (skipped entirely when value is null/empty —
+// most rows here are genuinely "not applicable" and shouldn't take up
+// space) or [label, value, placeholder] to force the row to ALWAYS render,
+// showing `placeholder` when empty — for a field like "Cloned from" that
+// should always occupy the same line, so the popup's layout doesn't jump
+// around every time the up/down nav (see stepPolicyInfo()) lands on a
+// policy trained from scratch vs. one that was fine-tuned.
 function kvList(pairs) {
   const dl = document.createElement('dl');
   dl.className = 'info-kv';
-  for (const [k, v] of pairs) {
-    if (v == null || v === '') continue;
+  for (const [k, v, placeholder] of pairs) {
+    const empty = v == null || v === '';
+    if (empty && placeholder === undefined) continue;
     const dt = document.createElement('dt'); dt.textContent = k;
-    const dd = document.createElement('dd'); dd.textContent = v;
+    const dd = document.createElement('dd'); dd.textContent = empty ? placeholder : v;
     dl.appendChild(dt); dl.appendChild(dd);
   }
   return dl;
@@ -1811,7 +1819,7 @@ function renderPolicyInfo(info) {
   const provenance = infoSection('Provenance');
   provenance.appendChild(kvList([
     ['Task', info.task],
-    ['Cloned from', info.base_policy],
+    ['Cloned from', info.base_policy, '– (trained from scratch)'],
     ['Trained via', info.trained_via],
     ['Created', fmtDate(info.created_at)],
   ]));
