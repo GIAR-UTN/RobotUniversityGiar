@@ -1,11 +1,5 @@
 {
-  "_comment": "Default keyboard shortcuts for the unified control web (see web/app.js). 'switch' actions reference policies BY NAME, not by index — names come from ControlService.status() at runtime, so this file survives whatever --policy set swap_experiment.py was started with (an unknown name shows as unbound, not an error). 'move' actions are HELD, not tapped — WASD-style: press and hold to accelerate toward the trained range's bound, release to decelerate smoothly back to zero (see app.js's frame()/smoothAxis()). 'axis' is 'vx' (forward/back), 'vy' (strafe left/right), or 'yaw' (turn); 'sign' is +1 or -1 and picks which end of that axis's trained range (command_ranges from /config) the key drives toward. ArrowUp/ArrowDown are aliases for w/s (same vx axis); ArrowLeft/ArrowRight drive yaw and can also be driven by click-and-drag mouse look (see the Mouse look pad in the panel) — both work together. Edit this file directly to change v1 defaults; there is no in-page rebind UI yet.",
-  "0": {"action": "switch", "policy": "stable"},
-  "9": {"action": "switch", "policy": "cautious"},
-  "8": {"action": "switch", "policy": "crouch"},
-  "7": {"action": "switch", "policy": "g1_crouch_stability"},
-  "6": {"action": "switch", "policy": "scratch_wobbly"},
-  "5": {"action": "switch", "policy": "undertrained_dummy"},
+  "_comment": "Default keyboard shortcuts for the unified control web (see web/app.js). Policy-switch shortcuts (0/9/8/7/6/5/4/3/2/1) are NOT listed here — they're assigned dynamically by POSITION in the (drag-reorderable) Policies list: top slot is always '0', then '9' down to '1' for the rest, up to a 10-policy limit. This keeps shortcuts stable across whatever --policy set swap_experiment.py was started with without needing per-name config; see recomputePolicyShortcuts() in app.js. 'move' actions are HELD, not tapped — WASD-style: press and hold to accelerate toward the trained range's bound, release to decelerate smoothly back to zero (see app.js's frame()/smoothAxis()). 'axis' is 'vx' (forward/back), 'vy' (strafe left/right), or 'yaw' (turn); 'sign' is +1 or -1 and picks which end of that axis's trained range (command_ranges from /config) the key drives toward. ArrowUp/ArrowDown are aliases for w/s (same vx axis); ArrowLeft/ArrowRight drive yaw and can also be driven by click-and-drag mouse look (see the Mouse look pad in the panel) — both work together. Edit this file directly to change v1 defaults; there is no in-page rebind UI yet.",
   "p": {"action": "pause_toggle"},
   "r": {"action": "restart"},
 

@@ -374,6 +374,69 @@ test cases in `tests/test_control_transport.py` (6 tests total, all passing).
 - **Emoji discipline:** the 🟢/🟡/🔴 status convention exists in the viser label; mirror it in the web panel
   rather than inventing a new one.
 
+## 5a. Stage E — "Create Policy" panel (governance in the UI, knowledge never hidden by it)
+
+Added a sidebar section (`web/index.html`'s `data-section="training"`) that composes and launches a real
+`legged_gym/scripts/web_train.py` training run from the browser, asynchronously, and hot-loads the result
+into the running `PolicySupervisor` when it finishes — no restart of `swap_experiment.py` needed.
+
+**Explicit design constraint from the user:** the form must never obscure the underlying command. The panel
+always renders the literal command it's about to run (`#train-cmd-preview` in `web/app.js`'s
+`updateCommandPreview()`), built from the same fields `TrainingManager.start()` (see
+`legged_gym/control/training.py`) turns into the real subprocess argv — the two are written to stay in sync
+by inspection, not by sharing code (there's no code boundary between browser JS and the Python subprocess
+launcher to share across).
+
+**The two "target" concepts the user asked for, and what they map to:**
+- **Relative target** — "clone from" an existing loaded policy. Resolves to `--from_checkpoint <path>`,
+  fine-tuning that policy's *weights* (optimizer state intentionally NOT carried over — same reasoning as the
+  pre-existing `scripts/finetune_cautious.py`, which this generalizes). `--max_iterations` (exposed as "time
+  budget" in the UI) is how long that fine-tune runs.
+- **Measurement target** — the velocity command envelope (`--cmd_vx_range`/`--cmd_vy_range`/`--cmd_yaw_range`,
+  new flags on `web_train.py` only, not on `train.py` itself) overrides `env_cfg.commands.ranges` before the
+  env is built. A measured quantity (m/s, rad/s) the policy is trained across, not a reward-shaping knob.
+
+**Architecture (new pieces, old boundaries respected — see §5's "web layer never touches
+RobotAdapter/PolicySupervisor directly" rule; TrainingManager keeps that rule too, one layer further out):**
+- `legged_gym/scripts/web_train.py` — training worker, runs as a subprocess (its own process, own Genesis/PPO
+  runner state — can't share a process with the live sim). Trains (optionally fine-tuning from a checkpoint),
+  then exports via `play.py`'s own `export_policy()` (same exporter dispatch table, so LSTM/TS/etc. all work),
+  and writes `{"policy_path", "task", "name"}` to `--result_path` as JSON — the parent polls for that file
+  rather than parsing stdout.
+- `legged_gym/control/training.py` — `TrainingManager`: composes argv, launches/polls subprocesses
+  (non-blocking `Popen.poll()`, safe to call every sim tick), tracks jobs, and holds `policy_sources`
+  (name -> {task, checkpoint}) so "clone from" has something to resolve. Never touches
+  `PolicySupervisor`/`ControlService` — same boundary as the rest of `control/`.
+- `ControlService.training_catalog()` / `.start_training(...)` — the only new call-surface methods; forward to
+  `TrainingManager`. `training_catalog()` filters tasks to ones whose `env_cfg.env.num_observations` matches
+  the currently-loaded policies' obs space (`PolicySupervisor` requires one shared observation space — an
+  incompatible-task policy literally can't be hot-loaded here, so it isn't offered).
+- `PolicySupervisor.add_policy()` — new method, the hot-load counterpart to construction-time loading.
+- `swap_experiment.py`'s main loop calls `drain_finished_training()` once per tick (alongside the existing
+  `restart_requested` drain) — on a finished job, loads the exported `.pt` with the same `num_obs`/
+  `hidden_size`/`num_envs` the live policies use and calls `supervisor.add_policy()`. A load failure (e.g. an
+  incompatible export) marks the job `failed` in the UI instead of crashing the sim loop.
+- `transport.py`'s `METHODS` whitelist gained `training_catalog`/`start_training`; `status()` gained
+  `training_jobs` (list of job dicts). No wire-protocol changes beyond that — still JSON-RPC-shaped
+  method/params/id/result/error, same `/ws` route.
+
+**Verified working end-to-end** (against the project's `.venv`, `SIMULATOR=genesis`, CPU): a `g1` task,
+`max_iterations=1`, `num_envs=2` smoke run trained, exported to `logs/g1/<run>/exported/policy_lstm_1.pt`, was
+picked up by `TrainingManager.poll()`, loaded via `load_policy()`, and hot-added via
+`PolicySupervisor.add_policy()` — the exact chain `swap_experiment.py`'s `drain_finished_training()` runs.
+Also verified the failure path (`--from_checkpoint` pointing at a missing file) surfaces as a `failed` job
+with the real traceback in the job's log file, not a crash.
+
+**Not yet done / left for the next session:**
+- No manual browser click-through of the new panel yet (no live `swap_experiment.py` + browser session was
+  run this session) — the backend chain above was verified via direct Python calls, not through `/ws`.
+- No automated test added under `tests/` for the new methods (mirroring `test_control_transport.py`'s
+  `FakeControlService` pattern would be the natural next step).
+- `num_envs` is user-settable in the form but has no sanity ceiling — a very large value on a CPU-only laptop
+  would be slow, not unsafe, but the UI doesn't warn about it.
+- If two jobs for policies with the *same* name both complete, the second `add_policy()` silently overwrites
+  the first in the supervisor (last-write-wins) — no UI-level rename/collision handling yet.
+
 ## 6. Definition of done for next session
 
 - Stage A: `legged_gym/control/transport.py` + `--control_port` in swap_experiment + passing headless

@@ -54,6 +54,33 @@ class PolicySupervisor:
     def cancel_pending_switch(self) -> None:
         self.pending_name = None
 
+    def add_policy(self, policy: Policy) -> None:
+        """Registers a newly-trained policy into the running supervisor —
+        the hot-load counterpart to loading policies at construction time.
+        Does not touch active/pending state; the new policy is simply
+        selectable from here on, same as any policy loaded at startup."""
+        policy.backend.reset()
+        self.policies[policy.name] = policy
+
+    def remove_policy(self, name: str) -> None:
+        """Discards a loaded policy — e.g. a training experiment that
+        converged to something useless (see ControlService.delete_policy(),
+        which also drops it from the clone-from catalog and deletes its
+        checkpoint file). Refuses to remove 'damping' (SafetyGovernor
+        assumes it always exists), the currently active policy, or one
+        with a switch already pending — any of those would leave the
+        supervisor pointing at a name that no longer exists. The caller
+        has to switch away first."""
+        if name == "damping":
+            raise ValueError("'damping' is the safety fallback and can't be removed")
+        if name not in self.policies:
+            raise KeyError(f"Unknown policy '{name}'. Loaded: {list(self.policies)}")
+        if name == self.active_name:
+            raise ValueError(f"can't remove '{name}' — it's the active policy; switch to another one first")
+        if name == self.pending_name:
+            raise ValueError(f"can't remove '{name}' — a switch to it is already pending")
+        del self.policies[name]
+
     def confirm_pending_switch(self) -> bool:
         """SafetyGovernor calls this — and ONLY this — once it has decided
         the current instant is safe to switch. Begins a linear cross-fade

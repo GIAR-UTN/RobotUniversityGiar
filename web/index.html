@@ -7,6 +7,7 @@
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='16' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='42' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='10' y='18' width='44' height='34' rx='10' fill='%2316202b'/%3E%3Ccircle cx='24' cy='34' r='5' fill='%23d9531a'/%3E%3Ccircle cx='40' cy='34' r='5' fill='%23d9531a'/%3E%3Crect x='26' y='44' width='12' height='4' rx='2' fill='%23d9531a'/%3E%3C/svg%3E">
 <style>
   :root{
+    color-scheme: light;
     --bg:#eef2f6;
     --bg-raised:#e2e9ef;
     --ink:#16202b;
@@ -24,6 +25,7 @@
     --cap-shadow:rgba(22,32,43,.28);
   }
   :root[data-theme="dark"]{
+    color-scheme: dark;
     --bg:#0b1116;
     --bg-raised:#121a21;
     --ink:#dbe4ea;
@@ -41,6 +43,7 @@
   }
   @media (prefers-color-scheme: dark){
     :root:not([data-theme="light"]){
+      color-scheme: dark;
       --bg:#0b1116;
       --bg-raised:#121a21;
       --ink:#dbe4ea;
@@ -78,6 +81,28 @@
   nav button.active{background:var(--bg); color:var(--ink); border-color:var(--line); font-weight:600;}
   nav button:disabled{opacity:.45; cursor:not-allowed;}
 
+  #system-bar{
+    position:relative; display:flex; align-items:center; gap:.6rem;
+    padding:.35rem 1rem; border-bottom:1px solid var(--line);
+    background:var(--bg); font-size:.76rem; color:var(--ink-soft);
+  }
+  #system-summary{flex:1; font-family:ui-monospace,monospace;}
+  #system-details-btn{
+    border:1px solid var(--line); background:none; color:var(--muted);
+    padding:.2rem .55rem; border-radius:5px; cursor:pointer; font:inherit; font-size:.72rem;
+  }
+  #system-details-btn[aria-expanded="true"]{border-color:var(--accent2); color:var(--accent2);}
+  #system-details{
+    position:absolute; top:100%; right:1rem; z-index:20; width:280px;
+    margin-top:4px; padding:.6rem .7rem; background:var(--bg-raised);
+    border:1px solid var(--line); border-radius:8px; box-shadow:0 6px 20px var(--cap-shadow);
+    font-size:.78rem; line-height:1.7;
+  }
+  #system-details[hidden]{display:none;}
+  #system-details dl{display:grid; grid-template-columns:auto 1fr; gap:0 .6rem; margin:0;}
+  #system-details dt{color:var(--muted);}
+  #system-details dd{margin:0; text-align:right; font-family:ui-monospace,monospace;}
+
   main{flex:1; display:flex; min-height:0;}
   /* The Simulator is a permanent base layer — it is mounted once and never
      hidden, resized, or torn down again. Earlier attempts that swapped it
@@ -107,8 +132,8 @@
   /* The controls panel is always visible now — the simulator it drives is
      always the base layer, so there's no "wrong tab" state to hide it for. */
   #panel{
-    width:280px; flex:none; border-left:1px solid var(--line); background:var(--bg-raised);
-    padding:.9rem; overflow-y:auto; overflow-x:hidden; outline:none;
+    width:min(420px, 32vw); min-width:280px; flex:none; border-left:1px solid var(--line);
+    background:var(--bg-raised); padding:.9rem; overflow-y:auto; overflow-x:hidden; outline:none;
   }
   #panel h2{font-size:.75rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0;}
 
@@ -143,13 +168,123 @@
   .help-popover[hidden]{display:none;}
   .help-popover p{margin:0;}
 
+  .policy-info-btn{
+    flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--muted); cursor:pointer; font:600 12px/1 inherit;
+  }
+  .policy-info-btn:hover{border-color:var(--accent2); color:var(--accent2);}
+
+  /* ---- policy info dock ----
+     Was a centered modal overlay; now a permanent column sitting BETWEEN
+     the simulator (#views) and the controls sidebar (#panel) — it only
+     ever eats into #views's width (flex:1), never #panel's. #panel is the
+     last flex child of <main> with a fixed width, so it stays pinned to
+     the same screen position whether this dock is open or closed — opening
+     it must never make an already-familiar control (Policies, Telemetry,
+     Command…) jump to a different spot on screen. The robot keeps moving
+     in the narrowed #views while this is open. */
+  #policy-info-dock{
+    flex:none; width:min(460px, 36vw); min-width:320px;
+    background:var(--bg-raised); color:var(--ink);
+    border-left:1px solid var(--line); border-right:1px solid var(--line);
+    overflow-y:auto; overflow-x:hidden; box-shadow:-6px 0 16px -12px var(--cap-shadow);
+  }
+  #policy-info-dock[hidden]{display:none;}
+  .modal-head{
+    position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between;
+    padding:.8rem 1rem; border-bottom:1px solid var(--line); background:var(--bg-raised);
+  }
+  .modal-head h2{margin:0; font-size:1rem;}
+  .modal-nav{display:flex; align-items:center; gap:.35rem; flex:none;}
+  .modal-close{
+    flex:none; width:28px; height:28px; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--muted); cursor:pointer; font-size:1.1rem; line-height:1;
+  }
+  .modal-close:hover:not(:disabled){border-color:var(--danger); color:var(--danger);}
+  #policy-info-prev:hover:not(:disabled), #policy-info-next:hover:not(:disabled){
+    border-color:var(--accent2); color:var(--accent2);
+  }
+  .modal-nav button:disabled{opacity:.3; cursor:not-allowed;}
+  #policy-info-body{padding:1rem;}
+  .info-empty{color:var(--muted); font-size:.85rem;}
+  .info-section{margin-bottom:1rem;}
+  .info-section h3{
+    font-size:.68rem; text-transform:uppercase; letter-spacing:.06em; color:var(--muted);
+    margin:0 0 .4rem;
+  }
+  .info-kv{display:grid; grid-template-columns:auto 1fr; gap:.25rem .7rem; font-size:.82rem;}
+  .info-kv dt{color:var(--muted); white-space:nowrap;}
+  .info-kv dd{margin:0; word-break:break-all;}
+  .info-cmd{
+    display:block; font-family:ui-monospace,monospace; font-size:.72rem; white-space:pre-wrap;
+    word-break:break-all; background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .6rem;
+  }
+  /* Always the first thing rendered in the dock — see renderPolicyInfo() —
+     so stepping through policies with ↑/↓ compares the same chart+cards
+     first, without scrolling past Provenance/Training-run every time. */
+  #policy-info-top{padding-bottom:.6rem; margin-bottom:.6rem; border-bottom:1px solid var(--line);}
+  .info-stat-row{display:flex; gap:.6rem; flex-wrap:wrap;}
+  .info-stat{
+    flex:1; min-width:110px; border:1px solid var(--line); border-top:3px solid var(--stat-color, var(--line));
+    border-radius:8px; padding:.5rem .6rem; text-align:center;
+  }
+  /* Episode length is the metric that matters most right now (see
+     HANDOFF_stability_curriculum.md §6 — it's the one still stuck) — give
+     its card visual priority so it reads as "the one to watch" at a glance. */
+  .info-stat.featured{flex-basis:100%; padding:.7rem .6rem;}
+  .info-stat.featured .val{font-size:1.6rem;}
+  .info-stat .val{font-size:1.15rem; font-weight:700; font-family:ui-monospace,monospace; color:var(--stat-color, var(--ink));}
+  .info-stat .lbl{font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
+  .info-chart{width:100%; height:110px; display:block;}
+  .info-chart-grid{stroke:var(--line); stroke-width:1;}
+  .info-chart-tick{font-size:5px; fill:var(--muted); font-family:ui-monospace,monospace;}
+  .info-chart-caption{font-size:.65rem; color:var(--muted); text-align:right; margin-top:.15rem;}
+  .info-terms{display:flex; flex-direction:column; gap:.2rem;}
+  .info-term-row{display:grid; grid-template-columns:9rem 1fr auto; align-items:center; gap:.4rem; font-size:.74rem;}
+  /* Didactic tooltip — hover/focus a reward-term name to see what it means,
+     see REWARD_TERM_GLOSSARY in app.js. Plain CSS, no JS positioning: pins
+     above the row so it never gets clipped by the dock's own scroll. */
+  .info-term-name{
+    position:relative; cursor:help; border-bottom:1px dotted var(--muted);
+  }
+  /* Ellipsis-clipping lives on this INNER span, not on .info-term-name
+     itself — overflow:hidden on the same element that hosts the ::after
+     tooltip below would clip the popup too (it's still a descendant box
+     for clipping purposes even though it's positioned outside visually),
+     which is exactly the "only see the ? cursor, no tooltip" bug this
+     split fixes. */
+  .info-term-name-label{
+    display:block; font-family:ui-monospace,monospace; color:var(--ink-soft);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .info-term-name:hover::after, .info-term-name:focus-visible::after{
+    content:attr(data-tip); position:absolute; left:0; bottom:100%; margin-bottom:6px; z-index:10;
+    width:230px; max-width:60vw; white-space:normal; text-overflow:clip; overflow:visible;
+    background:var(--bg); color:var(--ink-soft); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .6rem; font-size:.72rem; line-height:1.4; box-shadow:0 6px 20px var(--cap-shadow);
+  }
+  .info-term-bar-track{position:relative; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden;}
+  .info-term-bar{position:absolute; top:0; bottom:0;}
+  .info-term-val{font-family:ui-monospace,monospace; text-align:right; white-space:nowrap;}
+
   .policy-btn, .action-btn{
     display:flex; align-items:center; justify-content:space-between; width:100%;
-    text-align:left; margin-bottom:.4rem;
+    text-align:left;
     padding:.5rem .6rem; border-radius:6px; border:1px solid var(--line);
     background:var(--bg); color:var(--ink); cursor:pointer; font:inherit;
   }
   .policy-btn.active{border-color:var(--accent2); font-weight:600;}
+  .policy-row{display:flex; align-items:center; gap:.35rem; margin-bottom:.4rem;}
+  .policy-row .policy-btn{margin-bottom:0; flex:1; min-width:0;}
+  .policy-row .drag-handle{flex:none; font-size:.85rem;}
+  .policy-row.dragging{opacity:.6;}
+  .policy-delete-btn{
+    flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
+    background:var(--bg); color:var(--muted); cursor:pointer; font:inherit; line-height:1;
+  }
+  .policy-delete-btn:hover:not(:disabled){border-color:var(--danger); color:var(--danger);}
+  .policy-delete-btn:disabled{opacity:.35; cursor:not-allowed;}
 
   /* ---- illuminated keycaps ---- */
   .keycap{
@@ -217,6 +352,104 @@
     margin-bottom:.4rem; cursor:pointer; user-select:none;
   }
 
+  /* ---- create-policy form ---- */
+  .field-group{border:1px solid var(--line); border-radius:8px; padding:.65rem .65rem .1rem; margin-bottom:.7rem;}
+  .field-group-label{
+    font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+    margin:0 0 .55rem; display:flex; align-items:center; gap:.4rem; color:var(--muted);
+  }
+  .field-group-label .dot{width:.5rem; height:.5rem; border-radius:50%; background:currentColor; flex:none;}
+  .field-group-context{border-color:var(--line);}
+  .field-group-target{border-color:var(--accent2);}
+  .field-group-target > .field-group-label{color:var(--accent2);}
+  .field-group-note{font-size:.68rem; color:var(--muted); margin:-.3rem 0 .55rem;}
+  .mode-tabs{display:flex; gap:.3rem; margin-bottom:.35rem;}
+  .mode-tabs button{
+    flex:1; font:inherit; font-size:.72rem; padding:.3rem .4rem; border-radius:5px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink-soft); cursor:pointer;
+  }
+  .mode-tabs button.active{border-color:var(--accent2); color:var(--accent-ink); background:var(--accent2);}
+  .subfield[hidden]{display:none;}
+  .field-row{display:flex; flex-direction:column; gap:.2rem; margin-bottom:.55rem;}
+  .field-row label{font-size:.72rem; color:var(--muted); text-transform:uppercase; letter-spacing:.03em;}
+  .field-row select, .field-row input[type="text"], .field-row input[type="number"]{
+    font:inherit; font-size:.85rem; padding:.35rem .45rem; border-radius:5px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); width:100%;
+  }
+  .range-pair{display:flex; gap:.4rem; align-items:center;}
+  .range-pair input{width:0; flex:1;}
+  .range-pair span{color:var(--muted); font-size:.75rem;}
+  .field-hint{font-size:.68rem; color:var(--muted); margin:0;}
+
+  /* ---- Reward weights grid (Create Policy, advanced) ---- */
+  .reward-scale-grid{display:grid; grid-template-columns:1fr 1fr; gap:.35rem .5rem; margin-top:.2rem;}
+  .reward-scale-field{display:flex; flex-direction:column; gap:.15rem;}
+  .reward-scale-field label{font-size:.65rem; color:var(--muted); font-family:var(--mono, monospace);}
+  .reward-scale-field input{
+    font:inherit; font-size:.8rem; padding:.25rem .4rem; border-radius:5px;
+    border:1px solid var(--line); background:var(--bg); color:var(--ink); width:100%;
+  }
+  .reward-scale-field input:not(:placeholder-shown){border-color:var(--accent2); color:var(--ink);}
+
+  /* ---- live telemetry panel ---- */
+  /* Label/badge and value are on separate rows, and each row's height/
+     content never depends on the OTHER row's width — a value ticking at
+     ~10Hz (sign flips, digit-count noise) must never make the label row
+     reflow, and vice versa. See .tele-val below for how the value itself
+     is kept from jittering horizontally as numbers change. */
+  .tele-row{padding:.35rem 0; border-bottom:1px solid var(--line);}
+  .tele-row:last-child{border-bottom:none;}
+  .tele-label-row{display:flex; align-items:center; gap:.4rem; flex-wrap:wrap;}
+  .tele-label{font-size:.78rem; font-weight:600;}
+  .tele-val{
+    display:block; margin-top:.15rem; font:600 .8rem/1.3 ui-monospace,monospace;
+    color:var(--ink-soft);
+    /* Fixed-width digits (tabular-nums) + JS always reserving a sign column
+       (see formatTeleValue/padNum in app.js) so a number crossing zero, or
+       gaining/losing a digit, changes in place instead of shifting every
+       character after it — "the numbers update, nothing moves". */
+    font-variant-numeric:tabular-nums; white-space:pre-wrap; word-break:break-all;
+  }
+  .tele-badge{
+    font-size:.6rem; padding:1px 5px; border-radius:3px; text-transform:uppercase;
+    letter-spacing:.03em; font-weight:700; white-space:nowrap; flex:none;
+  }
+  .tele-badge.sim_ground_truth{background:color-mix(in srgb, var(--accent) 20%, transparent); color:var(--accent);}
+  .tele-badge.sensor{background:color-mix(in srgb, var(--accent2) 20%, transparent); color:var(--accent2);}
+  .tele-note{font-size:.66rem; color:var(--muted); margin:.15rem 0 0;}
+  #train-cmd-preview{
+    display:block; white-space:pre-wrap; word-break:break-word;
+    background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .55rem; font:11px/1.4 ui-monospace,monospace; color:var(--ink-soft);
+    margin:.3rem 0 .6rem;
+  }
+  #train-error{color:var(--danger); font-size:.76rem; margin:0 0 .5rem; display:none;}
+  #train-error.show{display:block;}
+  #btn-start-training{
+    width:100%; padding:.5rem .6rem; border-radius:6px; border:1px solid var(--accent2);
+    background:var(--accent2); color:var(--accent-ink); font:600 .85rem/1 inherit; cursor:pointer;
+  }
+  #btn-start-training:disabled{opacity:.5; cursor:not-allowed;}
+  #btn-new-policy{
+    width:100%; margin-bottom:.6rem; padding:.5rem .6rem; border-radius:6px;
+    border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
+  }
+  #create-policy-form[hidden]{display:none;}
+  #training-jobs{display:flex; flex-direction:column; gap:.35rem; margin-top:.6rem;}
+  .job-row{
+    border:1px solid var(--line); border-radius:6px; padding:.4rem .5rem; font-size:.76rem;
+  }
+  .job-row .job-head{display:flex; justify-content:space-between; align-items:center; gap:.4rem;}
+  .job-row .job-name{font-weight:600;}
+  .job-row .job-status{font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted);}
+  .job-row.running .job-status{color:var(--accent2);}
+  .job-row.failed .job-status{color:var(--danger);}
+  .job-row .job-cmd{
+    margin-top:.25rem; font:10px/1.3 ui-monospace,monospace; color:var(--muted);
+    white-space:pre-wrap; word-break:break-word;
+  }
+  .job-row .job-error{margin-top:.25rem; color:var(--danger); font-size:.7rem;}
+
   footer{padding:.35rem 1rem; font-size:.72rem; color:var(--muted); border-top:1px solid var(--line);}
 </style>
 </head>
@@ -230,6 +463,12 @@
   </nav>
 </header>
 
+<div id="system-bar">
+  <span id="system-summary">detecting the server's machine&hellip;</span>
+  <button id="system-details-btn" type="button" aria-expanded="false">details</button>
+  <div id="system-details" hidden></div>
+</div>
+
 <main>
   <div id="views">
     <div class="view" id="view-sim"></div>
@@ -239,6 +478,25 @@
     </aside>
   </div>
 
+  <aside id="policy-info-dock" hidden>
+    <div class="modal-head">
+      <h2 id="policy-info-title">Policy</h2>
+      <div class="modal-nav">
+        <button type="button" id="policy-info-prev" class="modal-close" aria-label="Previous policy (up)" title="Previous policy — same as the row above in Policies">&uarr;</button>
+        <button type="button" id="policy-info-next" class="modal-close" aria-label="Next policy (down)" title="Next policy — same as the row below in Policies">&darr;</button>
+        <button type="button" id="policy-info-close" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+    </div>
+    <div id="policy-info-body">Loading&hellip;</div>
+  </aside>
+
+  <!-- #panel is always the LAST flex child of <main> and always a fixed
+       width — its right edge is flush with the viewport edge no matter
+       what. That's deliberate: opening/closing the info dock above must
+       never shift where the Policies/Telemetry/Command controls sit on
+       screen (basic UI hygiene — a control the user already has a mental
+       map of shouldn't move under them). Only #views (the simulator,
+       flex:1) absorbs the dock's width. -->
   <div id="panel" tabindex="0">
     <div id="status-block">
       <h2>Status</h2>
@@ -283,9 +541,15 @@
               <span class="keycap" data-key="8">8</span>
               <span class="keycap" data-key="7">7</span>
               <span class="keycap" data-key="6">6</span>
-              <span class="keycap" data-key="5">5</span>
             </div>
-            <span class="kbd-caption">switch policy</span>
+            <div class="kbd-row">
+              <span class="keycap" data-key="5">5</span>
+              <span class="keycap" data-key="4">4</span>
+              <span class="keycap" data-key="3">3</span>
+              <span class="keycap" data-key="2">2</span>
+              <span class="keycap" data-key="1">1</span>
+            </div>
+            <span class="kbd-caption">switch policy, top-to-bottom order</span>
           </div>
           <div class="kbd-cluster" data-label="System">
             <div class="kbd-row">
@@ -310,6 +574,20 @@
       <div class="section-body">
         <button class="action-btn" id="btn-pause">Pause <span class="keycap">P</span></button>
         <button class="action-btn" id="btn-restart">Restart <span class="keycap">R</span></button>
+      </div>
+    </section>
+
+    <section class="panel-section" data-section="telemetry">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Live Telemetry</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>What the running robot's state actually is, right now — read these before picking a Create Policy target so you're choosing a real number, not guessing. <span class="tele-badge sensor">sensor</span> is a real IMU/gyroscope reading, available on both sim and real hardware. <span class="tele-badge sim_ground_truth">sim</span> only exists in simulation — no equivalent sensor exists on the physical robot, so it can't be an input to a real-robot policy, only a training-time target.</p>
+        </div>
+      </div>
+      <div class="section-body" id="telemetry-body">
+        <p class="field-hint">Waiting for data&hellip;</p>
       </div>
     </section>
 
@@ -365,7 +643,7 @@
         <h2>Policies</h2>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Press 0/9/8/7/6/5 or click a policy to switch.</p>
+          <p>Click a policy to switch, or press its shortcut key. Shortcuts are fixed to position, not name — drag &#8942;&#8942; to reorder: top is 0, then 9 down to 1 (up to 10 policies).</p>
         </div>
       </div>
       <div class="section-body">
@@ -384,7 +662,169 @@
       </div>
       <div class="section-body">
         <label class="toggle-row"><input type="checkbox" id="chk-push"> Random Pushes</label>
+        <div class="field-row" style="margin-left:1.5rem; margin-top:-.2rem;">
+          <label for="sim-push-dir">Push direction</label>
+          <select id="sim-push-dir">
+            <option value="">any direction</option>
+            <option value="behind">from behind (shoves it forward)</option>
+            <option value="front">from the front (shoves it backward)</option>
+            <option value="left">from the left (shoves it right)</option>
+            <option value="right">from the right (shoves it left)</option>
+          </select>
+        </div>
         <label class="toggle-row"><input type="checkbox" id="chk-auto-cmd"> Random Movement</label>
+      </div>
+    </section>
+
+    <section class="panel-section" data-section="training">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Create Policy</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>Trains a new policy asynchronously (a real subprocess, not a UI trick) and adds it to the Policies list above once it finishes. The command below is exactly what will run — nothing is hidden behind this form.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <button id="btn-new-policy" type="button">+ New policy&hellip;</button>
+        <form id="create-policy-form" hidden>
+
+          <div class="field-group field-group-context">
+            <p class="field-group-label"><span class="dot"></span>Context — what this run starts from</p>
+            <div class="field-row">
+              <label for="train-name">Policy name</label>
+              <input type="text" id="train-name" placeholder="e.g. cautious_v2" autocomplete="off">
+            </div>
+            <div class="field-row">
+              <label for="train-base">Clone from</label>
+              <select id="train-base">
+                <option value="">— from scratch —</option>
+              </select>
+              <p class="field-hint">Fine-tunes the chosen policy's weights instead of starting from random init. The targets below default to matching this base once picked.</p>
+            </div>
+            <div class="field-row">
+              <label for="train-task">Task</label>
+              <select id="train-task"></select>
+            </div>
+            <div class="field-row">
+              <label>Time budget <span class="hint-inline">(fill either or both — whichever is reached first stops training)</span></label>
+              <div class="range-pair">
+                <input type="number" id="train-iters" min="1" step="1" placeholder="iterations">
+                <span>or</span>
+                <input type="number" id="train-minutes" min="0.1" step="any" placeholder="minutes">
+              </div>
+            </div>
+            <div class="field-row">
+              <label for="train-envs">Parallel environments <span class="hint-inline">(each is one robot trained in parallel)</span></label>
+              <input type="number" id="train-envs" min="1" step="1" value="64">
+              <p class="field-hint" id="train-envs-hint"></p>
+            </div>
+            <p class="field-hint" id="train-estimate">Estimated time: &ndash;</p>
+          </div>
+
+          <div class="field-group field-group-target">
+            <p class="field-group-label"><span class="dot"></span>Target — what the trained policy should do</p>
+
+            <div class="field-row">
+              <label>Command envelope — measurement targets (m/s, m/s, rad/s)</label>
+              <p class="field-hint">Linear X range</p>
+              <div class="range-pair">
+                <input type="number" id="train-vx-lo" step="0.1" placeholder="lo">
+                <span>&#8594;</span>
+                <input type="number" id="train-vx-hi" step="0.1" placeholder="hi">
+              </div>
+              <p class="field-hint">Linear Y range</p>
+              <div class="range-pair">
+                <input type="number" id="train-vy-lo" step="0.1" placeholder="lo">
+                <span>&#8594;</span>
+                <input type="number" id="train-vy-hi" step="0.1" placeholder="hi">
+              </div>
+              <p class="field-hint">Yaw range</p>
+              <div class="range-pair">
+                <input type="number" id="train-yaw-lo" step="0.1" placeholder="lo">
+                <span>&#8594;</span>
+                <input type="number" id="train-yaw-hi" step="0.1" placeholder="hi">
+              </div>
+              <p class="field-hint">Leave blank to keep the task's default ranges.</p>
+            </div>
+
+            <div class="field-row">
+              <label for="train-var-select">Target variable</label>
+              <select id="train-var-select"></select>
+              <p class="field-hint" id="train-var-note"></p>
+
+              <div class="mode-tabs" id="train-height-mode">
+                <button type="button" data-mode="absolute" class="active">Absolute</button>
+                <button type="button" data-mode="relative">Raise / lower</button>
+                <button type="button" data-mode="extreme">Lowest / highest</button>
+              </div>
+
+              <div class="subfield" id="train-height-absolute">
+                <p class="field-hint" id="train-height-absolute-hint">Value the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing height.</p>
+                <input type="number" id="train-height" step="0.01" placeholder="leave blank for the task's default">
+              </div>
+
+              <div class="subfield" id="train-height-relative" hidden>
+                <p class="field-hint" id="train-height-reference">Reference: &ndash;</p>
+                <div class="range-pair">
+                  <select id="train-height-dir">
+                    <option value="raise">Raise by</option>
+                    <option value="lower">Lower by</option>
+                  </select>
+                  <input type="number" id="train-height-delta" step="0.01" min="0" placeholder="m">
+                </div>
+                <p class="field-hint">Resolved against the reference above at submit time — the exact same flag as Absolute, just composed for you.</p>
+              </div>
+
+              <div class="subfield" id="train-height-extreme" hidden>
+                <div class="mode-tabs" id="train-extreme-dir">
+                  <button type="button" data-dir="lowest" class="active">Lowest</button>
+                  <button type="button" data-dir="highest">Highest</button>
+                </div>
+                <p class="field-hint" id="train-extreme-note">Resolves to &ndash;</p>
+                <p class="field-hint">Pushes toward this variable's configured physical limit — not an unconstrained optimum (an unbounded "as low as possible" has a trivial, degenerate solution: lying on the ground). Stability-related reward weights (orientation, termination, balance) stay at full strength — there's no "acceptable stability loss" budget yet, so this is always the 0%-sacrifice behavior.</p>
+              </div>
+            </div>
+
+            <div class="field-row">
+              <label>Push disturbances (a.k.a. Stress Stimuli — see the panel above)</label>
+              <select id="train-push">
+                <option value="">— task default —</option>
+                <option value="on">force on</option>
+                <option value="off">force off</option>
+              </select>
+              <div class="range-pair" style="margin-top:.3rem;">
+                <input type="number" id="train-push-vel" step="0.1" min="0" placeholder="max push m/s">
+                <input type="number" id="train-push-interval" step="0.5" min="0" placeholder="interval s">
+              </div>
+              <select id="train-push-dir" style="margin-top:.3rem;">
+                <option value="">any direction</option>
+                <option value="behind">from behind (shoves it forward)</option>
+                <option value="front">from the front (shoves it backward)</option>
+                <option value="left">from the left (shoves it right)</option>
+                <option value="right">from the right (shoves it left)</option>
+              </select>
+            </div>
+
+            <div class="field-row">
+              <label>Exploration noise (entropy_coef)</label>
+              <input type="number" id="train-entropy-coef" step="0.001" min="0" placeholder="task default (0.01)">
+              <p class="field-hint">How much randomness PPO keeps injecting into actions as it trains — higher explores more, lower settles into a fixed behavior sooner. This should shrink toward 0 as training converges; if instead it keeps <em>growing</em> the whole run (watch "Mean action noise std" in a job's log — it should trend down, never up), the policy gets more erratic and jittery the longer it trains instead of better. That's this set too high for how weak this task's actual reward signal is — lower it (e.g. 0.001&ndash;0.003) rather than training longer.</p>
+            </div>
+
+            <div class="field-row">
+              <label>Reward weights <span style="font-weight:400; color:var(--muted);">(advanced — every term this task's own reward function defines)</span></label>
+              <p class="field-hint">Leave a field blank to keep the task's own default (shown as the placeholder). Positive rewards more of that behavior, negative penalizes it — magnitude is relative to the OTHER terms below, not an absolute scale, so nudge one at a time and compare "Mean episode length" / "Mean reward" before/after (see a policy's info popup for that history). E.g. <code>alive</code> is the per-step bonus for still being upright — raise it if the robot converges to a gait that scores fine per-step but keeps falling early.</p>
+              <div id="train-reward-scales" class="reward-scale-grid"></div>
+            </div>
+          </div>
+
+          <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
+          <code id="train-cmd-preview">python legged_gym/scripts/web_train.py &hellip;</code>
+          <p id="train-error"></p>
+          <button type="submit" id="btn-start-training">Start training</button>
+        </form>
+        <div id="training-jobs"></div>
       </div>
     </section>
   </div>

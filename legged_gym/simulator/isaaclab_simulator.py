@@ -178,10 +178,8 @@ class IsaacLabSimulator(Simulator):
             self._terrain_types[env_ids]]
         
     def push_robots(self):
-        max_push_vel_xy = self._cfg.domain_rand.max_push_vel_xy
         cur_vel_w = self._robot.data.root_vel_w
-        push_vel = torch_rand_float(-max_push_vel_xy,
-                                    max_push_vel_xy, (self._num_envs, 2), device=self._device)
+        push_vel = self.sample_push_vel_xy()
         self._rand_push_vels[:, :2] = push_vel.detach().clone()
         cur_vel_w[:, :2] += push_vel
         self._robot.write_root_velocity_to_sim(cur_vel_w)

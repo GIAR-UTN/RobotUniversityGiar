@@ -51,6 +51,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 METHODS = {
     "request_switch", "status", "pause", "resume", "estop",
     "restart", "set_command", "set_random_events",
+    "training_catalog", "start_training", "system_info", "estimate_training_time",
+    "task_defaults", "delete_policy", "policy_info",
 }
 
 

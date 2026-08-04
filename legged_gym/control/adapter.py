@@ -44,6 +44,16 @@ class RobotState:
     projected_gravity: torch.Tensor  # (num_envs, 3) — gravity vector in the base frame; the same
                                       # upright/fallen signal legged_robot.py uses for episode
                                       # termination (projected_gravity[:,2] > threshold = fallen)
+    base_height: Optional[torch.Tensor]  # (num_envs,) — world-frame base z, i.e. what
+                                          # rewards.base_height_target tracks (legged_robot.py's
+                                          # _reward_base_height). This is SIMULATOR GROUND TRUTH, not
+                                          # a sensor reading — no IMU or other real sensor measures
+                                          # height directly, so this is None on real hardware (mirrors
+                                          # base_lin_vel's same real-hardware caveat above). Still a
+                                          # legitimate training-time target: training only ever runs
+                                          # in sim, so "ground truth exists" is all that's required
+                                          # there — the caveat only matters for what real-robot
+                                          # *inference* could ever condition on.
     commands: torch.Tensor         # (num_envs, 3) — requested lin_x, lin_y, ang_yaw
     action_scale: float
     lifecycle: Lifecycle
@@ -117,6 +127,7 @@ class SimAdapter:
             base_ang_vel=sim.base_ang_vel,
             base_lin_vel=sim.base_lin_vel,
             projected_gravity=sim.projected_gravity,
+            base_height=sim.base_pos[:, 2],
             commands=self.env.commands[:, :3],
             action_scale=self.env.cfg.control.action_scale,
             lifecycle=self._lifecycle,
@@ -176,15 +187,21 @@ class SimAdapter:
         self.env.cfg.commands.heading_command = False
         self._apply_manual_command()
 
-    def set_random_events(self, push_robots: bool, auto_commands: bool) -> None:
+    def set_random_events(self, push_robots: bool, auto_commands: bool,
+                           push_dir: Optional[str] = None) -> None:
         """Independently toggles the two domain-randomization stimuli that
         otherwise run unconditionally every tick, in the sim demo just like
         in training (legged_robot.py's _post_physics_step_callback) — random
         shoves, and the velocity command changing on its own every few
         seconds. Turning both off is what lets you drive the robot
         deliberately, the way an operator would, instead of watching it
-        react to the same randomized stressors used during training."""
+        react to the same randomized stressors used during training.
+        push_dir (None/'behind'/'front'/'left'/'right') biases the shove
+        direction the same way training's --push_dir does — read live by
+        Simulator.sample_push_vel_xy() on every push, so this takes effect
+        on the very next one."""
         self.env.cfg.domain_rand.push_robots = push_robots
+        self.env.cfg.domain_rand.push_dir = push_dir
         if auto_commands:
             self._auto_commands = True
             self.env.cfg.commands.heading_command = self._orig_heading_command
@@ -204,6 +221,7 @@ class SimAdapter:
         return {
             "push_robots": bool(self.env.cfg.domain_rand.push_robots),
             "auto_commands": self._auto_commands,
+            "push_dir": getattr(self.env.cfg.domain_rand, "push_dir", None),
         }
 
     def estop(self) -> None:
