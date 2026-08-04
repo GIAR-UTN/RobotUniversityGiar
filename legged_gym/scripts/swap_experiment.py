@@ -105,27 +105,46 @@ def main():
     adapter = SimAdapter(env)
 
     hidden_size = 64  # matches G1RoughCfgPPO.policy.rnn_hidden_size
+
+    # Lets the control web's "Create Policy" panel launch new training runs
+    # (as subprocesses — see legged_gym/control/training.py) and, once one
+    # finishes, hot-load the result here as a new switchable policy.
+    training = TrainingManager()
+
+    # Every policies/<name>/ folder finalize_policy() ever wrote for THIS
+    # task is re-offered on every startup — not just whatever --policy
+    # flags were typed this time. Without this, restarting the server (to
+    # pick up new code, after a crash, ...) would "lose" every policy
+    # trained via the UI in a PREVIOUS process's lifetime, even though
+    # finalize_policy() specifically copies their checkpoints out of
+    # scratch log_dir space so they'd survive exactly this — see
+    # TrainingManager.discover_local_policies()'s docstring. --policy specs
+    # win on a name collision (skip via `exclude`), same as any other
+    # explicit-beats-implicit default.
+    discovered = training.discover_local_policies(exclude=policy_paths.keys())
+    for name, info in discovered.items():
+        if info["task"] != args.task:
+            continue  # a different task's obs/action space — loading it here would crash load_policy()
+        policy_paths[name] = info["checkpoint"]
+
     print("Loading policies:")
     policies = {}
     for name, path in policy_paths.items():
         policies[name] = load_policy(name, path, num_obs=env_cfg.env.num_observations,
                                       hidden_size=hidden_size, num_envs=env.num_envs)
-        print(f"  '{name}' <- {path}")
+        print(f"  '{name}' <- {path}{' (rediscovered from a previous run)' if name in discovered else ''}")
     policies["damping"] = damping_policy(env.num_envs, env_cfg.env.num_actions)
 
     supervisor = PolicySupervisor(policies, active=active_name, ramp_ticks=cli.ramp_ticks)
     safety = SafetyGovernor(supervisor, damping_policy_name="damping")
 
-    # Lets the control web's "Create Policy" panel launch new training runs
-    # (as subprocesses — see legged_gym/control/training.py) and, once one
-    # finishes, hot-load the result here as a new switchable policy. Every
-    # policy loaded via --policy above was trained on this same task's
-    # observation space, so it's registered as a "clone from" source too —
-    # see the poll loop below for how a *newly* trained policy gets
-    # registered the same way once it completes.
-    training = TrainingManager()
+    # Every policy loaded above was trained on this same task's observation
+    # space, so it's registered as a "clone from" source too — rediscovered
+    # ones get their train_checkpoint back as well, so Clone-from keeps
+    # working across a restart, not just the checkpoint itself.
     for name, path in policy_paths.items():
-        training.register_source(name, task=args.task, checkpoint=path)
+        train_checkpoint = discovered.get(name, {}).get("train_checkpoint")
+        training.register_source(name, task=args.task, checkpoint=path, train_checkpoint=train_checkpoint)
     service = ControlService(adapter, supervisor, safety, selector=None, training=training)
 
     hidden_size_for_new_policies = hidden_size  # matches G1RoughCfgPPO.policy.rnn_hidden_size (see above)

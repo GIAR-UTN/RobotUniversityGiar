@@ -472,6 +472,51 @@ class TrainingManager:
         )
         return str(dest_checkpoint)
 
+    def discover_local_policies(self, exclude: Sequence[str] = ()) -> Dict[str, dict]:
+        """Every self-contained `policies/<name>/` folder on disk that
+        finalize_policy() ever wrote — i.e. everything trained through this
+        UI — regardless of whether it's still loaded in THIS process's
+        memory. `policy_sources`/the running supervisor only know about
+        whatever was passed via --policy at launch plus whatever's
+        completed *in this process's lifetime*; restarting the server (to
+        pick up new code, or after a crash) starts both of those empty
+        again even though nothing on disk changed — finalize_policy()
+        copies checkpoints out of scratch log_dir space specifically so
+        they'd survive that. This is what lets swap_experiment.py's
+        startup re-offer every previously-trained policy instead of just
+        whatever --policy flags happened to be typed that time.
+
+        Returns name -> {"task", "checkpoint", "train_checkpoint"} for
+        every folder with a checkpoint.pt, skipping names in `exclude`
+        (already loaded a different way, e.g. via --policy) and skipping
+        (with nothing raised — this must never crash startup) anything
+        without a readable meta.json giving its task, since loading a
+        checkpoint from the wrong task/observation-space would crash
+        load_policy() rather than just fail to appear."""
+        found = {}
+        if not POLICIES_DIR.is_dir():
+            return found
+        for entry in sorted(POLICIES_DIR.iterdir()):
+            name = entry.name
+            if name in exclude or not entry.is_dir():
+                continue
+            checkpoint = entry / "checkpoint.pt"
+            if not checkpoint.is_file():
+                continue
+            try:
+                with open(entry / "meta.json") as f:
+                    meta = json.load(f)
+                task = meta["task"]
+            except (OSError, KeyError, json.JSONDecodeError):
+                continue
+            train_checkpoint = entry / "train_checkpoint.pt"
+            found[name] = {
+                "task": task,
+                "checkpoint": str(checkpoint),
+                "train_checkpoint": str(train_checkpoint) if train_checkpoint.is_file() else None,
+            }
+        return found
+
     def policy_info(self, name: str) -> dict:
         """Everything the info popup shows for one policy — a light read of
         `policies/<name>/meta.json` plus the file-existence facts a popup
