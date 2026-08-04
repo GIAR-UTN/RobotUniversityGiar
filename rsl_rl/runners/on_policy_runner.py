@@ -97,6 +97,28 @@ class OnPolicyRunner:
         self.tot_time: float = 0.0
         self.current_learning_iteration: int = 0
 
+        # Reward/episode-length bookkeeping, kept on the runner (not as
+        # learn()-local variables) so it survives across MULTIPLE calls to
+        # learn() — callers that train in chunks (e.g.
+        # legged_gym/scripts/web_train.py, to check a wall-clock budget
+        # between chunks) would otherwise silently throw away the rolling
+        # 100-episode window and every env's in-progress episode timer at
+        # every chunk boundary, producing a sawtooth in "Mean episode
+        # length"/"Mean reward" that's a bookkeeping artifact of the chunk
+        # size, not the policy's actual training progress.
+        self.rewbuffer: deque = deque(maxlen=100)
+        self.lenbuffer: deque = deque(maxlen=100)
+        self.cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        self.cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        # init_at_random_ep_len is meant to stagger envs' episode timers ONCE
+        # at the very start of a run (so all num_envs don't reset in
+        # lockstep) — chunked callers used to pass it on every chunk, which
+        # re-staggered (and effectively partially reset) every env's
+        # in-flight episode at every chunk boundary too. Track whether it's
+        # already been applied THIS runner instance so a repeat request is a
+        # no-op instead of a repeat reset.
+        self._ep_len_randomized: bool = False
+
         self.env.reset()
     
     def _init_agent_and_algo(self) -> None:
@@ -144,10 +166,15 @@ class OnPolicyRunner:
         self.alg.actor_critic.train()
 
         ep_infos: List[Dict[str, Any]] = []
-        rewbuffer: deque = deque(maxlen=100)
-        lenbuffer: deque = deque(maxlen=100)
-        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-        cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        # References to the runner's own persistent buffers (see __init__)
+        # — NOT fresh objects — so a rolling window and each env's
+        # in-progress episode survive across repeated calls to learn().
+        # log() below reads these back out of locals() by the same names,
+        # so it doesn't need to change at all.
+        rewbuffer: deque = self.rewbuffer
+        lenbuffer: deque = self.lenbuffer
+        cur_reward_sum = self.cur_reward_sum
+        cur_episode_length = self.cur_episode_length
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
@@ -214,10 +241,11 @@ class OnPolicyRunner:
                     config=self.all_cfg,
                 )
             self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
-        if init_at_random_ep_len:
+        if init_at_random_ep_len and not self._ep_len_randomized:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
             )
+            self._ep_len_randomized = True
     
     def log(
         self,
