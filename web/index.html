@@ -171,19 +171,24 @@
   }
   .policy-info-btn:hover{border-color:var(--accent2); color:var(--accent2);}
 
-  /* ---- policy info popup ---- */
-  .modal-overlay{
-    position:fixed; inset:0; z-index:100; background:rgba(0,0,0,.45);
-    display:flex; align-items:center; justify-content:center; padding:1.2rem;
+  /* ---- policy info dock ----
+     Was a centered modal overlay; now a permanent column sitting BETWEEN
+     the simulator (#views) and the controls sidebar (#panel) — it only
+     ever eats into #views's width (flex:1), never #panel's. #panel is the
+     last flex child of <main> with a fixed width, so it stays pinned to
+     the same screen position whether this dock is open or closed — opening
+     it must never make an already-familiar control (Policies, Telemetry,
+     Command…) jump to a different spot on screen. The robot keeps moving
+     in the narrowed #views while this is open. */
+  #policy-info-dock{
+    flex:none; width:min(460px, 36vw); min-width:320px;
+    background:var(--bg-raised); color:var(--ink);
+    border-left:1px solid var(--line); border-right:1px solid var(--line);
+    overflow-y:auto; overflow-x:hidden; box-shadow:-6px 0 16px -12px var(--cap-shadow);
   }
-  .modal-overlay[hidden]{display:none;}
-  .modal-box{
-    background:var(--bg-raised); color:var(--ink); border:1px solid var(--line);
-    border-radius:10px; max-width:640px; width:100%; max-height:85vh;
-    overflow-y:auto; box-shadow:0 12px 40px var(--cap-shadow); padding:0;
-  }
+  #policy-info-dock[hidden]{display:none;}
   .modal-head{
-    position:sticky; top:0; display:flex; align-items:center; justify-content:space-between;
+    position:sticky; top:0; z-index:1; display:flex; align-items:center; justify-content:space-between;
     padding:.8rem 1rem; border-bottom:1px solid var(--line); background:var(--bg-raised);
   }
   .modal-head h2{margin:0; font-size:1rem;}
@@ -212,18 +217,41 @@
     word-break:break-all; background:var(--bg); border:1px solid var(--line); border-radius:6px;
     padding:.5rem .6rem;
   }
+  /* Always the first thing rendered in the dock — see renderPolicyInfo() —
+     so stepping through policies with ↑/↓ compares the same chart+cards
+     first, without scrolling past Provenance/Training-run every time. */
+  #policy-info-top{padding-bottom:.6rem; margin-bottom:.6rem; border-bottom:1px solid var(--line);}
   .info-stat-row{display:flex; gap:.6rem; flex-wrap:wrap;}
   .info-stat{
-    flex:1; min-width:110px; border:1px solid var(--line); border-radius:8px;
-    padding:.5rem .6rem; text-align:center;
+    flex:1; min-width:110px; border:1px solid var(--line); border-top:3px solid var(--stat-color, var(--line));
+    border-radius:8px; padding:.5rem .6rem; text-align:center;
   }
-  .info-stat .val{font-size:1.15rem; font-weight:700; font-family:ui-monospace,monospace;}
+  /* Episode length is the metric that matters most right now (see
+     HANDOFF_stability_curriculum.md §6 — it's the one still stuck) — give
+     its card visual priority so it reads as "the one to watch" at a glance. */
+  .info-stat.featured{flex-basis:100%; padding:.7rem .6rem;}
+  .info-stat.featured .val{font-size:1.6rem;}
+  .info-stat .val{font-size:1.15rem; font-weight:700; font-family:ui-monospace,monospace; color:var(--stat-color, var(--ink));}
   .info-stat .lbl{font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
   .info-chart{width:100%; height:110px; display:block;}
+  .info-chart-grid{stroke:var(--line); stroke-width:1;}
+  .info-chart-tick{font-size:5px; fill:var(--muted); font-family:ui-monospace,monospace;}
   .info-chart-caption{font-size:.65rem; color:var(--muted); text-align:right; margin-top:.15rem;}
   .info-terms{display:flex; flex-direction:column; gap:.2rem;}
   .info-term-row{display:grid; grid-template-columns:9rem 1fr auto; align-items:center; gap:.4rem; font-size:.74rem;}
-  .info-term-name{font-family:ui-monospace,monospace; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  /* Didactic tooltip — hover/focus a reward-term name to see what it means,
+     see REWARD_TERM_GLOSSARY in app.js. Plain CSS, no JS positioning: pins
+     above the row so it never gets clipped by the dock's own scroll. */
+  .info-term-name{
+    font-family:ui-monospace,monospace; color:var(--ink-soft); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; position:relative; cursor:help; border-bottom:1px dotted var(--muted);
+  }
+  .info-term-name:hover::after, .info-term-name:focus-visible::after{
+    content:attr(data-tip); position:absolute; left:0; bottom:100%; margin-bottom:6px; z-index:10;
+    width:230px; max-width:60vw; white-space:normal; text-overflow:clip; overflow:visible;
+    background:var(--bg); color:var(--ink-soft); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .6rem; font-size:.72rem; line-height:1.4; box-shadow:0 6px 20px var(--cap-shadow);
+  }
   .info-term-bar-track{position:relative; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden;}
   .info-term-bar{position:absolute; top:0; bottom:0;}
   .info-term-val{font-family:ui-monospace,monospace; text-align:right; white-space:nowrap;}
@@ -438,6 +466,25 @@
     </aside>
   </div>
 
+  <aside id="policy-info-dock" hidden>
+    <div class="modal-head">
+      <h2 id="policy-info-title">Policy</h2>
+      <div class="modal-nav">
+        <button type="button" id="policy-info-prev" class="modal-close" aria-label="Previous policy (up)" title="Previous policy — same as the row above in Policies">&uarr;</button>
+        <button type="button" id="policy-info-next" class="modal-close" aria-label="Next policy (down)" title="Next policy — same as the row below in Policies">&darr;</button>
+        <button type="button" id="policy-info-close" class="modal-close" aria-label="Close">&times;</button>
+      </div>
+    </div>
+    <div id="policy-info-body">Loading&hellip;</div>
+  </aside>
+
+  <!-- #panel is always the LAST flex child of <main> and always a fixed
+       width — its right edge is flush with the viewport edge no matter
+       what. That's deliberate: opening/closing the info dock above must
+       never shift where the Policies/Telemetry/Command controls sit on
+       screen (basic UI hygiene — a control the user already has a mental
+       map of shouldn't move under them). Only #views (the simulator,
+       flex:1) absorbs the dock's width. -->
   <div id="panel" tabindex="0">
     <div id="status-block">
       <h2>Status</h2>
@@ -772,20 +819,6 @@
 </main>
 
 <footer id="footer">connecting&hellip;</footer>
-
-<div id="policy-info-overlay" class="modal-overlay" hidden>
-  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="policy-info-title">
-    <div class="modal-head">
-      <h2 id="policy-info-title">Policy</h2>
-      <div class="modal-nav">
-        <button type="button" id="policy-info-prev" class="modal-close" aria-label="Previous policy (up)" title="Previous policy — same as the row above in Policies">&uarr;</button>
-        <button type="button" id="policy-info-next" class="modal-close" aria-label="Next policy (down)" title="Next policy — same as the row below in Policies">&darr;</button>
-        <button type="button" id="policy-info-close" class="modal-close" aria-label="Close">&times;</button>
-      </div>
-    </div>
-    <div id="policy-info-body">Loading&hellip;</div>
-  </div>
-</div>
 
 <script src="/app.js"></script>
 </body>

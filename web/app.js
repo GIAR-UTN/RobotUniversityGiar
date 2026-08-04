@@ -1766,7 +1766,7 @@ function renderTrainingJobs(jobs) {
 // training info" empty state instead of an error — see policy_info()'s own
 // docstring for why that's a None, not a raised error.
 
-const policyInfoOverlay = $('#policy-info-overlay');
+const policyInfoDock = $('#policy-info-dock');
 const policyInfoTitle = $('#policy-info-title');
 const policyInfoBody = $('#policy-info-body');
 const policyInfoClose = $('#policy-info-close');
@@ -1788,7 +1788,7 @@ function openPolicyInfo(name) {
   policyInfoCurrentName = name;
   policyInfoTitle.textContent = name;
   policyInfoBody.innerHTML = 'Loading…';
-  policyInfoOverlay.hidden = false;
+  policyInfoDock.hidden = false;
   policyInfoOpen = true;
   setKeysArmed();
 
@@ -1815,11 +1815,20 @@ function stepPolicyInfo(delta) {
   if (idx === -1) return;
   const nextIdx = idx + delta;
   if (nextIdx < 0 || nextIdx >= order.length) return;
-  openPolicyInfo(order[nextIdx]);
+  const name = order[nextIdx];
+  // Stepping through policies here is meant for side-by-side comparison —
+  // what you're reading in the dock and what's actually running in the
+  // simulator should always be the same one, so ↑/↓ also switches the
+  // active policy (same request the row's own button sends), not just the
+  // info shown. Opening a SPECIFIC policy's info via its ⓘ button (see
+  // policyButtonRow()) deliberately does NOT do this — inspecting a policy
+  // you're not currently running shouldn't switch you onto it.
+  send('request_switch', { name });
+  openPolicyInfo(name);
 }
 
 function closePolicyInfo() {
-  policyInfoOverlay.hidden = true;
+  policyInfoDock.hidden = true;
   policyInfoOpen = false;
   policyInfoCurrentName = null;
   setKeysArmed();
@@ -1828,7 +1837,9 @@ function closePolicyInfo() {
 policyInfoClose.addEventListener('click', closePolicyInfo);
 policyInfoPrev.addEventListener('click', () => stepPolicyInfo(-1));
 policyInfoNext.addEventListener('click', () => stepPolicyInfo(1));
-policyInfoOverlay.addEventListener('click', (e) => { if (e.target === policyInfoOverlay) closePolicyInfo(); });
+// No backdrop anymore — it's a permanent docked column now, not an overlay,
+// so there's no "outside" click to close it; Escape/✕/nav are the only
+// ways out (see below).
 document.addEventListener('keydown', (e) => {
   if (!policyInfoOpen) return;
   if (e.key === 'Escape') { closePolicyInfo(); return; }
@@ -1888,29 +1899,60 @@ function kvList(pairs) {
   return dl;
 }
 
-// Plain inline SVG polylines — no charting dependency, three series (noise
-// std / reward / episode length) on independent 0–max scales (their units
-// aren't comparable) sharing one x-axis (iteration). Didactic over
-// precise: this is "did it trend the right way", not a dashboard.
+// Shared between the stat cards (renderPolicyInfo) and the chart lines
+// below, so a card's color always matches its curve. episode_length is
+// listed first — it's the metric currently open (see
+// HANDOFF_stability_curriculum.md §6, the plateau that isn't diagnosed
+// yet), everything else is secondary context for now.
+const METRIC_SPECS = [
+  { key: 'episode_length', label: 'Episode length', color: 'var(--accent, #c77b2f)' },
+  { key: 'reward', label: 'Mean reward', color: 'var(--accent2)' },
+  { key: 'noise_std', label: 'Action noise std', color: 'var(--danger, #d9534f)' },
+];
+
+// Plain inline SVG polylines — no charting dependency, three series on
+// independent 0–max scales (their units aren't comparable) sharing one
+// x-axis. Didactic over precise: this is "did it trend the right way", not
+// a dashboard.
+//
+// x-axis is normalized to 0–100% of THIS policy's own run (iteration count
+// varies a lot between a from-scratch run and a resumed curriculum step —
+// see HANDOFF_stability_curriculum.md §5) with gridlines drawn at fixed
+// 0/25/50/75/100% pixel positions. The gridlines, not the data, are what
+// give the eye a constant reference — without them the same pixel column
+// means a different fraction-of-training on every policy, which is what
+// made stepping through policies with ↑/↓ feel like the chart "jumped".
 function renderSeriesChart(series) {
-  const width = 560, height = 100, pad = 4;
+  const width = 560, height = 100, pad = 4, tickH = 8;
+  const plotH = height - tickH;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.classList.add('info-chart');
 
   const iterations = series.map((p) => p.iteration);
   const xMin = Math.min(...iterations), xMax = Math.max(...iterations) || 1;
-  const xScale = (it) => pad + (width - 2 * pad) * (xMax === xMin ? 0 : (it - xMin) / (xMax - xMin));
+  const progress = (it) => (xMax === xMin ? 0 : (it - xMin) / (xMax - xMin)); // 0..1, this run's own span
+  const xScale = (it) => pad + (width - 2 * pad) * progress(it);
 
-  const seriesSpecs = [
-    { key: 'noise_std', color: 'var(--danger, #d9534f)' },
-    { key: 'reward', color: 'var(--accent2)' },
-    { key: 'episode_length', color: 'var(--accent, #c77b2f)' },
-  ];
-  for (const spec of seriesSpecs) {
+  for (const frac of [0, 0.25, 0.5, 0.75, 1]) {
+    const x = xScale(xMin + frac * (xMax - xMin));
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', x.toFixed(1)); line.setAttribute('x2', x.toFixed(1));
+    line.setAttribute('y1', '0'); line.setAttribute('y2', plotH.toFixed(1));
+    line.classList.add('info-chart-grid');
+    svg.appendChild(line);
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('x', x.toFixed(1)); label.setAttribute('y', height - 1);
+    label.setAttribute('text-anchor', frac === 0 ? 'start' : frac === 1 ? 'end' : 'middle');
+    label.classList.add('info-chart-tick');
+    label.textContent = `${Math.round(frac * 100)}%`;
+    svg.appendChild(label);
+  }
+
+  for (const spec of METRIC_SPECS) {
     const values = series.map((p) => p[spec.key]);
     const yMax = Math.max(...values, 1e-6), yMin = Math.min(...values, 0);
-    const yScale = (v) => height - pad - (height - 2 * pad) * ((v - yMin) / ((yMax - yMin) || 1));
+    const yScale = (v) => plotH - pad - (plotH - 2 * pad) * ((v - yMin) / ((yMax - yMin) || 1));
     const points = series.map((p) => `${xScale(p.iteration).toFixed(1)},${yScale(p[spec.key]).toFixed(1)}`).join(' ');
     const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
     line.setAttribute('points', points);
@@ -1922,6 +1964,49 @@ function renderSeriesChart(series) {
   return svg;
 }
 
+// Plain-language explanations for `legged_robot.py`'s `_reward_<name>` /
+// `g1.py`'s `_reward_<name>` functions — this site is didactic first, so a
+// reward term should never appear as an unexplained identifier. Sign
+// convention noted where it isn't obvious ("penalizes X" = negative scale
+// in the task config, "rewards X" = positive). Falls back to the term name
+// itself in renderRewardTerms() if a term isn't listed here yet.
+const REWARD_TERM_GLOSSARY = {
+  base_height: 'Penalizes the pelvis being above/below a target height off the ground — pulls the robot toward a specific standing/crouching posture.',
+  tracking_lin_vel: 'Rewards matching the commanded forward/strafe velocity (the WASD/arrow-key command) — how well it goes where it’s told.',
+  tracking_ang_vel: 'Rewards matching the commanded turn rate (yaw) — how well it turns at the commanded speed.',
+  orientation: 'Penalizes the body tilting away from upright (gravity not pointing straight down in the body frame) — keeps it from leaning or toppling.',
+  lin_vel_z: 'Penalizes vertical (bouncing) velocity of the base — discourages bobbing up and down.',
+  ang_vel_xy: 'Penalizes roll/pitch angular velocity — discourages wobbling side to side or front to back.',
+  contact: 'Rewards feet touching down at the right point in the walking gait cycle — encourages a proper stance/swing rhythm instead of shuffling or dragging.',
+  contact_no_vel: 'Penalizes a foot moving while it’s supposed to be planted on the ground — discourages slipping/skidding on stance feet.',
+  alive: 'A flat per-step bonus just for still being upright — the direct incentive to survive longer, not fall.',
+  hip_pos: 'Penalizes hip joints straying from their default/neutral angle — keeps the stance from splaying too wide or crossing.',
+  feet_swing_height: 'Rewards lifting a swinging foot to a target clearance height — keeps it from scuffing/tripping on the ground mid-step.',
+  feet_air_time: 'Rewards a foot staying airborne for a healthy swing duration — discourages tiny shuffling steps.',
+  dof_acc: 'Penalizes joint acceleration — discourages jerky, high-effort motion.',
+  dof_vel: 'Penalizes joint velocity — discourages fast, thrashy joint motion.',
+  dof_power: 'Penalizes mechanical power drawn by the joints (torque × velocity) — a rough energy-efficiency term.',
+  torques: 'Penalizes the raw torque commanded at each joint — discourages straining the motors.',
+  action_rate: 'Penalizes the action changing a lot step-to-step — discourages twitchy, high-frequency control output.',
+  action_smoothness: 'Penalizes changes in the RATE of action change (second derivative) — a stronger smoothness term than action_rate.',
+  dof_pos_limits: 'Penalizes joints approaching their physical range-of-motion limits — keeps it away from the mechanical stops.',
+  torque_limits: 'Penalizes torque commands approaching the motor’s rated limit.',
+  collision: 'Penalizes non-foot body parts (shins, torso, etc.) touching something — discourages the robot bumping into itself or the environment.',
+  termination: 'A one-time penalty applied the instant an episode ends in failure (e.g. a fall) — separate from `alive`, which pays out every step it doesn’t.',
+  no_fly: 'Penalizes having zero feet in contact with the ground at once — discourages an ungrounded/floating gait.',
+  feet_stumble: 'Penalizes a foot catching on a vertical surface (like a step edge) while moving horizontally — a stumble detector.',
+  feet_slip: 'Penalizes horizontal foot velocity while that foot is in contact — another anti-skidding term, foot-velocity-based rather than binary.',
+  foot_clearance: 'Rewards a swinging foot reaching a target height at the right point in its swing — similar intent to feet_swing_height, different formulation.',
+  foot_landing_vel: 'Penalizes a foot moving fast (vertically) at the moment it touches down — discourages hard, stomping landings.',
+  foot_acc: 'Penalizes foot acceleration — discourages sudden, jerky foot motion.',
+  keep_balance: 'A composite balance-related bonus specific to this task/robot — see `_reward_keep_balance()` in the env source for the exact formula.',
+  dof_vel_stand_still: 'Penalizes joint velocity while the commanded velocity is ~zero — keeps a "stand still" command from turning into idle fidgeting.',
+  dof_pos_stand_still: 'Penalizes joints drifting from default pose while the commanded velocity is ~zero — same idea, for posture instead of motion.',
+  feet_contact_stand_still: 'Rewards keeping both feet planted while the commanded velocity is ~zero — discourages stepping in place when told to stand still.',
+  dof_close_to_default: 'Penalizes joints straying from their default pose in general — a mild prior toward a "neutral" posture.',
+  dof_close_to_default_stand_still: 'Same as dof_close_to_default, but only applied while the commanded velocity is ~zero.',
+};
+
 function renderRewardTerms(terms) {
   const wrap = document.createElement('div');
   wrap.className = 'info-terms';
@@ -1932,7 +2017,8 @@ function renderRewardTerms(terms) {
     const name = document.createElement('span');
     name.className = 'info-term-name';
     name.textContent = term;
-    name.title = term;
+    name.tabIndex = 0;
+    name.setAttribute('data-tip', REWARD_TERM_GLOSSARY[term] || `No description written for "${term}" yet.`);
     const track = document.createElement('div');
     track.className = 'info-term-bar-track';
     const bar = document.createElement('div');
@@ -1955,6 +2041,41 @@ function renderRewardTerms(terms) {
 
 function renderPolicyInfo(info) {
   const frag = document.createDocumentFragment();
+
+  // Result (stat cards + chart) always renders FIRST — see #policy-info-top
+  // in index.html — so comparing policies with ↑/↓ never requires
+  // scrolling past Provenance/Training-run to reach the numbers that
+  // actually matter for comparison.
+  if (info.metrics?.final) {
+    const top = document.createElement('div');
+    top.id = 'policy-info-top';
+
+    const results = infoSection('Result');
+    const statRow = document.createElement('div');
+    statRow.className = 'info-stat-row';
+    for (const spec of METRIC_SPECS) {
+      const val = info.metrics.final[spec.key];
+      const box = document.createElement('div');
+      box.className = spec.key === 'episode_length' ? 'info-stat featured' : 'info-stat';
+      box.style.setProperty('--stat-color', spec.color);
+      const v = document.createElement('div'); v.className = 'val';
+      v.textContent = val != null ? val.toFixed(spec.key === 'reward' || spec.key === 'noise_std' ? 3 : 1) : '–';
+      const l = document.createElement('div'); l.className = 'lbl'; l.textContent = spec.label;
+      box.appendChild(v); box.appendChild(l);
+      statRow.appendChild(box);
+    }
+    results.appendChild(statRow);
+
+    if (info.metrics.series?.length > 1) {
+      results.appendChild(renderSeriesChart(info.metrics.series));
+      const caption = document.createElement('div');
+      caption.className = 'info-chart-caption';
+      caption.textContent = `${info.metrics.series[0].iteration}→${info.metrics.series[info.metrics.series.length - 1].iteration} iterations, normalized to % of this run — episode length / reward / noise std`;
+      results.appendChild(caption);
+    }
+    top.appendChild(results);
+    frag.appendChild(top);
+  }
 
   const provenance = infoSection('Provenance');
   provenance.appendChild(kvList([
@@ -1987,35 +2108,6 @@ function renderPolicyInfo(info) {
     ['Parallel envs', info.num_envs],
   ]));
   frag.appendChild(run);
-
-  if (info.metrics?.final) {
-    const results = infoSection('Result');
-    const statRow = document.createElement('div');
-    statRow.className = 'info-stat-row';
-    const stats = [
-      ['episode_length', 'Episode length', info.metrics.final.episode_length?.toFixed(1)],
-      ['reward', 'Mean reward', info.metrics.final.reward?.toFixed(3)],
-      ['noise_std', 'Action noise std', info.metrics.final.noise_std?.toFixed(3)],
-    ];
-    for (const [, label, val] of stats) {
-      const box = document.createElement('div');
-      box.className = 'info-stat';
-      const v = document.createElement('div'); v.className = 'val'; v.textContent = val ?? '–';
-      const l = document.createElement('div'); l.className = 'lbl'; l.textContent = label;
-      box.appendChild(v); box.appendChild(l);
-      statRow.appendChild(box);
-    }
-    results.appendChild(statRow);
-
-    if (info.metrics.series?.length > 1) {
-      results.appendChild(renderSeriesChart(info.metrics.series));
-      const caption = document.createElement('div');
-      caption.className = 'info-chart-caption';
-      caption.textContent = `over ${info.metrics.series[0].iteration}→${info.metrics.series[info.metrics.series.length - 1].iteration} iterations — noise std / reward / episode length`;
-      results.appendChild(caption);
-    }
-    frag.appendChild(results);
-  }
 
   if (info.metrics?.final_reward_terms) {
     const terms = infoSection('What the reward actually optimized (final iteration)');
