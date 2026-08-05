@@ -107,10 +107,10 @@ mkdir -p checkpoints/<task>
 cp logs/<task>/<run_name>/model_<N>.pt checkpoints/<task>/model_<N>.pt
 ```
 
-`logs/` is gitignored (training scratch — hundreds of intermediate checkpoints per run) and gets cleaned up; `checkpoints/` is not — it's the durable, resumable copy. Resume/fine-tune from it with `finetune_cautious.py` (despite the name, it's generic — see its docstring):
+`logs/` is gitignored (training scratch — hundreds of intermediate checkpoints per run) and gets cleaned up; `checkpoints/` is not — it's the durable, resumable copy. Resume/fine-tune from it with `finetune_from_checkpoint.py`:
 
 ```bash
-python legged_gym/scripts/finetune_cautious.py --task <task> \
+python legged_gym/scripts/finetune_from_checkpoint.py --task <task> \
     --from_checkpoint checkpoints/<task>/model_<N>.pt \
     --max_iterations <more> --headless --cpu --num_envs=64
 ```

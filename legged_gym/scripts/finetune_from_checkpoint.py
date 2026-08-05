@@ -1,21 +1,22 @@
 """
-Fine-tune a g1_* task FROM an already-trained checkpoint, instead of from random init.
+Fine-tune a registered task FROM an already-trained checkpoint, instead of from random init.
 Unlike plain train.py --resume (which only resumes within the SAME task's log root and
 config), this loads a checkpoint from any path — same task (continuing under a revised
-reward, e.g. g1_crouch v1 -> v2) or a different one (g1 -> g1_cautious) — by calling
-ppo_runner.load() directly with an explicit path.
+reward, e.g. g1_crouch v1 -> v2) or a different one (e.g. a g1 checkpoint used to seed a
+g1_crouch run) — by calling ppo_runner.load() directly with an explicit path.
 
 The optimizer state is intentionally NOT loaded (load_optimizer=False): the source
 checkpoint's Adam momentum was accumulated under a different reward function (or a
 revised one), and carrying it over would bias early fine-tuning steps toward the old
 objective instead of adapting cleanly to the new one.
 
-Usage:
-    python legged_gym/scripts/finetune_cautious.py --task g1_cautious \
-        --from_checkpoint logs/g1/<run>/model_1800.pt \
-        --max_iterations 1000 --headless --cpu --num_envs=64
+A pure reward-WEIGHT variant (same reward terms, different numbers — no new task needed)
+doesn't need this script at all: use the Create Policy web panel's clone-from +
+reward-scale overrides instead (see HANDOFF_task_reward_harmony.md). This script is for
+resuming training under a task that's structurally different from the source checkpoint's.
 
-    python legged_gym/scripts/finetune_cautious.py --task g1_crouch \
+Usage:
+    python legged_gym/scripts/finetune_from_checkpoint.py --task g1_crouch \
         --from_checkpoint logs/g1_crouch/<run>/model_1000.pt \
         --max_iterations 1500 --headless --cpu --num_envs=64
 """
@@ -28,9 +29,9 @@ from legged_gym.utils import task_registry
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fine-tune a g1_* task from an existing checkpoint")
-    parser.add_argument('--task', type=str, default='g1_cautious',
-                         help="registered task to train under (e.g. g1_cautious, g1_crouch)")
+    parser = argparse.ArgumentParser(description="Fine-tune a registered task from an existing checkpoint")
+    parser.add_argument('--task', type=str, required=True,
+                         help="registered task to train under (e.g. g1, g1_crouch)")
     parser.add_argument('--from_checkpoint', type=str, required=True,
                          help="path to the checkpoint to start from")
     parser.add_argument('--max_iterations', type=int, default=1000,
@@ -57,7 +58,7 @@ def main():
     print(f"Loading base weights from: {cli.from_checkpoint} (optimizer state NOT carried over)")
     ppo_runner.load(cli.from_checkpoint, load_optimizer=False)
     print(f"Resumed at iteration {ppo_runner.current_learning_iteration}, "
-          f"fine-tuning +{cli.max_iterations} more under g1_cautious reward "
+          f"fine-tuning +{cli.max_iterations} more under {cli.task}'s reward "
           f"-> target iteration {ppo_runner.current_learning_iteration + cli.max_iterations}")
 
     log_dir = ppo_runner.log_dir

@@ -13,10 +13,10 @@ find it once this exits.
 
 Three "target" concepts the UI exposes map directly onto flags here:
   - relative target: --from_checkpoint fine-tunes an existing policy's
-    weights (same pattern as scripts/finetune_cautious.py) instead of
+    weights (same pattern as scripts/finetune_from_checkpoint.py) instead of
     training from random init — optimizer state is intentionally NOT
-    carried over (see finetune_cautious.py's docstring for why). The new
-    policy is defined relative to an old one.
+    carried over (see finetune_from_checkpoint.py's docstring for why). The
+    new policy is defined relative to an old one.
   - measurement target: --cmd_*_range overrides the velocity command
     envelope (env_cfg.commands.ranges) the policy is trained across — a
     measured quantity (m/s, rad/s), not a reward-shaping knob.
@@ -33,10 +33,11 @@ whichever is hit first stops training (see the chunked learn() loop below).
 At least one must be given.
 
 Usage (as composed by the web UI; also runnable by hand):
-    python legged_gym/scripts/web_train.py --task g1_cautious --name my_policy \\
+    python legged_gym/scripts/web_train.py --task g1 --name my_policy \\
         --max_iterations 500 --max_minutes 30 --num_envs 64 --headless --cpu \\
         --from_checkpoint logs/g1/<run>/model_1800.pt \\
         --cmd_vx_range -0.5 0.5 --base_height_target 0.5 --push_robots on \\
+        --reward_scale tracking_lin_vel 0.5 --reward_scale action_rate -0.1 \\
         --result_path /tmp/result.json
 """
 import argparse

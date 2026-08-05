@@ -22,7 +22,7 @@ README is preserved as `UPSTREAM_README.md`.
 | Name | What it is | Path | Real / dummy |
 |---|---|---|---|
 | `stable` | unitree_rl_gym's shipped pretrained G1 checkpoint. Verified drop-in compatible with this fork's Genesis env (same URDF, joint order, PD gains). Dramatically more stable than our from-scratch run; treated as the reference policy. | `/Users/josetabuyo/Development/GIAR/unitree_rl_gym/deploy/pre_train/g1/motion.pt` (separate clone of the ORIGINAL unitree_rl_gym repo) | Real |
-| `cautious` | Fine-tuned by **resuming from the stable checkpoint's weights** under a reward that heavily penalizes torque/joint-velocity. Config: `G1CautiousCfg` in `legged_gym/envs/g1/g1_config.py`, task name `g1_cautious`. | `logs/g1_cautious/Jul21_16-19-46_/exported/policy_lstm_1.pt` | Dummy — exists to exercise the switch mechanism, not a genuinely useful gait |
+| `cautious` | Fine-tuned by **resuming from the stable checkpoint's weights** under a reward that heavily penalizes torque/joint-velocity. Trained under a since-retired `g1_cautious` task (`G1CautiousCfg` — removed, see `HANDOFF_task_reward_harmony.md`: it was a pure reward-weight variant of `g1`, no structural difference). The checkpoint itself is untouched; only the registered-task path to reproduce/continue it is gone — reproduce via `g1` + clone-from + reward-scale overrides in the Create Policy panel instead. | `logs/g1_cautious/Jul21_16-19-46_/exported/policy_lstm_1.pt` | Dummy — exists to exercise the switch mechanism, not a genuinely useful gait |
 | `scratch_wobbly` | 1800 PPO iterations from scratch on Genesis/CPU (task `g1`, no fine-tune, no borrowed weights). Works but wobblier than `stable`; kept as a real (if inferior) independently-trained alternative rather than just a superseded run. | `logs/g1/Jul21_15-55-39_/exported/policy_lstm_1.pt` | Real |
 | `undertrained_dummy` | Same `g1` task, checkpointed at only 300 of 1800 iterations — barely past random initial behavior. A second, more extreme test dummy for exercising the switch/cross-fade/safety path against a genuinely bad policy (distinct from `cautious`, which is deliberately conservative rather than bad). | `logs/g1/Jul21_13-49-44_/exported/policy_lstm_1.pt` | Dummy |
 | `crouch` | Genuinely new skill, trained from scratch in this fork (not a fine-tune of `stable`): holds a static squat (`base_height_target=0.6` vs. `stable`'s ~0.78m) instead of walking. Config: `G1CrouchCfg`/`G1CrouchCfgPPO` in `legged_gym/envs/g1/g1_config.py`, task `g1_crouch` — velocity commands pinned to zero (no gait to learn) and training-time pushes disabled for faster first convergence (see class docstring). 1000 PPO iterations, ~15 min on this Mac's CPU (num_envs=64) — converged much faster than `scratch_wobbly`'s 1800-iteration walk, as expected for a static-balance vs. full-gait task. Survived the swap demo's default random pushes/commands in a headless smoke test without tripping `SafetyGovernor`. | `logs/g1_crouch/Jul28_13-46-44_/exported/policy_lstm_1.pt` | Real |
@@ -390,7 +390,7 @@ launcher to share across).
 **The two "target" concepts the user asked for, and what they map to:**
 - **Relative target** — "clone from" an existing loaded policy. Resolves to `--from_checkpoint <path>`,
   fine-tuning that policy's *weights* (optimizer state intentionally NOT carried over — same reasoning as the
-  pre-existing `scripts/finetune_cautious.py`, which this generalizes). `--max_iterations` (exposed as "time
+  pre-existing `scripts/finetune_from_checkpoint.py`, which this generalizes). `--max_iterations` (exposed as "time
   budget" in the UI) is how long that fine-tune runs.
 - **Measurement target** — the velocity command envelope (`--cmd_vx_range`/`--cmd_vy_range`/`--cmd_yaw_range`,
   new flags on `web_train.py` only, not on `train.py` itself) overrides `env_cfg.commands.ranges` before the
@@ -436,6 +436,26 @@ with the real traceback in the job's log file, not a crash.
   would be slow, not unsafe, but the UI doesn't warn about it.
 - If two jobs for policies with the *same* name both complete, the second `add_policy()` silently overwrites
   the first in the supervisor (last-write-wins) — no UI-level rename/collision handling yet.
+
+## 5b. Rule: when does a change need a new registered task? (see `HANDOFF_task_reward_harmony.md`)
+
+The Create Policy panel (§5a) and `legged_gym.utils.task_registry.TaskRegistry.register(...)`
+(`legged_gym/envs/__init__.py`) both answer the same question — "what should this policy do?" — at very
+different levels of curation. Without a rule, that pulls people toward writing a new task class for things
+the UI already covers, which is how `g1_cautious` ended up 100% redundant with a `g1` clone + 5 reward-scale
+overrides (full analysis in `HANDOFF_task_reward_harmony.md`).
+
+**The rule:** register a new task only if the change is structural —
+
+- a new reward TERM/function (not just a different weight on an existing one),
+- a new termination condition,
+- a change to the observation or action space, or
+- a different robot asset/URDF.
+
+If the change is only a number or range on a reward the task already defines, it belongs in the UI — a
+reward-scale override (or, once it exists, a saved Create Policy preset) on the existing task — not a new
+`task_registry.register(...)` entry. This is what keeps "task" (§1 of the harmony doc, the community-standard
+`legged_gym`/Isaac-Gym-Envs unit) and "UI override" from silently duplicating each other.
 
 ## 6. Definition of done for next session
 

@@ -71,26 +71,17 @@ class G1RoughCfgPPO(LeggedRobotCfgPPO):
         experiment_name = 'g1'
 
 
-class G1CautiousCfg(G1RoughCfg):
-    """Swap-experiment variant: same 12 actions / 47 obs, same PD gains, same default pose —
-    only the reward weights differ, biasing toward a slower, more energy-conserving gait
-    instead of G1RoughCfg's default. Intended to be TorchScript-swappable with the g1 policy
-    at inference time, since observation/action shapes match exactly."""
-    class rewards(G1RoughCfg.rewards):
-        class scales(G1RoughCfg.rewards.scales):
-            tracking_lin_vel = 0.5       # was 1.0 — less eager to chase commanded speed
-            dof_acc = -2.5e-6            # was -2.5e-7 — 10x more averse to jerky joints
-            dof_vel = -1e-2              # was -1e-3 — 10x more averse to fast joints
-            action_rate = -0.1           # was -0.01 — 10x more averse to changing its mind
-            torques = -0.0002            # not penalized at all in G1RoughCfg — added here
-
-
-class G1CautiousCfgPPO(G1RoughCfgPPO):
-    class runner(G1RoughCfgPPO.runner):
-        policy_class_name = "ActorCriticRecurrent"
-        max_iterations = 10000
-        run_name = ''
-        experiment_name = 'g1_cautious'
+# A task used to be registered here (`G1CautiousCfg`, retired — see
+# HANDOFF_task_reward_harmony.md) that only changed 5 reward-scale numbers on top of
+# G1RoughCfg's own terms — no new reward term, no obs/action change. Its trained checkpoint
+# (logs/g1_cautious/) is untouched and still loadable; only the registered-task path to
+# reproduce/continue that config was retired, since a pure reward-weight variant like that
+# doesn't need a task class at all: from the Create Policy
+# web panel, pick task=g1, clone-from=stable (or any g1 policy), and set overrides in the
+# "Reward weights (advanced)" grid for whatever terms you want different — e.g. lower
+# tracking_lin_vel for a slower gait, raise dof_acc/dof_vel/action_rate for smoother motion.
+# Only write a new `G1...Cfg` class here if the change adds a reward TERM, a termination
+# condition, or an obs/action-space change — see HANDOFF_control_web.md §5b.
 
 
 class G1CrouchCfg(G1RoughCfg):

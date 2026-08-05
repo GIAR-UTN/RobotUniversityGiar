@@ -15,7 +15,7 @@ just be a second, unsynchronized copy of what the unified web already does.
 Usage:
     python legged_gym/scripts/swap_experiment.py \
         --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
-        --policy cautious:logs/g1_cautious/<run>/exported/policy_lstm_1.pt \
+        --policy crouch:logs/g1_crouch/<run>/exported/policy_lstm_1.pt \
         --active stable
 """
 import argparse
