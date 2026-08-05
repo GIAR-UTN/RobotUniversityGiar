@@ -16,6 +16,7 @@ write-up in the README.
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 import torch
@@ -68,6 +69,36 @@ class ControlService:
         self.supervisor.remove_policy(name)
         if self.training is not None:
             self.training.forget_source(name)
+
+    _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+    def rename_policy(self, old_name: str, new_name: str) -> None:
+        """Renames a policy everywhere its identity is recorded: the
+        running supervisor (so it stays switchable/active under the new
+        name, mid-switch or not — see PolicySupervisor.rename_policy()),
+        and its `policies/<name>/` folder plus clone-from catalog entry
+        (see TrainingManager.rename_policy()). Requires a dedicated
+        training folder, same restriction as the delete path's
+        forget_source() — `stable` and other bare --policy CLI sources
+        have no folder to rename and are rejected by the training-side
+        call below. Does the supervisor rename first: if the training-side
+        folder rename then fails (name collision, no folder), the running
+        policy is left renamed but the catalog/disk are untouched, which
+        is recoverable (rename back) rather than the reverse — a folder
+        renamed on disk with the supervisor still pointing at the old
+        name, which would make the policy unswitchable."""
+        new_name = new_name.strip()
+        if not new_name:
+            raise ValueError("new name can't be empty")
+        if not self._NAME_RE.match(new_name):
+            raise ValueError("policy names may only contain letters, digits, '_', '-', '.'")
+        if new_name == "damping":
+            raise ValueError("'damping' is reserved and can't be used as a policy name")
+        if new_name == old_name:
+            return
+        self.supervisor.rename_policy(old_name, new_name)
+        if self.training is not None:
+            self.training.rename_policy(old_name, new_name)
 
     def policy_info(self, name: str) -> Optional[dict]:
         """Backs the Policies list's "info" popup — everything known about

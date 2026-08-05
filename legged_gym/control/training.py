@@ -339,6 +339,49 @@ class TrainingManager:
         },
     }
 
+    # Short explanations for reward-scale terms in the raw "Reward weights
+    # (advanced)" grid (renderRewardScaleFields() in app.js) that aren't
+    # self-explanatory from their name alone — NOT a promotion to
+    # VARIABLE_REGISTRY above. These are reward WEIGHTS (how much a term is
+    # pushed), not target VARIABLES (what value a term converges to), so they
+    # stay in the raw grid; this dict only adds the missing context (see
+    # HANDOFF_task_reward_harmony.md §3/§5 step 2). Add an entry here whenever
+    # a reward term's purpose isn't obvious from `TRACKING_LIN_VEL`-style
+    # all-caps rendering alone — most don't need one.
+    REWARD_SCALE_NOTES = {
+        "crouch_depth": "Open-ended crouch reward (see G1CrouchCfg / _reward_crouch_depth in "
+                         "legged_robot.py) — no fixed setpoint, the robot settles as low as it can "
+                         "sustain while staying stable. Higher weight pushes lower. Its zero-point "
+                         "(crouch_depth_reference, not shown here) is a numerical constant, not a "
+                         "tunable target.",
+    }
+
+    # One-line reason each registered task exists as a TASK rather than a UI override on
+    # its robot's base task — i.e. what's structural about it (new reward term, obs/action
+    # space, termination condition, or training architecture), per the rule in
+    # HANDOFF_control_web.md §5b. Populated from the audit in
+    # HANDOFF_task_reward_harmony.md §4a. A task's own base (g1, go2, k1, tron1pf, tron1sf)
+    # doesn't need an entry — it's the default, nothing to explain relative to itself.
+    TASK_NOTES = {
+        "g1_crouch": "Adds an open-ended crouch_depth reward term (no fixed height setpoint) instead of "
+                     "g1's fixed base_height target — a new reward TERM, not just a different weight.",
+        "k1_deepmimic": "Motion-imitation architecture: frame-stacked observations, 22 actions, its own PPO setup.",
+        "k1_motion_vis": "Visualization only, not for training — a separate env class with no training loop.",
+        "k1_amp": "Adversarial Motion Prior: adds a discriminator/replay-buffer training pipeline, not just reward weights.",
+        "k1_cts_amp": "Concurrent teacher-student + AMP (unvalidated): splits envs into teacher/student, different privileged-obs shape.",
+        "g1_deepmimic": "Same motion-imitation architecture as k1_deepmimic, 29 DoF.",
+        "g1_motion_vis": "Visualization only, not for training — same pattern as k1_motion_vis.",
+        "go2_wtw": "Walk-These-Ways: behavior-parameter resampling (foot clearance/pitch/height) built into the env, different obs shape.",
+        "go2_ts": "Teacher-student architecture: privileged/history observations and an encoder, not just reward weights.",
+        "go2_ee": "Explicit-estimator architecture: different critic-observation shape.",
+        "go2_cts": "Concurrent teacher-student: splits envs into teacher/student groups.",
+        "go2_dreamwaq": "DreamWaQ architecture: its own decoder output and observation shape.",
+        "go2_cat": "Constraint-as-termination: adds a new termination condition on top of go2_ts, not just reward weights.",
+        "go2_ts_depth": "Teacher-student + depth camera (unvalidated): adds camera observations, much larger privileged-obs.",
+        "go2_nav": "Navigation task: observations include a heightmap, different reward/termination structure.",
+        "tron1pf_ee": "Explicit-estimator architecture (same pattern as go2_ee): different critic-observation shape.",
+    }
+
     @staticmethod
     def _train_checkpoint_from_export(export_path: Optional[str]) -> Optional[str]:
         """`checkpoint` (export_policy()'s output, e.g. `<log_dir>/exported/
@@ -567,12 +610,42 @@ class TrainingManager:
             except OSError:
                 pass
 
+    def rename_policy(self, old_name: str, new_name: str) -> None:
+        """Renames a UI-trained policy's dedicated `policies/<name>/`
+        folder — the counterpart to finalize_policy() creating it and
+        forget_source() deleting it. Only works for a policy that HAS such
+        a folder (i.e. one this UI trained or cloned into existence); a
+        bare --policy CLI source like `stable`, which lives wherever its
+        checkpoint originally was and has no folder of its own to rename,
+        is rejected rather than silently doing nothing. meta.json's
+        contents don't need rewriting — the name isn't stored inside it,
+        policy_info() stamps it back in from the folder name on every
+        read (see its docstring)."""
+        old_dir = POLICIES_DIR / old_name
+        if not old_dir.is_dir():
+            raise ValueError(f"'{old_name}' has no dedicated policies/ folder — nothing to rename")
+        new_dir = POLICIES_DIR / new_name
+        if new_dir.exists():
+            raise FileExistsError(f"a policy named '{new_name}' already exists")
+        old_dir.rename(new_dir)
+
+        source = self.policy_sources.pop(old_name, None)
+        if source is not None:
+            def _repoint(path: Optional[str]) -> Optional[str]:
+                if not path or Path(path).parent != old_dir:
+                    return path
+                return str(new_dir / Path(path).name)
+            source["checkpoint"] = _repoint(source.get("checkpoint"))
+            source["train_checkpoint"] = _repoint(source.get("train_checkpoint"))
+            self.policy_sources[new_name] = source
+
     def catalog(self, compatible_tasks: Optional[Sequence[str]] = None) -> dict:
         from legged_gym.utils import task_registry
         all_tasks = sorted(task_registry.task_classes.keys())
         tasks = sorted(compatible_tasks) if compatible_tasks is not None else all_tasks
         return {
             "tasks": tasks,
+            "task_notes": {t: self.TASK_NOTES[t] for t in tasks if t in self.TASK_NOTES},
             "base_policies": [
                 {"name": name, "base_height_target": self._task_base_height(info["task"]), **info}
                 for name, info in sorted(self.policy_sources.items())
@@ -648,6 +721,9 @@ class TrainingManager:
             "base_height_target": self._task_base_height(task),
             "variables": variables,
             "reward_scales": reward_scales,
+            "reward_scale_notes": {
+                term: note for term, note in self.REWARD_SCALE_NOTES.items() if term in reward_scales
+            },
         }
 
     # ---- launching ----

@@ -195,6 +195,14 @@
     padding:.8rem 1rem; border-bottom:1px solid var(--line); background:var(--bg-raised);
   }
   .modal-head h2{margin:0; font-size:1rem;}
+  .policy-info-title-input{
+    margin:0; font-size:1rem; font-family:inherit; font-weight:600; color:var(--ink);
+    background:transparent; border:1px solid transparent; border-radius:6px;
+    padding:.15rem .4rem; min-width:0; flex:1 1 auto;
+  }
+  .policy-info-title-input:hover{border-color:var(--line);}
+  .policy-info-title-input:focus{outline:none; border-color:var(--accent2); background:var(--bg);}
+  .policy-info-title-input:disabled{color:var(--muted); cursor:not-allowed;}
   .modal-nav{display:flex; align-items:center; gap:.35rem; flex:none;}
   .modal-close{
     flex:none; width:28px; height:28px; border-radius:6px; border:1px solid var(--line);
@@ -480,7 +488,8 @@
 
   <aside id="policy-info-dock" hidden>
     <div class="modal-head">
-      <h2 id="policy-info-title">Policy</h2>
+      <input id="policy-info-title" class="policy-info-title-input" type="text" value="Policy"
+             aria-label="Policy name — edit and press Enter to rename" autocomplete="off" spellcheck="false">
       <div class="modal-nav">
         <button type="button" id="policy-info-prev" class="modal-close" aria-label="Previous policy (up)" title="Previous policy — same as the row above in Policies">&uarr;</button>
         <button type="button" id="policy-info-next" class="modal-close" aria-label="Next policy (down)" title="Next policy — same as the row below in Policies">&darr;</button>
@@ -724,6 +733,7 @@
 
           <div class="field-group field-group-target">
             <p class="field-group-label"><span class="dot"></span>Target — what the trained policy should do</p>
+            <p class="field-group-note">Command envelope, Target variable, Push disturbances and Exploration noise below are the guided fields — each is one specific, explained knob. Reward weights (advanced), at the bottom, is the raw fallback: every term this task's reward defines, unexplained unless a term has a note. Prefer the guided fields; drop to the raw grid only for what they don't cover yet.</p>
 
             <div class="field-row">
               <label>Command envelope — measurement targets (m/s, m/s, rad/s)</label>

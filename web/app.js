@@ -189,8 +189,8 @@ function policyButtonRow(name, active) {
   const info = document.createElement('button');
   info.className = 'policy-info-btn';
   info.type = 'button';
-  info.textContent = 'ⓘ';
-  info.title = `Info — how "${name}" was trained`;
+  info.textContent = '⚙';
+  info.title = `Config — how "${name}" was trained, rename it`;
   info.onclick = (e) => { e.stopPropagation(); openPolicyInfo(name); };
   row.appendChild(info);
 
@@ -245,6 +245,20 @@ function loadPolicyOrder() {
 
 function savePolicyOrder(names) {
   localStorage.setItem(POLICY_ORDER_KEY, JSON.stringify(names));
+}
+
+// Renaming a policy must not silently bump it to the bottom of the drag
+// order (and therefore lose its shortcut key, which is position-based —
+// see the comment above) just because its old name no longer matches
+// anything in the saved list. Swap the name in place instead of leaving
+// the stale entry for applyPolicyOrder() to filter out and re-append.
+function renamePolicyOrder(oldName, newName) {
+  const saved = loadPolicyOrder();
+  if (!saved) return;
+  const idx = saved.indexOf(oldName);
+  if (idx === -1) return;
+  saved[idx] = newName;
+  savePolicyOrder(saved);
 }
 
 // Applies the saved drag order on top of the backend's raw name list —
@@ -528,7 +542,14 @@ let openDrawerName = null;
 let policyInfoOpen = false; // true while the policy info popup is up — see openPolicyInfo()
 
 function setKeysArmed() {
-  keysArmed = openDrawerName === null && !policyInfoOpen;
+  // Opening the policy detail dock must NOT disarm robot-control keys —
+  // it's a side panel, not something covering the sim view the way a
+  // drawer does (see openDrawerName's comment above). It used to also gate
+  // on !policyInfoOpen because the dock's own keydown listener hijacked
+  // ArrowUp/ArrowDown for policy nav; that hijack is gone (nav is
+  // button/click-only now — see the prev/next wiring below), so there's no
+  // longer any reason for the dock to touch robot-control arming at all.
+  keysArmed = openDrawerName === null;
 }
 
 function closeDrawer() {
@@ -1332,11 +1353,11 @@ function refreshRewardScaleFields() {
   // writing a saved value into them — they don't exist until this async
   // fetch resolves and renderRewardScaleFields() builds the DOM.
   return call('task_defaults', { task: effectiveTask }).then((d) => {
-    renderRewardScaleFields(d.reward_scales || {});
-  }).catch(() => renderRewardScaleFields({}));
+    renderRewardScaleFields(d.reward_scales || {}, d.reward_scale_notes || {});
+  }).catch(() => renderRewardScaleFields({}, {}));
 }
 
-function renderRewardScaleFields(scales) {
+function renderRewardScaleFields(scales, notes = {}) {
   // Preserve whatever the user already typed for a term that's still
   // present after a task change (fine-tuning bases share the same reward
   // vocabulary almost always) — only terms that no longer exist get
@@ -1351,8 +1372,9 @@ function renderRewardScaleFields(scales) {
     const wrap = document.createElement('div');
     wrap.className = 'reward-scale-field';
     const label = document.createElement('label');
-    label.textContent = term;
+    label.textContent = notes[term] ? `${term} ⓘ` : term;
     label.htmlFor = `train-reward-${term}`;
+    if (notes[term]) label.title = notes[term];
     const input = document.createElement('input');
     input.type = 'number';
     input.step = 'any';
@@ -1506,6 +1528,8 @@ function refreshTrainingCatalog() {
     for (const t of catalog.tasks) {
       const opt = document.createElement('option');
       opt.value = t; opt.textContent = t;
+      const note = catalog.task_notes?.[t];
+      if (note) opt.title = note;
       trainTask.appendChild(opt);
     }
     if (catalog.tasks.includes(prevTask)) trainTask.value = prevTask;
@@ -1802,7 +1826,7 @@ function policyOrderNames() {
 
 function openPolicyInfo(name) {
   policyInfoCurrentName = name;
-  policyInfoTitle.textContent = name;
+  policyInfoTitle.value = name;
   policyInfoBody.innerHTML = 'Loading…';
   policyInfoDock.hidden = false;
   policyInfoOpen = true;
@@ -1853,17 +1877,53 @@ function closePolicyInfo() {
 policyInfoClose.addEventListener('click', closePolicyInfo);
 policyInfoPrev.addEventListener('click', () => stepPolicyInfo(-1));
 policyInfoNext.addEventListener('click', () => stepPolicyInfo(1));
+
+// ---- inline rename — the title is now an editable field. Renaming a
+// policy touches more than one file on disk (see TrainingManager.
+// rename_policy()'s docstring), so this always goes through the backend
+// call rather than just relabeling something client-side. ----
+function commitPolicyRename() {
+  const oldName = policyInfoCurrentName;
+  const newName = policyInfoTitle.value.trim();
+  if (!oldName || !newName || newName === oldName) {
+    policyInfoTitle.value = oldName || '';
+    return;
+  }
+  policyInfoTitle.disabled = true;
+  call('rename_policy', { old_name: oldName, new_name: newName }).then(() => {
+    policyInfoCurrentName = newName;
+    policyInfoTitle.disabled = false;
+    policyInfoTitle.value = newName;
+    renamePolicyOrder(oldName, newName);
+    // The Policies list picks up the new name from the next status push;
+    // the Clone-from catalog is a separate fetch, same reason
+    // delete_policy's onclick above refreshes it explicitly.
+    refreshTrainingCatalog();
+  }).catch((err) => {
+    policyInfoTitle.disabled = false;
+    policyInfoTitle.value = oldName;
+    window.alert(`Couldn't rename "${oldName}": ${err.message}`);
+  });
+}
+policyInfoTitle.addEventListener('blur', commitPolicyRename);
+policyInfoTitle.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); policyInfoTitle.blur(); }
+  else if (e.key === 'Escape') {
+    e.preventDefault();
+    policyInfoTitle.value = policyInfoCurrentName || '';
+    policyInfoTitle.blur();
+  }
+});
+
 // No backdrop anymore — it's a permanent docked column now, not an overlay,
-// so there's no "outside" click to close it; Escape/✕/nav are the only
-// ways out (see below).
+// so there's no "outside" click to close it; Escape/✕/prev-next buttons are
+// the only ways out. Moving between policies is button/click-only (see
+// policyInfoPrev/Next above) — arrow keys are NOT bound to this dock, so
+// they always mean robot-control, dock open or not (see setKeysArmed()).
 document.addEventListener('keydown', (e) => {
   if (!policyInfoOpen) return;
+  if (e.target === policyInfoTitle) return; // renaming — the input's own handler owns Enter/Escape
   if (e.key === 'Escape') { closePolicyInfo(); return; }
-  // ArrowUp/ArrowDown double as the same "row above/below" nav as the
-  // buttons — comparing a chart against its neighbor shouldn't require
-  // reaching for the mouse every time.
-  if (e.key === 'ArrowUp') { e.preventDefault(); stepPolicyInfo(-1); }
-  else if (e.key === 'ArrowDown') { e.preventDefault(); stepPolicyInfo(1); }
 }, true);
 
 function renderPolicyInfoEmpty() {
