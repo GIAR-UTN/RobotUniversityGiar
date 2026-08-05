@@ -205,3 +205,55 @@ Install [go2_deploy](https://github.com/lupinjia/go2_deploy) for MuJoCo sim2sim:
 - 24+ registered tasks across 5 robot types (GO2, G1, K1, TRON1PF, TRON1SF)
 - 8 PPO algorithm variants (TS, EE, CTS, AMP, DreamWaQ, etc.)
 - Reference: External docs at https://genesis-lr-doc.readthedocs.io/en/latest/
+
+## FORK ADDITIONS: unified control web (`legged_gym/control/`, `web/`)
+
+Networked control layer this fork adds on top of upstream legged_gym — lets a browser (or
+eventually an LLM) drive policy switching, training, and telemetry over WebSocket, one call
+surface shared identically by sim and real hardware. See `README.md` §4/§5 for the narrative
+version; this section is the quick map + the rules that keep it from rotting.
+
+| Component | Location | Role |
+|---|---|---|
+| `RobotAdapter` (Protocol) | `control/adapter.py` | Sim/real-symmetric state+action interface. `SimAdapter` — working, tested. `RealAdapter` — ported but untested, no hardware available. |
+| `Policy` | `control/policy.py` | Wraps a TorchScript/ONNX checkpoint; `load_policy()` auto-detects export convention (this fork's LSTM `(action,h,c)` vs. unitree_rl_gym's stateless) and format (`.pt`/`.onnx`). |
+| `PolicySupervisor` | `control/supervisor.py` | Owns every loaded policy, the active/pending switch, and the cross-fade ramp between them. `rename_policy()`/`add_policy()`/`remove_policy()` are the mutation surface. |
+| `SafetyGovernor` | `control/safety.py` | The ONLY component that decides "is it safe to switch right now." Forces the `damping` fallback on a fall/NaN/estop and keeps forcing it until `safety.reset()`. |
+| `Selector` (Protocol) | `control/selector.py` | Autonomous switch proposals. Only impl (`TiltRecoverySelector`) has no hysteresis — do not wire it into a live demo without adding one; it will fight a human's manual switch. |
+| `TrainingManager` | `control/training.py` | Launches/polls web-triggered training jobs as subprocesses; owns each `policies/<name>/` folder (checkpoint + raw + meta.json) and the clone-from catalog. |
+| `ControlService` | `control/service.py` | **The single call surface** — `request_switch`/`status`/`pause`/`resume`/`estop`/`rename_policy`/`delete_policy`/`start_training`/... Human (viser/web buttons) and autonomous (`Selector`) callers use the exact same methods. |
+| `ControlServer` | `control/transport.py` | FastAPI+uvicorn WebSocket wrapper around `ControlService` — JSON-RPC-shaped messages on `/ws`, ~10Hz status broadcast, also serves `web/` and `docs/` as static files. |
+| Web UI | `web/index.html`, `web/app.js`, `web/keymap.json` | Plain HTML/JS/CSS, no build step — talks to `ControlService` only through `/ws`. |
+
+**Rules — violating these has already caused real bugs once; don't reintroduce them:**
+
+1. **Never bypass `SafetyGovernor`.** Only it confirms a policy switch; only `safety.reset()`
+   clears a trip. No "force switch" shortcut anywhere upstream of it.
+2. **Nothing outside `control/` touches `RobotAdapter`/`PolicySupervisor` directly** — always go
+   through `ControlService`. This symmetry is what keeps the web UI, viser, and any future
+   real-robot/LLM caller interchangeable.
+3. **`ControlService` is only ever called from the sim loop's own thread.** `ControlServer`'s
+   socket handlers enqueue `(websocket, msg)` on a `queue.Queue`; `drain_commands()` executes
+   each one on the sim thread, once per tick. `estop` always runs first within a batch and is
+   never blocked by other queued commands.
+4. **New registered task vs. UI override — pick deliberately.** Register a new
+   `task_registry` task only for a STRUCTURAL change: a new reward TERM/function, a new
+   termination condition, an obs/action-space change, or a different robot asset. A pure
+   reward-*weight* variant belongs in the Create Policy panel as a clone-from + reward-scale
+   override on an existing task, not a new `G1...Cfg` class + `task_registry.register(...)`
+   entry — `g1_cautious` was retired for being exactly that redundancy.
+5. **No build-step frontend.** `web/`, like `docs/index.html`, stays plain HTML/JS/CSS — this
+   is course material meant to be cloned and read, not a bundled SPA.
+6. **Don't "finish" `RealAdapter` without hardware.** Its `NotImplementedError` sections carry
+   exact porting instructions for when a real G1 + `unitree_sdk2py` exist — speculative
+   completion would just be untested code wearing a tested costume.
+7. **A policy's identity lives in more than one place.** `PolicySupervisor`'s dict key, its
+   `policies/<name>/` folder + `TrainingManager`'s catalog entry, and the web UI's drag-order in
+   `localStorage` all encode the same name. Always rename through
+   `ControlService.rename_policy()` (composes the first two) — anything else desyncs them.
+
+**Testing:** `tests/test_control_transport.py` is the transport smoke test (fake
+`ControlService`, real WebSocket round-trip). `tests/test_delete_policy.py` and
+`tests/test_rename_policy.py` unit-test the supervisor/training-manager/service layers directly
+— no live server needed. Extend these when touching `control/`; a manual browser click-through
+is not a substitute.

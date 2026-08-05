@@ -68,3 +68,9 @@ outputs/
 
 # Environment variables (local secrets / runtime config)
 .env
+
+# Session handoff notes — local continuity scratch for picking up a thread
+# next session, not durable project docs. Anything worth keeping from one
+# gets folded into README.md/AGENTS.md instead (see e.g. §5b/§5c, AGENTS.md's
+# "FORK ADDITIONS" section) and the handoff file itself stays local-only.
+HANDOFF_*.md
