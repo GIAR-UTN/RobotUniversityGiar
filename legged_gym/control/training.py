@@ -285,6 +285,25 @@ class TrainingManager:
             # scaling on CPU). Gets less relevant once real history exists;
             # estimate()/the UI prefer measured numbers when they're available.
             "suggested_num_envs": {"comfortable": max(4, cpu_count * 4), "upper": max(8, cpu_count * 16)},
+            # NOT measured on THIS machine — unlike everything above, Kaggle
+            # jobs run on Kaggle's infrastructure, not here, so this can't be
+            # a live probe (there's no session to query without spending a
+            # kernel). These are documented facts about what Kaggle's free
+            # tier actually hands out, confirmed repeatedly this session via
+            # real kernel runs (torch.cuda.get_device_capability(0) and
+            # nvidia-smi output inside real kernels) — see
+            # HANDOFF_kaggle_cloud_gpu.md. The Hardware panel labels this
+            # section "typical", not "current", for exactly that reason.
+            "kaggle_profile": {
+                "gpu": "Tesla P100-PCIE-16GB",
+                "compute_capability": "6.0 (Pascal)",
+                "vram_gb": 16,
+                "cpu_cores": 4,
+                "ram_gb": 29,
+                "simulator": "isaacgym",
+                "bootstrap_overhead_s": 180,
+                "session_cap_hours": 12,
+            },
         }
 
     # ---- timing history (persisted so estimates survive a server restart) ----
@@ -304,27 +323,38 @@ class TrainingManager:
             pass  # best-effort — a failed write must not crash the sim loop
 
     def estimate(self, num_envs: int, max_iterations: Optional[int] = None,
-                 max_minutes: Optional[float] = None) -> dict:
-        """Estimated (iterations, seconds) for a job on THIS machine, from
-        this machine's own completed-job history — pooled across tasks
+                 max_minutes: Optional[float] = None, backend: str = "local") -> dict:
+        """Estimated (iterations, seconds) for a job on the given backend,
+        from THAT backend's own completed-job history — pooled across tasks
         (dominated by robot/obs/action space size, not which reward
         function is being trained, so cost-per-iteration is comparable
-        across tasks). Works with either or both of max_iterations/
-        max_minutes, mirroring the actual job's own 'whichever hits first'
-        semantics (see web_train.py's chunked learn() loop) — if both are
-        given, whichever resolves to fewer seconds wins. This is always an
-        estimate, not a promise: per-iteration cost varies with machine
-        load, so a wall-clock budget may stop a run a bit short of or past
-        the iteration count shown here — it still stops on time; the
-        iteration count just moves. Returns basis='none' (no invented
-        number) when there's no history yet — see system_info()'s
+        across tasks), but never pooled ACROSS backends: a local-CPU run
+        and a Kaggle Isaac-Gym-GPU run are different throughput regimes
+        entirely (real numbers this session: local CPU ran single-digit
+        iterations/sec on g1; the Kaggle GPU smoke test did 5 iterations
+        with 16 envs in ~254s wall-clock including Isaac Gym's own ~3-4min
+        per-job bootstrap) — mixing them would corrupt both estimates.
+        History entries with no "backend" key predate this distinction and
+        are treated as "local" (every job used to run there).
+
+        Works with either or both of max_iterations/max_minutes, mirroring
+        the actual job's own 'whichever hits first' semantics (see
+        web_train.py's chunked learn() loop) — if both are given, whichever
+        resolves to fewer seconds wins. This is always an estimate, not a
+        promise: per-iteration cost varies with machine load (and, for
+        Kaggle, with whatever GPU that session happens to get), so a
+        wall-clock budget may stop a run a bit short of or past the
+        iteration count shown here — it still stops on time; the iteration
+        count just moves. Returns basis='none' (no invented number) when
+        there's no history yet for this backend — see system_info()'s
         suggested_num_envs for a sizing starting point in that case."""
         num_envs = max(1, int(num_envs))
         none_result = {"basis": "none", "samples": 0, "seconds": None, "iterations": None}
-        if not self._history:
+        backend_history = [h for h in self._history if h.get("backend", "local") == backend]
+        if not backend_history:
             return none_result
         rates = [h["elapsed_s"] / (h["max_iterations"] * h["num_envs"])
-                 for h in self._history if h["max_iterations"] > 0 and h["num_envs"] > 0]
+                 for h in backend_history if h["max_iterations"] > 0 and h["num_envs"] > 0]
         if not rates:
             return none_result
         rates.sort()
@@ -985,11 +1015,16 @@ class TrainingManager:
                     job.iterations_done = result.get("iterations_done")
                     job.status = "done"
                     newly_done.append(job)
-                    # Deliberately NOT added to self._history — that history
-                    # feeds estimate()'s local-CPU wall-clock predictions
-                    # (see its own docstring); a Kaggle GPU run's throughput
-                    # is a completely different regime and would corrupt
-                    # those estimates for local jobs.
+                    # Recorded under backend="kaggle" — a separate bucket
+                    # from local history (see estimate()'s docstring); mixing
+                    # regimes would corrupt both estimates.
+                    if job.iterations_done:
+                        self._history.append({
+                            "task": job.task, "max_iterations": job.iterations_done,
+                            "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
+                            "backend": "kaggle",
+                        })
+                        self._save_history()
                 except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
                     job.status = "failed"
                     job.error = f"Kaggle job finished but its result file was unreadable: {e}"
@@ -1021,6 +1056,7 @@ class TrainingManager:
                     self._history.append({
                         "task": job.task, "max_iterations": job.iterations_done,
                         "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
+                        "backend": "local",
                     })
                     self._save_history()
             except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop

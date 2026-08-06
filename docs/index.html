@@ -375,6 +375,7 @@
       <li><a href="#genesis-fork">Running on Genesis instead</a></li>
       <li><a href="#control-arch">Switching policies live</a></li>
       <li><a href="#team">Working as a team</a></li>
+      <li><a href="#envs">Simulators &amp; where training runs</a></li>
       <div class="grp">Reference</div>
       <li><a href="#glossary">Glossary</a></li>
       <li><a href="#credits">Credits &amp; license</a></li>
@@ -1014,8 +1015,45 @@ def step(self, obs):
         </div>
       </section>
 
+      <section id="envs">
+        <div class="num">§15 — this fork</div>
+        <h2>Simulators &amp; where training runs</h2>
+        <p>A <strong>simulator</strong> is the physics engine that steps thousands of fake robot copies forward in time — gravity, contact, joint torques — fast enough that a policy can fail and retry millions of times in hours instead of years (see <a href="#sims">§7</a>). It's a completely different piece of software from the <strong>viewer</strong> that draws what's happening in a browser (Viser, covered below) — a training job needs the former and, for headless cloud jobs, none of the latter at all.</p>
+
+        <p>This fork can train under two different simulators, and which one runs is a property of <em>where</em> the job runs, not a user-facing choice inside the training code itself:</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Runs on</th><th>Simulator</th><th>Why</th></tr>
+            <tr><td class="k">This machine (local)</td><td><abbr class="term" title="A physics simulator that also targets Apple Silicon via a Metal backend, and falls back cleanly to CPU everywhere else — what makes this fork runnable on a GPU-less Mac laptop with zero code changes.">Genesis</abbr></td><td>Always — every local job (Create Policy's 💻 option, or a hand-run <code>web_train.py</code>) sets <code>SIMULATOR=genesis</code> and runs on this machine's own CPU (or Metal, on Apple Silicon with <code>GENESIS_BACKEND=cuda</code>/<code>metal</code>).</td></tr>
+            <tr><td class="k">Kaggle (☁️ GPU)</td><td><abbr class="term" title="NVIDIA's GPU-parallel physics simulator (PhysX-based) — see §7. The original unitree_rl_gym trained exclusively on it.">Isaac Gym</abbr></td><td>Always, and only Isaac Gym — see why below. Never Genesis.</td></tr>
+          </table>
+        </div>
+
+        <h3>Why Kaggle doesn't just run Genesis on a GPU</h3>
+        <p>Kaggle's free tier keeps assigning a Tesla P100 (a Pascal-generation GPU, compute capability 6.0/"sm_60"). Genesis's GPU backend JIT-compiles its own kernels and needs a hardware feature (<code>warp.sync</code>) that only exists from Volta onward (compute capability 7.0+/"sm_70") — Pascal silicon simply doesn't have it, no driver or library version routes around that. Isaac Gym's physics stepping instead runs through NVIDIA's PhysX GPU pipeline, which has no such requirement and was confirmed running for real on Kaggle's actual P100 (a live environment created, stepped, <code>GPU Pipeline: enabled</code> — see the root repo's <code>HANDOFF_kaggle_cloud_gpu.md</code> for the full investigation). So: local stays on Genesis because that's what makes this fork runnable on a GPU-less Mac with zero setup (the whole point of forking away from Isaac Gym in the first place — see <a href="#genesis-fork">§12</a>); Kaggle runs Isaac Gym because that's the only one of the two that actually gets GPU speed on the hardware Kaggle's free tier hands out.</p>
+
+        <h3>How each one actually gets selected</h3>
+        <p>Not by an environment variable alone, which is a common trap: <code>legged_gym/__init__.py</code> only accepts <code>SIMULATOR=genesis</code> (or <code>isaaclab</code>) under Python 3.10+, and separately <em>hardcodes</em> <code>SIMULATOR=isaacgym</code> for any interpreter running Python 3.8 or older — it never reads the env var at all for Isaac Gym. In practice that means simulator selection is really <strong>which Python interpreter runs the job</strong>:</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Runs on</th><th>What actually selects the simulator</th></tr>
+            <tr><td class="k">Local</td><td>This machine's normal Python (3.10+), with <code>SIMULATOR=genesis</code> exported before <code>web_train.py</code> runs.</td></tr>
+            <tr><td class="k">Kaggle</td><td>A Python 3.8 venv, bootstrapped fresh inside the Kaggle kernel itself, with Isaac Gym Preview 4 and a pinned <code>torch==2.3.1+cu121</code> installed into it — <code>web_train.py</code> then runs under <em>that</em> interpreter, not Kaggle's own default one. See <code>legged_gym/control/kaggle_backend.py</code>'s <code>_build_kernel_script()</code> for the exact bootstrap.</td></tr>
+          </table>
+        </div>
+        <p>This mirrors how switching simulators works when running by hand on this machine too — <code>switch_simulator.sh</code> activates a whole separate conda environment (<code>lr_gym</code>/<code>lr_gen</code>/<code>lr_lab</code>) per simulator, for the same underlying reason: Isaac Gym's own dependency pins (old numpy/pandas/scipy, Python ≤3.8) are incompatible with Genesis's, so they can't coexist in one interpreter's installed packages.</p>
+
+        <h3>Viser: the viewer, not the simulator</h3>
+        <p><abbr class="term" title="A Python library for serving an interactive 3D scene to a browser over WebSockets — camera controls, live-updating meshes, no native window or GPU display driver needed on the server.">Viser</abbr> is unrelated to either simulator above — it's what draws a running scene (robot pose, terrain, live policy switches) into a browser tab instead of a native OS window. It exists in this fork specifically because Genesis's own native viewer window has a rendering bug on this project's Mac/asset combination (see <a href="#control-arch">§13</a>'s live demo and <a href="#team">§14</a>'s "watch a checkpoint" walkthrough) — <code>--viewer=viser --viser_port=&lt;port&gt;</code> serves the same 3D scene over a WebSocket instead, which also happens to be exactly what a <em>headless</em> Kaggle kernel needs: there's no display attached to a cloud GPU kernel at all, so Kaggle jobs always run with no viewer serving anything (<code>--headless</code>, Isaac Gym's own graphics/viewer context switched off — see <code>web_train.py</code>'s default). Viser only ever matters for watching a policy live on a machine with a browser pointed at it; it plays no role in a training job's speed or correctness on either simulator.</p>
+
+        <div class="aside">
+          <div class="label">The Hardware panel</div>
+          The control web's <strong>Hardware</strong> tab (next to Docs) shows this machine's live-measured specs side by side with Kaggle's typical free-tier profile, and which simulator each one actually uses — a quick reference for this whole section without leaving the app.
+        </div>
+      </section>
+
       <section id="glossary">
-        <div class="num">§14 — reference</div>
+        <div class="num">§16 — reference</div>
         <h2>Glossary</h2>
         <div class="tabwrap">
           <table>
@@ -1036,14 +1074,16 @@ def step(self, obs):
             <tr><td class="k">Actor-critic</td><td>Two networks during training: the actor (kept, becomes the policy) and the critic (discarded, only helps training). <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Privileged observation</td><td>Extra ground-truth info fed only to the critic — things the real robot can't sense directly. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Domain randomization</td><td>Randomizing physics (friction, mass, pushes) across the training population so the policy generalizes to the real robot. <a href="#rl">§5</a></td></tr>
-            <tr><td class="k">Isaac Gym</td><td>NVIDIA's GPU-parallel physics simulator, used for training. <a href="#sims">§6</a></td></tr>
+            <tr><td class="k">Isaac Gym</td><td>NVIDIA's GPU-parallel physics simulator. The original unitree_rl_gym trains exclusively on it; this fork uses it only for Kaggle cloud jobs (local jobs use Genesis instead). <a href="#sims">§6</a>, <a href="#envs">§15</a></td></tr>
             <tr><td class="k">Sim2Sim</td><td>Re-running a trained policy in a second simulator (MuJoCo) as a sanity check. <a href="#sims">§6</a></td></tr>
             <tr><td class="k">Sim2Real</td><td>Deploying a simulator-trained policy onto the physical robot. <a href="#sim2real">§10</a></td></tr>
             <tr><td class="k">TorchScript</td><td>A frozen, portable export of a trained PyTorch network, runnable without the training stack. <a href="#pipeline">§7</a></td></tr>
             <tr><td class="k">Gait-phase clock</td><td>A sin/cos signal marking where in the stride cycle each leg currently is. <a href="#g1">§9</a></td></tr>
             <tr><td class="k">IMU</td><td>Inertial Measurement Unit — gyroscope + accelerometer, gives orientation and angular velocity. <a href="#sim2real">§10</a></td></tr>
             <tr><td class="k">DDS</td><td>Data Distribution Service — the pub/sub network protocol used to talk to the real robot. <a href="#sim2real">§10</a></td></tr>
-            <tr><td class="k">Genesis</td><td>A physics simulator that (unlike Isaac Gym) also targets Apple Silicon via a Metal backend — what this fork trains on. <a href="#genesis-fork">§12</a></td></tr>
+            <tr><td class="k">Genesis</td><td>A physics simulator that (unlike Isaac Gym) also targets Apple Silicon via a Metal backend — what every LOCAL job in this fork trains on (Kaggle jobs use Isaac Gym instead — see §15). <a href="#genesis-fork">§12</a>, <a href="#envs">§15</a></td></tr>
+            <tr><td class="k">Viser</td><td>A Python library serving an interactive 3D scene to a browser over WebSockets — the viewer used in this fork wherever Genesis's own native window doesn't work, and the only viewer a headless Kaggle job could use at all (though Kaggle jobs run with no viewer, since nothing's watching). Not a simulator — just how a running scene gets drawn. <a href="#envs">§15</a></td></tr>
+            <tr><td class="k">Kaggle</td><td>The free-tier cloud GPU backend Create Policy can train on instead of this machine — always via Isaac Gym, never Genesis (see §15 for why), because Kaggle's free-tier P100 lacks the hardware feature Genesis's GPU backend needs. <a href="#envs">§15</a></td></tr>
             <tr><td class="k">RobotAdapter</td><td>The one interface separating "how do I talk to this specific robot" from everything else — SimAdapter (Genesis) and RealAdapter (real G1) both implement it. <a href="#control-arch">§13</a></td></tr>
             <tr><td class="k">PolicySupervisor</td><td>Owns the loaded policies and performs the actual switch, cross-fading the output action instead of cutting hard. <a href="#control-arch">§13</a></td></tr>
             <tr><td class="k">SafetyGovernor</td><td>The one place that decides "is this instant safe to act on a pending policy switch." <a href="#control-arch">§13</a></td></tr>
@@ -1055,7 +1095,7 @@ def step(self, obs):
       </section>
 
       <section id="credits" style="border-bottom:none;">
-        <div class="num">§15 — reference</div>
+        <div class="num">§17 — reference</div>
         <h2>Credits &amp; license</h2>
         <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/LeggedGym-Ex" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
       </section>

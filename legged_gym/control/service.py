@@ -299,15 +299,17 @@ class ControlService:
         return info
 
     def estimate_training_time(self, num_envs: int, max_iterations: Optional[int] = None,
-                                max_minutes: Optional[float] = None) -> dict:
+                                max_minutes: Optional[float] = None, backend: str = "local") -> dict:
         """(iterations, seconds) estimate for a would-be training job, from
-        this machine's own history of completed jobs (see
-        TrainingManager.estimate) — called live as the Create Policy form's
-        fields change, works whether the user filled in iterations,
+        that BACKEND's own history of completed jobs (see
+        TrainingManager.estimate — local and Kaggle are different throughput
+        regimes, never pooled together) — called live as the Create Policy
+        form's fields change, works whether the user filled in iterations,
         minutes, or both."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
-        return self.training.estimate(num_envs, max_iterations=max_iterations, max_minutes=max_minutes)
+        return self.training.estimate(num_envs, max_iterations=max_iterations,
+                                        max_minutes=max_minutes, backend=backend)
 
     def pause(self) -> None:
         self.paused = True

@@ -129,6 +129,21 @@
   .drawer.open{transform:translateX(0);}
   .drawer iframe{width:100%; height:100%; border:0;}
 
+  #hardware-panel{height:100%; overflow-y:auto; padding:1.25rem 1.5rem 2rem;}
+  #hardware-panel h2{font-size:1.05rem; margin:1.5rem 0 .5rem;}
+  #hardware-panel h2:first-child{margin-top:0;}
+  #hardware-panel p{color:var(--muted); font-size:.85rem; line-height:1.5; margin:.25rem 0 .75rem;}
+  #hardware-panel dl{display:grid; grid-template-columns:auto 1fr; gap:.25rem 1rem; font-size:.85rem; margin:0 0 .5rem;}
+  #hardware-panel dt{color:var(--muted);}
+  #hardware-panel dd{margin:0;}
+  #hardware-panel .hw-badge{
+    display:inline-block; font-size:.7rem; padding:.1rem .5rem; border-radius:1rem;
+    border:1px solid var(--line); color:var(--muted); margin-left:.5rem;
+  }
+  #hardware-panel .hw-section{
+    border:1px solid var(--line); border-radius:.5rem; padding:.85rem 1rem; margin-bottom:1rem;
+  }
+
   /* The controls panel is always visible now — the simulator it drives is
      always the base layer, so there's no "wrong tab" state to hide it for. */
   #panel{
@@ -472,6 +487,7 @@
 <header>
   <h1>LeggedGym-Ex — Control Web</h1>
   <nav id="tabs">
+    <button data-drawer="hardware">Hardware</button>
     <button data-drawer="docs">Docs</button>
     <button data-drawer="real" disabled title="requires hardware">Real robot</button>
   </nav>
@@ -486,6 +502,9 @@
 <main>
   <div id="views">
     <div class="view" id="view-sim"></div>
+    <aside class="drawer" id="drawer-hardware">
+      <div id="hardware-panel">Loading&hellip;</div>
+    </aside>
     <aside class="drawer" id="drawer-docs"><iframe src="/docs/index.html"></iframe></aside>
     <aside class="drawer" id="drawer-real">
       <div class="placeholder" id="real-placeholder">Real-robot view unavailable — see reason below.</div>

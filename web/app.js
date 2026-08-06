@@ -1052,11 +1052,94 @@ function initPopovers() {
 const systemSummary = $('#system-summary');
 const systemDetailsBtn = $('#system-details-btn');
 const systemDetails = $('#system-details');
+const hardwarePanel = $('#hardware-panel');
 let systemInfo = null;
+
+// ---- Hardware drawer ----
+// The system-bar above only ever showed THIS machine — once training could
+// also run on Kaggle, "the machine" stopped being a single answer. This
+// panel shows both, side by side, plus why num_envs/the time estimate
+// differ between them (see TrainingManager.estimate()'s backend param —
+// local and Kaggle are pooled from separate history, never mixed).
+function renderHardwarePanel(info) {
+  if (!hardwarePanel) return;
+  const kp = info.kaggle_profile || {};
+  hardwarePanel.innerHTML = '';
+
+  const local = document.createElement('div');
+  local.className = 'hw-section';
+  local.innerHTML = `<h2>This machine <span class="hw-badge">live, measured</span></h2>`;
+  const localDl = document.createElement('dl');
+  const localRows = [
+    ['OS', info.os], ['Machine', info.machine], ['CPU', info.cpu_brand],
+    ['Cores', info.cpu_count], ['RAM', `${info.ram_gb ?? '?'} GB`],
+    ['GPU', info.cuda_available ? 'CUDA available (unused — local training runs CPU)'
+      : info.mps_available ? 'Metal available (unused — local training runs CPU)' : 'none'],
+    ['Simulator', `${info.simulator} (${info.genesis_backend})`],
+    ['Suggested parallel envs', `${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper}`],
+  ];
+  for (const [k, v] of localRows) {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    localDl.appendChild(dt); localDl.appendChild(dd);
+  }
+  local.appendChild(localDl);
+  const localP = document.createElement('p');
+  localP.textContent = 'Every environment runs vectorized but not free — more parallel envs than a few per '
+    + 'CPU core stops scaling training speed. The suggested range above comes from core count; the time '
+    + 'estimate in Create Policy switches to real measured numbers once at least one local job has finished.';
+  local.appendChild(localP);
+  hardwarePanel.appendChild(local);
+
+  const kaggle = document.createElement('div');
+  kaggle.className = 'hw-section';
+  kaggle.innerHTML = info.kaggle_available
+    ? `<h2>Kaggle (free GPU tier) <span class="hw-badge">typical, not live</span></h2>`
+    : `<h2>Kaggle (free GPU tier) <span class="hw-badge">not configured</span></h2>`;
+  if (info.kaggle_available) {
+    const kaggleDl = document.createElement('dl');
+    const kaggleRows = [
+      ['GPU', kp.gpu], ['Compute capability', kp.compute_capability], ['VRAM', `${kp.vram_gb} GB`],
+      ['CPU cores', kp.cpu_cores], ['RAM', `${kp.ram_gb} GB`],
+      ['Simulator', kp.simulator + ' (not Genesis — see Docs)'],
+      ['Per-job bootstrap', `~${Math.round(kp.bootstrap_overhead_s / 60)} min (fresh venv + Isaac Gym install, every job)`],
+      ['Session cap', `${kp.session_cap_hours}h (Kaggle's own GPU session limit)`],
+    ];
+    for (const [k, v] of kaggleRows) {
+      const dt = document.createElement('dt'); dt.textContent = k;
+      const dd = document.createElement('dd'); dd.textContent = v;
+      kaggleDl.appendChild(dt); kaggleDl.appendChild(dd);
+    }
+    kaggle.appendChild(kaggleDl);
+    const kaggleP = document.createElement('p');
+    kaggleP.textContent = 'Not a live probe — Kaggle assigns this per session, and these are the specs it\'s '
+      + 'actually handed out every time this was checked (see HANDOFF_kaggle_cloud_gpu.md). Genesis\'s GPU '
+      + 'backend needs Volta+ hardware this tier doesn\'t have, so Kaggle jobs run Isaac Gym instead — a '
+      + 'different simulator than every local job (see Docs → Simulators). Its own time estimate in Create '
+      + 'Policy is measured separately from local runs, and includes the per-job bootstrap above, which '
+      + 'dominates a short job\'s wall-clock time in a way local runs never account for.';
+    kaggle.appendChild(kaggleP);
+  } else {
+    const p = document.createElement('p');
+    p.textContent = 'No ~/.kaggle/kaggle.json found on the server — the Kaggle backend isn\'t set up on this machine.';
+    kaggle.appendChild(p);
+  }
+  hardwarePanel.appendChild(kaggle);
+
+  const choose = document.createElement('div');
+  choose.innerHTML = '<h2>Choosing where to train</h2>';
+  const chooseP = document.createElement('p');
+  chooseP.textContent = 'Create Policy\'s "Run on" toggle picks the backend per job — the num_envs suggestion '
+    + 'and time estimate shown there always reflect whichever one is selected, using that backend\'s own '
+    + 'history, never the other one\'s.';
+  choose.appendChild(chooseP);
+  hardwarePanel.appendChild(choose);
+}
 
 function refreshSystemInfo() {
   call('system_info').then((info) => {
     systemInfo = info;
+    renderHardwarePanel(info);
     const gpuNote = info.cuda_available ? 'CUDA available (unused — training runs CPU)'
       : info.mps_available ? 'Metal available (unused — training runs CPU)' : 'no GPU';
     systemSummary.textContent =
@@ -1198,23 +1281,32 @@ function updateEstimate() {
     // always shows the iteration count it's expected to buy (not just
     // "time-boxed to N minutes" with no sense of how much training that
     // actually is) — see TrainingManager.estimate()'s own docstring.
+    const where = trainBackend === 'kaggle' ? 'on Kaggle' : 'on this machine';
     call('estimate_training_time', {
       num_envs: numEnvs,
       max_iterations: hasIters ? iterations : null,
       max_minutes: hasMinutes ? minutes : null,
+      backend: trainBackend,
     }).then((est) => {
       if (est.basis !== 'measured') {
         trainEstimate.textContent = hasMinutes && !hasIters
-          ? `Estimated time: time-boxed to ${minutes} minute${minutes === 1 ? '' : 's'} — no runs on this machine yet, so an iteration count can't be estimated (the first run calibrates this).`
-          : 'Estimated time: no runs on this machine yet — the first one calibrates this estimate.';
+          ? `Estimated time: time-boxed to ${minutes} minute${minutes === 1 ? '' : 's'} — no runs ${where} yet, so an iteration count can't be estimated (the first run calibrates this).`
+          : `Estimated time: no runs ${where} yet — the first one calibrates this estimate.`;
         return;
       }
       const boundBy = hasIters && hasMinutes
         ? (est.iterations < iterations ? 'minutes' : 'iterations')
         : hasMinutes ? 'minutes' : 'iterations';
+      // Kaggle's ~3-4min per-job bootstrap (fresh venv + Isaac Gym install,
+      // every job — see kaggle_backend.py) is baked into whatever history
+      // exists, so it's already reflected in est.seconds; called out
+      // separately here because it dominates a SHORT job's wall-clock time
+      // in a way local runs never have to account for.
+      const bootstrapNote = trainBackend === 'kaggle'
+        ? ' (includes Kaggle’s ~3–4 min per-job environment bootstrap, baked into the history this is based on)' : '';
       trainEstimate.textContent = boundBy === 'minutes'
-        ? `Estimated time: ~${est.iterations} iterations in ${minutes} minute${minutes === 1 ? '' : 's'} (approximate — based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine; the wall-clock deadline is checked every ${TIME_BUDGET_CHUNK_ITERS} iterations, so the run may overshoot by a few iterations' worth of time).`
-        : `Estimated time: ~${formatDuration(est.seconds)} for ${est.iterations} iterations (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} on this machine)${hasMinutes ? ` — also capped at ${minutes} minute${minutes === 1 ? '' : 's'}, whichever hits first` : ''}.`;
+        ? `Estimated time: ~${est.iterations} iterations in ${minutes} minute${minutes === 1 ? '' : 's'} (approximate — based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} ${where}; the wall-clock deadline is checked every ${TIME_BUDGET_CHUNK_ITERS} iterations, so the run may overshoot by a few iterations' worth of time)${bootstrapNote}.`
+        : `Estimated time: ~${formatDuration(est.seconds)} for ${est.iterations} iterations (based on ${est.samples} previous run${est.samples === 1 ? '' : 's'} ${where})${bootstrapNote}${hasMinutes ? ` — also capped at ${minutes} minute${minutes === 1 ? '' : 's'}, whichever hits first` : ''}.`;
     }).catch(() => { trainEstimate.textContent = 'Estimated time: –'; });
   }, 250);
 }
@@ -1347,6 +1439,7 @@ trainBackendTabs.querySelectorAll('button').forEach((btn) => {
     trainBase.disabled = trainBackend === 'kaggle';
     if (trainBackend === 'kaggle') trainBase.value = '';
     updateCommandPreview();
+    updateEstimate(); // different backend = different history bucket, see estimate()
   });
 });
 
