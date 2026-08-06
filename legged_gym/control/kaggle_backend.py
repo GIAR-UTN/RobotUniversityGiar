@@ -116,12 +116,15 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
         # an incompatible accelerator.
         "try:",
         "    import torch",
-        # torch.zeros() alone is just a cudaMalloc/cudaMemset — that
-        # succeeds on ANY compute capability, compiled kernels or not (a
-        # real run's probe passed with exactly this, then crashed for real
-        # a few seconds later once actual training ops ran). Only a real
-        # compiled-kernel op reliably reproduces the failure ahead of time.
-        "    (torch.zeros(4, device=\"cuda\") + 1).cpu()",
+        # Two earlier probes both passed clean on hardware that then crashed
+        # web_train.py seconds later on this exact device: torch.zeros()
+        # alone is a cudaMemset, and zeros()+1 apparently hit some internal
+        # fast/fill path too — neither launches a real compiled CUDA kernel.
+        # A random-fill (genuine RNG kernel) matmul (genuine GEMM kernel) has
+        # no such fast path to hide behind.
+        "    a = torch.rand(8, 8, device=\"cuda\")",
+        "    b = torch.rand(8, 8, device=\"cuda\")",
+        "    (a @ b).cpu()",
         '    gpu_flag = ["--gpu"]',
         "except Exception as e:",
         '    print(f"CUDA unusable on this kernel\'s accelerator ({e!r}) -- training on CPU instead.")',
