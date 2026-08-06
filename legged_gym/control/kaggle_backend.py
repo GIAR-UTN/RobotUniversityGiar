@@ -45,6 +45,19 @@ MAX_RUNTIME_S = 6 * 3600
 
 TERMINAL_STATUSES = {"complete", "error", "cancel_acknowledged"}
 
+# OFF by default — see _build_kernel_script()'s docstring. Every attempt so
+# far to actually get GPU-accelerated training working on this account's
+# Kaggle kernels (machine_shape T4 request, cu118/cu121 torch pins, three
+# increasingly-strict CUDA probes) either got silently ignored, or still
+# crashed web_train.py on the P100 Kaggle keeps assigning, or — the pin
+# attempt — couldn't even be confirmed to take effect (a diagnostic print of
+# the post-pin torch version/arch list never showed up in the kernel's own
+# log, most likely stdout buffering swallowing it rather than the pin
+# genuinely failing, but that's unconfirmed). Flip this back on to resume
+# that investigation; until then, Kaggle jobs train on CPU — same speed as
+# local, but they reliably finish instead of crashing.
+ATTEMPT_GPU = False
+
 
 def _status_name(status) -> str:
     """kernels_status() returns an ApiGetKernelSessionStatusResponse whose
@@ -77,7 +90,59 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
     because the generated code below is full of its own braces (f-strings,
     dict literals) that would collide with format placeholders. Dynamic
     values (branch, flags) are embedded with json.dumps() so they come out
-    as safe Python literals regardless of quotes/spaces inside them."""
+    as safe Python literals regardless of quotes/spaces inside them.
+
+    GPU usage is gated behind ATTEMPT_GPU (see its own docstring) — every
+    real attempt at getting GPU-accelerated training working on this
+    account's Kaggle kernels has either been ignored (machine_shape) or
+    crashed training (torch build/pin mismatches against whatever P100
+    Kaggle keeps assigning), so for now this always runs CPU-only, exactly
+    like the local backend — slower than the GPU speedup this was meant to
+    unlock, but it reliably finishes instead of crashing."""
+    gpu_lines = [
+        # genesis[extras] pulls in an unpinned "torch", which on a fresh
+        # Kaggle container resolves to whatever's newest on PyPI right now —
+        # and current torch releases have dropped compiled kernels for
+        # Pascal (sm_60, what Kaggle's free-tier P100 is). A colleague's own
+        # unitree_rl_gym-on-Kaggle notebook (kaggle.com/code/jvillalba007/
+        # unitree-rl) hit this same wall and worked around it by pinning an
+        # exact older release still built for it; attempting the same fix
+        # here didn't conclusively resolve it (see ATTEMPT_GPU's docstring)
+        # — kept for whoever picks this investigation back up.
+        'subprocess.run([sys.executable, "-m", "pip", "install", "-q", '
+        '"torch==2.3.1", "torchvision==0.18.1", "torchaudio==2.3.1", '
+        '"--index-url", "https://download.pytorch.org/whl/cu121"], check=True)',
+        "",
+        # A real run (see this module's own docstring) got assigned a Tesla
+        # P100 (compute capability sm_60) whose kernels the current torch
+        # release no longer ships (dropped in favor of sm_70+) — Genesis's
+        # OWN backend (warp/taichi) initialized on it fine, but rsl_rl's
+        # torch.zeros(..., device='cuda') for the obs/action buffers crashed
+        # instantly with `CUDA error: no kernel image is available for
+        # execution on the device`. Which GPU Kaggle actually hands out isn't
+        # something we control (machine_shape requests aren't honored
+        # reliably either), so rather than gamble on a torch build/version
+        # that happens to cover whatever shows up, probe it directly: try a
+        # real compiled-kernel CUDA op before touching web_train.py at all,
+        # and only pass --gpu if it actually works.
+        "try:",
+        "    import torch",
+        # torch.zeros() alone is a cudaMemset and zeros()+1 apparently hits
+        # some internal fast/fill path too — neither launches a real
+        # compiled CUDA kernel, so both passed clean on hardware that then
+        # crashed web_train.py seconds later on this exact device. A
+        # random-fill (genuine RNG kernel) matmul (genuine GEMM kernel) has
+        # no such fast path to hide behind — but note even THIS didn't
+        # reliably catch the P100 failure in testing (see ATTEMPT_GPU).
+        "    a = torch.rand(8, 8, device=\"cuda\")",
+        "    b = torch.rand(8, 8, device=\"cuda\")",
+        "    (a @ b).cpu()",
+        '    gpu_flag = ["--gpu"]',
+        "except Exception as e:",
+        '    print(f"CUDA unusable on this kernel\'s accelerator ({e!r}) -- training on CPU instead.")',
+        "    gpu_flag = []",
+    ] if ATTEMPT_GPU else ['gpu_flag = []  # ATTEMPT_GPU is off — see kaggle_backend.py']
+
     lines = [
         "import json, os, shutil, subprocess, sys",
         "",
@@ -96,60 +161,11 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
         f'{json.dumps(REPO_URL)}, REPO_DIR], check=True)',
         'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", '
         'f"{REPO_DIR}[genesis]"], check=True)',
-        # genesis[extras] pulls in an unpinned "torch", which on a fresh
-        # Kaggle container resolves to whatever's newest on PyPI right now —
-        # and current torch releases have dropped compiled kernels for
-        # Pascal (sm_60, what Kaggle's free-tier P100 is). A colleague's own
-        # unitree_rl_gym-on-Kaggle notebook (kaggle.com/code/jvillalba007/
-        # unitree-rl) hit this same wall and fixed it by pinning an exact
-        # older release still built for it — same fix here, last-install-
-        # wins over whatever genesis[extras] brought in above.
-        'subprocess.run([sys.executable, "-m", "pip", "install", "-q", '
-        '"torch==2.3.1", "torchvision==0.18.1", "torchaudio==2.3.1", '
-        '"--index-url", "https://download.pytorch.org/whl/cu121"], check=True)',
         "",
         "env = dict(os.environ)",
         'env["SIMULATOR"] = "genesis"',
         "",
-        # Diagnostic — earlier runs kept showing the SAME "sm_70+" warning
-        # even after the pin above, which strongly suggests the pin isn't
-        # actually taking effect (silently skipped, or something reinstalls
-        # over it) rather than 2.3.1 itself lacking sm_60. Confirming this
-        # from hard evidence (the actual loaded version + compiled arch
-        # list) beats guessing again against a live GPU kernel.
-        "import torch as _torch_check",
-        'print("TORCH VERSION:", _torch_check.__version__)',
-        'print("TORCH CUDA ARCH LIST:", _torch_check.cuda.get_arch_list())',
-        "",
-        # A real run (see this module's own docstring) got assigned a Tesla
-        # P100 (compute capability sm_60) whose kernels the current torch
-        # release no longer ships (dropped in favor of sm_70+) — Genesis's
-        # OWN backend (warp/taichi) initialized on it fine, but rsl_rl's
-        # torch.zeros(..., device='cuda') for the obs/action buffers crashed
-        # instantly with `CUDA error: no kernel image is available for
-        # execution on the device`. Which GPU Kaggle actually hands out isn't
-        # something we control (machine_shape requests aren't honored
-        # reliably either), so rather than gamble on a torch build/version
-        # that happens to cover whatever shows up, probe it directly: try a
-        # trivial CUDA tensor op before touching web_train.py at all, and
-        # only pass --gpu if it actually works. Falls back to CPU (same
-        # speed as local, but the job SUCCEEDS) instead of hard-crashing on
-        # an incompatible accelerator.
-        "try:",
-        "    import torch",
-        # Two earlier probes both passed clean on hardware that then crashed
-        # web_train.py seconds later on this exact device: torch.zeros()
-        # alone is a cudaMemset, and zeros()+1 apparently hit some internal
-        # fast/fill path too — neither launches a real compiled CUDA kernel.
-        # A random-fill (genuine RNG kernel) matmul (genuine GEMM kernel) has
-        # no such fast path to hide behind.
-        "    a = torch.rand(8, 8, device=\"cuda\")",
-        "    b = torch.rand(8, 8, device=\"cuda\")",
-        "    (a @ b).cpu()",
-        '    gpu_flag = ["--gpu"]',
-        "except Exception as e:",
-        '    print(f"CUDA unusable on this kernel\'s accelerator ({e!r}) -- training on CPU instead.")',
-        "    gpu_flag = []",
+    ] + gpu_lines + [
         "",
         # --gpu (when gpu_flag says CUDA actually works), not --cpu's
         # absence: web_train.py's --cpu is store_true with default=True, so
