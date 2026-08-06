@@ -139,6 +139,8 @@ class ControlService:
             s["command"] = {"vx": vx, "vy": vy, "yaw": yaw}
         if hasattr(self.adapter, "random_events"):
             s["random_events"] = self.adapter.random_events
+        if hasattr(self.adapter, "episode_timeout_s"):
+            s["episode_timeout_s"] = self.adapter.episode_timeout_s
         if self.training is not None:
             s["training_jobs"] = self.training.status()
         s["telemetry"] = self._telemetry()
@@ -323,6 +325,18 @@ class ControlService:
         PolicySupervisor.request_switch) — see __init__'s note on why the
         actual reset happens in the sim loop, not here."""
         self.restart_requested = True
+
+    def set_episode_timeout(self, seconds: Optional[float] = None) -> None:
+        """Configures/disables legged_robot.py's own timer-based episode
+        reset — see SimAdapter.set_episode_timeout's docstring. None (the
+        default from adapter construction) means the robot only ever resets
+        via an explicit restart() or a real fall/contact-force trip. Raises
+        if the current adapter doesn't support it (e.g. RealAdapter has no
+        episode-timeout concept)."""
+        fn = getattr(self.adapter, "set_episode_timeout", None)
+        if fn is None:
+            raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_episode_timeout")
+        fn(seconds)
 
     def set_command(self, vx: float, vy: float, yaw: float) -> None:
         """Directly commands a target walking velocity (m/s, m/s, rad/s),

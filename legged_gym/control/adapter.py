@@ -14,6 +14,7 @@ Two implementations exist:
 from __future__ import annotations
 
 import dataclasses
+import math
 from enum import Enum
 from typing import Optional, Protocol
 
@@ -111,6 +112,49 @@ class SimAdapter:
         self._orig_heading_command = env.cfg.commands.heading_command
         self._auto_commands = True
         self._manual_command = (0.0, 0.0, 0.0)
+
+        # Disabled by default: legged_robot.py's own check_termination() (see
+        # set_episode_timeout's docstring) is training-episode machinery that
+        # would otherwise silently teleport the robot on a fixed timer, with
+        # no signal to ControlService/the web UI — indistinguishable from an
+        # intentional restart. Off here means only an explicit restart() or a
+        # real fall/contact-force trip ever resets the robot; the web UI's
+        # Pause & Restart panel can re-enable it at a chosen interval.
+        self._episode_timeout_s: Optional[float] = None
+        self.set_episode_timeout(None)
+
+    def set_episode_timeout(self, seconds: Optional[float]) -> None:
+        """Configures/disables legged_robot.py's own timer-based episode
+        reset (env.step() -> check_termination() -> reset_idx(), driven by
+        cfg.env.episode_length_s at env-construction time). That machinery
+        makes sense for RL training rollouts but, left on for a live control
+        session, silently resets the robot on a schedule that has nothing to
+        do with anything the operator did.
+
+        None disables it (the timeout never fires — env.max_episode_length
+        is set to infinity). A positive number of seconds re-enables it at
+        that interval. Either way this rewrites env.max_episode_length(_s)
+        directly and zeroes the current episode's tick counter, so the new
+        setting is exactly what's in effect starting next tick — not
+        whatever was left on the previous window.
+
+        Fall/contact-force termination (fail_buf, a separate condition ORed
+        into the same reset_buf in check_termination) is untouched — that's
+        a real safety trip, not a timer, and stays active regardless."""
+        if seconds is not None and seconds <= 0:
+            raise ValueError("episode timeout must be a positive number of seconds, or None to disable")
+        self._episode_timeout_s = seconds
+        if seconds is None:
+            self.env.max_episode_length_s = float("inf")
+            self.env.max_episode_length = float("inf")
+        else:
+            self.env.max_episode_length_s = seconds
+            self.env.max_episode_length = math.ceil(seconds / self.env.dt)
+        self.env.episode_length_buf[:] = 0
+
+    @property
+    def episode_timeout_s(self) -> Optional[float]:
+        return self._episode_timeout_s
 
     def reset(self) -> RobotState:
         self.env.reset()
