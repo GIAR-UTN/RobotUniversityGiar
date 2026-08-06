@@ -94,54 +94,50 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
     values (branch, flags) are embedded with json.dumps() so they come out
     as safe Python literals regardless of quotes/spaces inside them.
 
-    GPU usage is gated behind ATTEMPT_GPU (see its own docstring) — every
-    real attempt at getting GPU-accelerated training working on this
-    account's Kaggle kernels has either been ignored (machine_shape) or
-    crashed training (torch build/pin mismatches against whatever P100
-    Kaggle keeps assigning), so for now this always runs CPU-only, exactly
-    like the local backend — slower than the GPU speedup this was meant to
-    unlock, but it reliably finishes instead of crashing."""
+    GPU usage is gated behind ATTEMPT_GPU (see its own docstring). The probe
+    below checks compute capability directly (sm_70+) rather than trying to
+    run something and see if it crashes — see ATTEMPT_GPU's docstring for
+    why: this isn't a "missing precompiled kernel" problem a torch version
+    pin can route around (that part IS fixed by the pin below), it's that
+    Genesis's own GPU backend needs a hardware feature (`warp.sync`, part of
+    Volta's independent thread scheduling) Pascal-generation silicon simply
+    doesn't have — no software fix changes that."""
     gpu_lines = [
         # genesis[extras] pulls in an unpinned "torch", which on a fresh
         # Kaggle container resolves to whatever's newest on PyPI right now —
         # and current torch releases have dropped compiled kernels for
         # Pascal (sm_60, what Kaggle's free-tier P100 is). A colleague's own
         # unitree_rl_gym-on-Kaggle notebook (kaggle.com/code/jvillalba007/
-        # unitree-rl) hit this same wall and worked around it by pinning an
-        # exact older release still built for it; attempting the same fix
-        # here didn't conclusively resolve it (see ATTEMPT_GPU's docstring)
-        # — kept for whoever picks this investigation back up.
+        # unitree-rl) hit this same wall and fixed it by pinning an exact
+        # older release still built for it — confirmed working here too
+        # (verified via an isolated diagnostic kernel): the resulting torch
+        # correctly reports sm_60 in its arch list and runs a real matmul on
+        # the P100 fine. Kept regardless of which GPU actually gets assigned
+        # — harmless on a newer one, required on Pascal.
         'subprocess.run([sys.executable, "-m", "pip", "install", "-q", '
         '"torch==2.3.1", "torchvision==0.18.1", "torchaudio==2.3.1", '
         '"--index-url", "https://download.pytorch.org/whl/cu121"], check=True)',
         "",
-        # A real run (see this module's own docstring) got assigned a Tesla
-        # P100 (compute capability sm_60) whose kernels the current torch
-        # release no longer ships (dropped in favor of sm_70+) — Genesis's
-        # OWN backend (warp/taichi) initialized on it fine, but rsl_rl's
-        # torch.zeros(..., device='cuda') for the obs/action buffers crashed
-        # instantly with `CUDA error: no kernel image is available for
-        # execution on the device`. Which GPU Kaggle actually hands out isn't
-        # something we control (machine_shape requests aren't honored
-        # reliably either), so rather than gamble on a torch build/version
-        # that happens to cover whatever shows up, probe it directly: try a
-        # real compiled-kernel CUDA op before touching web_train.py at all,
-        # and only pass --gpu if it actually works.
-        "try:",
-        "    import torch",
-        # torch.zeros() alone is a cudaMemset and zeros()+1 apparently hits
-        # some internal fast/fill path too — neither launches a real
-        # compiled CUDA kernel, so both passed clean on hardware that then
-        # crashed web_train.py seconds later on this exact device. A
-        # random-fill (genuine RNG kernel) matmul (genuine GEMM kernel) has
-        # no such fast path to hide behind — but note even THIS didn't
-        # reliably catch the P100 failure in testing (see ATTEMPT_GPU).
-        "    a = torch.rand(8, 8, device=\"cuda\")",
-        "    b = torch.rand(8, 8, device=\"cuda\")",
-        "    (a @ b).cpu()",
+        # The torch pin above is necessary but NOT sufficient — a real run
+        # with it in place got past torch's own compatibility check and
+        # crashed instead inside Genesis's own GPU kernel compiler:
+        # `LLVM Fatal Error: Cannot select: intrinsic %llvm.nvvm.bar.warp.sync`.
+        # warp.sync is a Volta-generation (sm_70+) hardware feature — Pascal
+        # (sm_60, Kaggle's free-tier P100) doesn't have the silicon for it at
+        # all, so no torch build or version can route around this the way it
+        # could for the earlier "kernel just wasn't precompiled" failure.
+        # Checking compute capability directly (a cheap device-property
+        # query, no kernel compile/launch involved) is also just a more
+        # reliable probe than the "try an op and see if it crashes" attempts
+        # this replaced, some of which passed clean on hardware that failed
+        # for real moments later.
+        "import torch",
+        "major, _minor = torch.cuda.get_device_capability(0)",
+        "if major >= 7:",
         '    gpu_flag = ["--gpu"]',
-        "except Exception as e:",
-        '    print(f"CUDA unusable on this kernel\'s accelerator ({e!r}) -- training on CPU instead.")',
+        "else:",
+        '    print(f"GPU compute capability {major}.x is Pascal or older -- Genesis\'s GPU backend '
+        'needs Volta+ (7.0+); training on CPU instead.")',
         "    gpu_flag = []",
     ] if ATTEMPT_GPU else ['gpu_flag = []  # ATTEMPT_GPU is off — see kaggle_backend.py']
 
