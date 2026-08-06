@@ -523,8 +523,16 @@ class ViserViewer:
             delta = base_pos - self._camera_track_last_base_pos
             if np.any(delta != 0):
                 for client in self.server.get_clients().values():
+                    # Setting .position alone already shifts .look_at by the
+                    # same delta as a side effect (see CameraHandle.position's
+                    # setter in viser -- "position updates translate both the
+                    # camera and its look_at point together", precisely so the
+                    # viewing direction survives a translation). Also setting
+                    # .look_at here would double-apply delta to it every tick
+                    # -- a real bug that shipped once already: look_at drifted
+                    # away from the robot more and more the longer the sim
+                    # ran, since only it (not position) was ever double-moved.
                     client.camera.position = client.camera.position + delta
-                    client.camera.look_at = client.camera.look_at + delta
         self._camera_track_last_base_pos = base_pos.copy()
 
     def _setup_camera_gui(self) -> None:

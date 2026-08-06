@@ -51,9 +51,36 @@ from legged_gym.utils.viser_viewer import ViserViewer
 
 
 class _FakeCamera:
+    """Mirrors viser's own CameraHandle.position setter side effect: setting
+    .position ALSO shifts .look_at by the same delta (viser's own docstring:
+    "position updates translate both the camera and its look_at point
+    together"). This is not a nicety -- a fake that just stored position/
+    look_at as bare attributes would silently pass even if
+    _apply_camera_tracking() additionally added delta to .look_at itself,
+    which is exactly the double-application bug this fake exists to catch."""
+
     def __init__(self, position, look_at):
-        self.position = np.array(position, dtype=float)
-        self.look_at = np.array(look_at, dtype=float)
+        self._position = np.array(position, dtype=float)
+        self._look_at = np.array(look_at, dtype=float)
+
+    @property
+    def position(self):
+        return self._position
+
+    @position.setter
+    def position(self, value):
+        value = np.array(value, dtype=float)
+        offset = value - self._position
+        self._position = value
+        self._look_at = self._look_at + offset
+
+    @property
+    def look_at(self):
+        return self._look_at
+
+    @look_at.setter
+    def look_at(self, value):
+        self._look_at = np.array(value, dtype=float)
 
 
 class _FakeClient:
