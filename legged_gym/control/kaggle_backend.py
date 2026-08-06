@@ -45,18 +45,20 @@ MAX_RUNTIME_S = 6 * 3600
 
 TERMINAL_STATUSES = {"complete", "error", "cancel_acknowledged"}
 
-# OFF by default — see _build_kernel_script()'s docstring. Every attempt so
-# far to actually get GPU-accelerated training working on this account's
-# Kaggle kernels (machine_shape T4 request, cu118/cu121 torch pins, three
-# increasingly-strict CUDA probes) either got silently ignored, or still
-# crashed web_train.py on the P100 Kaggle keeps assigning, or — the pin
-# attempt — couldn't even be confirmed to take effect (a diagnostic print of
-# the post-pin torch version/arch list never showed up in the kernel's own
-# log, most likely stdout buffering swallowing it rather than the pin
-# genuinely failing, but that's unconfirmed). Flip this back on to resume
+# A standalone diagnostic kernel (clone -> pip install -e .[genesis] -> pip
+# install torch==2.3.1+cu121 -> matmul on cuda, in that exact order) CONFIRMED
+# this works: genesis[extras] pulls torch 2.10.0+cu128 (no sm_60 kernels —
+# Kaggle's free P100 is compute capability 6.0), the 2.3.1 pin overwrites it
+# correctly, and a real matmul on the P100 passes. An earlier attempt running
+# this same sequence through the full web_train.py pipeline still crashed —
+# root cause of THAT discrepancy not fully nailed down (a diagnostic print
+# added at the time never showed up in the kernel's log either, most likely
+# some stdout-capture quirk specific to how KaggleRunner pushes/logs vs. a
+# manual kernels_push — not the pin itself, which is now proven to work in
+# isolation). Flip this back on to resume
 # that investigation; until then, Kaggle jobs train on CPU — same speed as
 # local, but they reliably finish instead of crashing.
-ATTEMPT_GPU = False
+ATTEMPT_GPU = True
 
 
 def _status_name(status) -> str:
