@@ -1044,23 +1044,28 @@ function initPopovers() {
   }, true);
 }
 
-// ---- system info bar ----
+// ---- Hardware drawer ----
 // The user asked for this explicitly: don't make them guess what hardware
 // is running the sim/training — show it, and use it as the basis for the
-// Create Policy panel's num_envs suggestion + time estimate below.
+// Create Policy panel's num_envs suggestion + time estimate below. Used to
+// be a top-of-page bar showing only THIS machine; once training could also
+// run on Kaggle, "the machine" stopped being a single answer, so this is
+// now a full drawer (like Docs) showing both side by side, plus why
+// num_envs/the time estimate differ between them (see
+// TrainingManager.estimate()'s backend param — local and Kaggle are pooled
+// from separate history, never mixed).
 
-const systemSummary = $('#system-summary');
-const systemDetailsBtn = $('#system-details-btn');
-const systemDetails = $('#system-details');
 const hardwarePanel = $('#hardware-panel');
 let systemInfo = null;
 
-// ---- Hardware drawer ----
-// The system-bar above only ever showed THIS machine — once training could
-// also run on Kaggle, "the machine" stopped being a single answer. This
-// panel shows both, side by side, plus why num_envs/the time estimate
-// differ between them (see TrainingManager.estimate()'s backend param —
-// local and Kaggle are pooled from separate history, never mixed).
+// info.kaggle_profile entries are undefined until this session's server has
+// actually restarted with them (Python doesn't hot-reload — see
+// legged_gym/control/*.py edits) — fall back to an explicit "–" instead of
+// silently rendering "undefined"/"NaN", which is confusing to tell apart
+// from a real value.
+function fmtOrDash(v, suffix = '') {
+  return (v === undefined || v === null) ? '–' : `${v}${suffix}`;
+}
 function renderHardwarePanel(info) {
   if (!hardwarePanel) return;
   const kp = info.kaggle_profile || {};
@@ -1076,6 +1081,7 @@ function renderHardwarePanel(info) {
     ['GPU', info.cuda_available ? 'CUDA available (unused — local training runs CPU)'
       : info.mps_available ? 'Metal available (unused — local training runs CPU)' : 'none'],
     ['Simulator', `${info.simulator} (${info.genesis_backend})`],
+    ['Control backend', info.control_backend],
     ['Suggested parallel envs', `${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper}`],
   ];
   for (const [k, v] of localRows) {
@@ -1094,16 +1100,28 @@ function renderHardwarePanel(info) {
   const kaggle = document.createElement('div');
   kaggle.className = 'hw-section';
   kaggle.innerHTML = info.kaggle_available
-    ? `<h2>Kaggle (free GPU tier) <span class="hw-badge">typical, not live</span></h2>`
+    ? `<h2>Kaggle (free GPU tier) <span class="hw-badge">measured once, not live</span></h2>`
     : `<h2>Kaggle (free GPU tier) <span class="hw-badge">not configured</span></h2>`;
-  if (info.kaggle_available) {
+  if (info.kaggle_available && Object.keys(kp).length === 0) {
+    // kaggle_profile is missing entirely, not just partially — the server
+    // process predates it (Python doesn't hot-reload code changes) rather
+    // than Kaggle itself withholding data. A dash-filled table here would
+    // look like a real "unknown" answer instead of a stale-server symptom.
+    const p = document.createElement('p');
+    p.textContent = 'This server needs a restart to show Kaggle\'s profile (its running process predates '
+      + 'this panel\'s data).';
+    kaggle.appendChild(p);
+  } else if (info.kaggle_available) {
     const kaggleDl = document.createElement('dl');
     const kaggleRows = [
-      ['GPU', kp.gpu], ['Compute capability', kp.compute_capability], ['VRAM', `${kp.vram_gb} GB`],
-      ['CPU cores', kp.cpu_cores], ['RAM', `${kp.ram_gb} GB`],
-      ['Simulator', kp.simulator + ' (not Genesis — see Docs)'],
-      ['Per-job bootstrap', `~${Math.round(kp.bootstrap_overhead_s / 60)} min (fresh venv + Isaac Gym install, every job)`],
-      ['Session cap', `${kp.session_cap_hours}h (Kaggle's own GPU session limit)`],
+      ['GPU', fmtOrDash(kp.gpu)], ['Compute capability', fmtOrDash(kp.compute_capability)],
+      ['VRAM', fmtOrDash(kp.vram_gb, ' GB')],
+      ['CPU cores', fmtOrDash(kp.cpu_cores)], ['RAM', fmtOrDash(kp.ram_gb, ' GB')],
+      ['Simulator', kp.simulator ? `${kp.simulator} (not Genesis — see Docs)` : '–'],
+      ['Per-job bootstrap', kp.bootstrap_overhead_s != null
+        ? `~${Math.round(kp.bootstrap_overhead_s / 60)} min (fresh venv + Isaac Gym install, every job)` : '–'],
+      ['Session cap', kp.session_cap_hours != null
+        ? `${kp.session_cap_hours}h (Kaggle's own GPU session limit)` : '–'],
     ];
     for (const [k, v] of kaggleRows) {
       const dt = document.createElement('dt'); dt.textContent = k;
@@ -1112,8 +1130,10 @@ function renderHardwarePanel(info) {
     }
     kaggle.appendChild(kaggleDl);
     const kaggleP = document.createElement('p');
-    kaggleP.textContent = 'Not a live probe — Kaggle assigns this per session, and these are the specs it\'s '
-      + 'actually handed out every time this was checked (see HANDOFF_kaggle_cloud_gpu.md). Genesis\'s GPU '
+    kaggleP.textContent = 'Not a live probe (there\'s no Kaggle session to query without spending a kernel), '
+      + 'but not a guess either — measured directly with a dedicated diagnostic kernel (nvidia-smi, '
+      + 'torch.cuda.get_device_properties, /proc/meminfo — see HANDOFF_kaggle_cloud_gpu.md). Kaggle assigns '
+      + 'this per session on its free tier, so a future session could get something different. Genesis\'s GPU '
       + 'backend needs Volta+ hardware this tier doesn\'t have, so Kaggle jobs run Isaac Gym instead — a '
       + 'different simulator than every local job (see Docs → Simulators). Its own time estimate in Create '
       + 'Policy is measured separately from local runs, and includes the per-job bootstrap above, which '
@@ -1140,27 +1160,6 @@ function refreshSystemInfo() {
   call('system_info').then((info) => {
     systemInfo = info;
     renderHardwarePanel(info);
-    const gpuNote = info.cuda_available ? 'CUDA available (unused — training runs CPU)'
-      : info.mps_available ? 'Metal available (unused — training runs CPU)' : 'no GPU';
-    systemSummary.textContent =
-      `${info.cpu_brand} · ${info.cpu_count} cores · ${info.ram_gb ?? '?'} GB RAM · ` +
-      `${info.simulator}/${info.genesis_backend} · ${gpuNote}`;
-    systemDetails.innerHTML = '';
-    const dl = document.createElement('dl');
-    const rows = [
-      ['OS', info.os], ['Machine', info.machine], ['CPU', info.cpu_brand],
-      ['Cores', info.cpu_count], ['RAM', `${info.ram_gb ?? '?'} GB`],
-      ['Simulator', info.simulator], ['Sim backend', info.genesis_backend],
-      ['Control backend', info.control_backend],
-      ['CUDA', info.cuda_available ? 'yes' : 'no'], ['Metal (MPS)', info.mps_available ? 'yes' : 'no'],
-      ['Suggested envs', `${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper}`],
-    ];
-    for (const [k, v] of rows) {
-      const dt = document.createElement('dt'); dt.textContent = k;
-      const dd = document.createElement('dd'); dd.textContent = v;
-      dl.appendChild(dt); dl.appendChild(dd);
-    }
-    systemDetails.appendChild(dl);
 
     if (!envsFieldTouched) {
       trainEnvs.value = info.suggested_num_envs.comfortable;
@@ -1181,22 +1180,10 @@ function refreshSystemInfo() {
       updateCommandPreview();
     }
   }).catch((e) => {
-    systemSummary.textContent = 'system info unavailable';
+    if (hardwarePanel) hardwarePanel.textContent = 'System info unavailable.';
     console.warn('system_info unavailable:', e.message);
   });
 }
-
-systemDetailsBtn.addEventListener('click', () => {
-  const opening = systemDetails.hidden;
-  systemDetails.hidden = !opening;
-  systemDetailsBtn.setAttribute('aria-expanded', String(opening));
-});
-document.addEventListener('click', (e) => {
-  if (!systemDetails.hidden && !e.target.closest('#system-bar')) {
-    systemDetails.hidden = true;
-    systemDetailsBtn.setAttribute('aria-expanded', 'false');
-  }
-});
 
 // ---- create policy (training) ----
 // The whole point of this panel, per the user ask: never hide the actual

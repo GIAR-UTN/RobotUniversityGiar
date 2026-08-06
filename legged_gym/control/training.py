@@ -285,21 +285,23 @@ class TrainingManager:
             # scaling on CPU). Gets less relevant once real history exists;
             # estimate()/the UI prefer measured numbers when they're available.
             "suggested_num_envs": {"comfortable": max(4, cpu_count * 4), "upper": max(8, cpu_count * 16)},
-            # NOT measured on THIS machine — unlike everything above, Kaggle
-            # jobs run on Kaggle's infrastructure, not here, so this can't be
-            # a live probe (there's no session to query without spending a
-            # kernel). These are documented facts about what Kaggle's free
-            # tier actually hands out, confirmed repeatedly this session via
-            # real kernel runs (torch.cuda.get_device_capability(0) and
-            # nvidia-smi output inside real kernels) — see
-            # HANDOFF_kaggle_cloud_gpu.md. The Hardware panel labels this
-            # section "typical", not "current", for exactly that reason.
+            # NOT measured on THIS machine — Kaggle jobs run on Kaggle's own
+            # infrastructure, not here, so this can never be a live-per-
+            # request probe the way everything above is (there's no session
+            # to query without spending a kernel). These numbers ARE real
+            # measurements, though, not guesses: a dedicated diagnostic
+            # kernel (multiprocessing.cpu_count(), /proc/meminfo, nvidia-smi,
+            # torch.cuda.get_device_properties) was run specifically to
+            # capture them — see HANDOFF_kaggle_cloud_gpu.md. Kaggle can
+            # still hand out something different next session (this is a
+            # free tier, not a reserved instance), which is why the Hardware
+            # panel labels this "measured once", not "live".
             "kaggle_profile": {
                 "gpu": "Tesla P100-PCIE-16GB",
                 "compute_capability": "6.0 (Pascal)",
-                "vram_gb": 16,
+                "vram_gb": 15.89,
                 "cpu_cores": 4,
-                "ram_gb": 29,
+                "ram_gb": 31.3,
                 "simulator": "isaacgym",
                 "bootstrap_overhead_s": 180,
                 "session_cap_hours": 12,
