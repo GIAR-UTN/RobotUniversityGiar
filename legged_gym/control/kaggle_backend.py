@@ -96,6 +96,17 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
         f'{json.dumps(REPO_URL)}, REPO_DIR], check=True)',
         'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", '
         'f"{REPO_DIR}[genesis]"], check=True)',
+        # genesis[extras] pulls in an unpinned "torch", which on a fresh
+        # Kaggle container resolves to whatever's newest on PyPI right now —
+        # and current torch releases have dropped compiled kernels for
+        # Pascal (sm_60, what Kaggle's free-tier P100 is). A colleague's own
+        # unitree_rl_gym-on-Kaggle notebook (kaggle.com/code/jvillalba007/
+        # unitree-rl) hit this same wall and fixed it by pinning an exact
+        # older release still built for it — same fix here, last-install-
+        # wins over whatever genesis[extras] brought in above.
+        'subprocess.run([sys.executable, "-m", "pip", "install", "-q", '
+        '"torch==2.3.1", "torchvision==0.18.1", "torchaudio==2.3.1", '
+        '"--index-url", "https://download.pytorch.org/whl/cu121"], check=True)',
         "",
         "env = dict(os.environ)",
         'env["SIMULATOR"] = "genesis"',
