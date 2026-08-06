@@ -18,7 +18,7 @@ only inside this thread's run().
 The repo this pushes to Kaggle is cloned fresh from GitHub inside the kernel
 itself (see _build_kernel_script) rather than uploaded as a Kaggle Dataset —
 only possible because this repo is public (github.com/josetabuyo/
-LeggedGym-Ex). That keeps `kernels_push` fast (a few KB of script, not a
+RobotUniversityGiar). That keeps `kernels_push` fast (a few KB of script, not a
 multi-GB upload of checkpoints/venvs/logs), which matters because push still
 runs on this background thread's timeline, not the sim thread's — but a slow
 push would still delay this thread noticing failures, so keeping it fast is
@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-REPO_URL = "https://github.com/josetabuyo/LeggedGym-Ex.git"
+REPO_URL = "https://github.com/josetabuyo/RobotUniversityGiar.git"
 DEFAULT_BRANCH = "main"
 POLL_INTERVAL_S = 15  # how often this thread (never the sim thread) checks kernels_status
 # Kaggle's own GPU session cap is ~12h; bail well before that so a stuck/orphaned

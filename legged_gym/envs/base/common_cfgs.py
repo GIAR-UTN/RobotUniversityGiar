@@ -1,4 +1,4 @@
-# This file contains common configuration classes for robots supported by LeggedGym-Ex
+# This file contains common configuration classes for robots supported by RobotUniversityGiar
 # These common configuration classes are used to define default values for various configuration parameters, which can be overridden by task-specific configuration classes.
 # Author: Yasen Jia
 # Date: 2026-02-14

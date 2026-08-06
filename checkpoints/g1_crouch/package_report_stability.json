@@ -8,14 +8,14 @@
   "candidates": [
     {
       "iteration": 1163,
-      "path": "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/logs/g1_crouch/Jul28_16-08-14_/model_1163.pt",
+      "path": "/Users/josetabuyo/Development/GIAR/RobotUniversityGiar/logs/g1_crouch/Jul28_16-08-14_/model_1163.pt",
       "stability_score": 0.98828125,
       "mean_height": 0.675569995045662
     }
   ],
   "winner": {
     "iteration": 1163,
-    "path": "/Users/josetabuyo/Development/GIAR/LeggedGym-Ex/logs/g1_crouch/Jul28_16-08-14_/model_1163.pt",
+    "path": "/Users/josetabuyo/Development/GIAR/RobotUniversityGiar/logs/g1_crouch/Jul28_16-08-14_/model_1163.pt",
     "stability_score": 0.98828125,
     "mean_height": 0.675569995045662
   },

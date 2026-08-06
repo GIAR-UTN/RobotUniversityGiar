@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Smoke test script for LeggedGym-Ex training tasks.
+Smoke test script for RobotUniversityGiar training tasks.
 
 This script runs a quick smoke test on all registered training tasks,
 executing only 5 iterations to verify that training can start normally.
@@ -114,7 +114,7 @@ def run_smoke_tests(
         tasks = get_registered_tasks()
     
     print("=" * 80)
-    print(f"LeggedGym-Ex Smoke Test Suite")
+    print(f"RobotUniversityGiar Smoke Test Suite")
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Testing {len(tasks)} task(s) with {num_iterations} iteration(s) each")
     print(f"Device: {'CPU' if use_cpu else 'GPU'}")
@@ -205,7 +205,7 @@ def print_summary(results: Dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Run smoke tests on LeggedGym-Ex training tasks',
+        description='Run smoke tests on RobotUniversityGiar training tasks',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

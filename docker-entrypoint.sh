@@ -2,8 +2,8 @@
 set -e
 
 # Activate the uv-managed venv so every python/pip call uses it.
-# The venv is created by the Dockerfile at /workspace/LeggedGym-Ex/.venv.
-. /workspace/LeggedGym-Ex/.venv/bin/activate
+# The venv is created by the Dockerfile at /workspace/RobotUniversityGiar/.venv.
+. /workspace/RobotUniversityGiar/.venv/bin/activate
 
 # If manual arguments are passed (e.g. `docker run ... bash` or
 # `docker run ... python ...`), execute them directly and skip the
@@ -109,5 +109,5 @@ if [ -n "$SPEED" ]; then
     ARGS+=("--speed" "$SPEED")
 fi
 
-cd /workspace/LeggedGym-Ex
+cd /workspace/RobotUniversityGiar
 exec python legged_gym/scripts/swap_experiment.py "${ARGS[@]}"

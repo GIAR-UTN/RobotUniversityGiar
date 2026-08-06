@@ -1,8 +1,8 @@
 # =============================================================================
-# LeggedGym-Ex Dockerfile (Genesis — swap_experiment.py)
+# RobotUniversityGiar Dockerfile (Genesis — swap_experiment.py)
 # =============================================================================
 # This Dockerfile builds a self-contained image for the GIAR fork of
-# LeggedGym-Ex, targeting the policy-switching demo in simulation.
+# RobotUniversityGiar, targeting the policy-switching demo in simulation.
 #
 # It is configured for:
 #   * Python 3.12
@@ -21,12 +21,12 @@
 # GENESIS_BACKEND=cuda is set and available.
 #
 # Build:
-#   docker build -t leggedgym-ex:genesis .
+#   docker build -t robotuniversitygiar:genesis .
 #
 # Run interactively:
 #   docker run --rm -it -p 9006:9006 -p 9013:9013 \
 #        -v $(pwd)/policies:/workspace/policies:ro \
-#        leggedgym-ex:genesis bash
+#        robotuniversitygiar:genesis bash
 #
 # =============================================================================
 
@@ -70,7 +70,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN uv python install 3.12
 
 # ---- Working directory -------------------------------------------------------
-WORKDIR /workspace/LeggedGym-Ex
+WORKDIR /workspace/RobotUniversityGiar
 
 # ---- Copy dependency descriptor first (helps Docker layer caching) -----------
 COPY pyproject.toml ./
@@ -110,11 +110,11 @@ COPY . .
 RUN . .venv/bin/activate && uv pip install -e . --no-deps
 
 # Ensure imports work regardless of the current working directory
-ENV PYTHONPATH=/workspace/LeggedGym-Ex
-ENV PATH="/workspace/LeggedGym-Ex/.venv/bin:$PATH"
+ENV PYTHONPATH=/workspace/RobotUniversityGiar
+ENV PATH="/workspace/RobotUniversityGiar/.venv/bin:$PATH"
 
 # ---- Copy the automatic entrypoint ------------------------------------------
-COPY docker-entrypoint.sh /workspace/LeggedGym-Ex/docker-entrypoint.sh
+COPY docker-entrypoint.sh /workspace/RobotUniversityGiar/docker-entrypoint.sh
 
 # ---- Expose ports used by swap_experiment.py ---------------------------------
 # 9006 -> viser web viewer
@@ -123,7 +123,7 @@ EXPOSE 9006 9013
 
 # Invoking via bash avoids any host-side permission issues with the copied
 # script's execute bit.
-ENTRYPOINT ["bash", "/workspace/LeggedGym-Ex/docker-entrypoint.sh"]
+ENTRYPOINT ["bash", "/workspace/RobotUniversityGiar/docker-entrypoint.sh"]
 
 # When no explicit command is given, the entrypoint launches swap_experiment.py.
 # You can still drop into a shell with: docker run ... bash

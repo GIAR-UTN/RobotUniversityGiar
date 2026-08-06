@@ -127,7 +127,7 @@ def get_args():
     
     parser = argparse.ArgumentParser(
         formatter_class=formatter_class,
-        description="LeggedGym-Ex - Train legged robots with reinforcement learning",
+        description="RobotUniversityGiar - Train legged robots with reinforcement learning",
         epilog="For more information, visit: https://github.com/lupinjia/LeggedGym-Ex"
     )
     parser.add_argument('--task',           type=str, default='go2', help="task name")

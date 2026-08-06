@@ -5,11 +5,11 @@
 **Branch:** dev
 
 ## OVERVIEW
-LeggedGym-Ex is a legged robot RL framework supporting Genesis, IsaacGym, and IsaacSim. Extends legged_gym with 10+ published methods (DeepMimic, AMP, Walk These Ways, etc.).
+RobotUniversityGiar (formerly LeggedGym-Ex) is a legged robot RL framework supporting Genesis, IsaacGym, and IsaacSim. Extends legged_gym with 10+ published methods (DeepMimic, AMP, Walk These Ways, etc.).
 
 ## STRUCTURE
 ```
-LeggedGym-Ex/
+RobotUniversityGiar/
 ├── legged_gym/          # Core framework (envs, scripts, utils, simulator)
 ├── rsl_rl/              # RL algorithms (PPO variants)
 ├── resources/           # Robot URDFs, meshes, reference motions

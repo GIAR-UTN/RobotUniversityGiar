@@ -1,4 +1,4 @@
-# 🦿 LeggedGym-Ex — GIAR fork
+# 🦿 RobotUniversityGiar — GIAR fork
 
 > A working, from-scratch build log of teaching a Unitree G1 humanoid to walk in simulation on a laptop with no NVIDIA GPU, and of designing a control architecture that lets you switch between trained walking policies — from a web page, autonomously on the robot, or eventually from an LLM — without rewriting anything when you move from simulator to real hardware.
 
@@ -20,7 +20,7 @@ LeggedGym-Ex (lupinjia)
    │  ports the same training framework to run on Genesis (a physics engine that,
    │  unlike Isaac Gym, doesn't require Linux + an NVIDIA GPU — it runs on Apple Silicon)
    ▼
-LeggedGym-Ex — this fork (josetabuyo/GIAR)
+RobotUniversityGiar — this fork (josetabuyo/GIAR)
       adds legged_gym/control/: a backend-agnostic layer for switching between
       trained policies, supervised from a web UI or decided autonomously,
       designed to work identically in sim and (eventually) on the real robot
@@ -47,8 +47,8 @@ Every step above is a real, separate open-source project — see [UPSTREAM_READM
 ## 2. Setup
 
 ```bash
-git clone https://github.com/josetabuyo/LeggedGym-Ex.git
-cd LeggedGym-Ex
+git clone https://github.com/josetabuyo/RobotUniversityGiar.git
+cd RobotUniversityGiar
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser
 pip install genesis-world warp-lang

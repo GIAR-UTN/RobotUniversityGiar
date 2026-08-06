@@ -1,5 +1,5 @@
 # =============================================================================
-# Docker Compose — LeggedGym-Ex swap_experiment.py
+# Docker Compose — RobotUniversityGiar swap_experiment.py
 # =============================================================================
 # This service builds and immediately starts the policy-switching demo.
 # No manual commands are required after `docker compose up`.
@@ -37,16 +37,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: leggedgym-ex:genesis
+    image: robotuniversitygiar:genesis
     container_name: leggedgym-swap-experiment
 
     # Mount the repo live so edits on the host are reflected immediately.
     # Also mount a read-only policies/ directory for your .pt checkpoints.
     volumes:
-      # - .:/workspace/LeggedGym-Ex
+      # - .:/workspace/RobotUniversityGiar
       - ./policies:/workspace/policies:ro
 
-    working_dir: /workspace/LeggedGym-Ex
+    working_dir: /workspace/RobotUniversityGiar
 
     environment:
       SIMULATOR: genesis
