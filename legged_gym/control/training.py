@@ -305,6 +305,16 @@ class TrainingManager:
                 "simulator": "isaacgym",
                 "bootstrap_overhead_s": 180,
                 "session_cap_hours": 12,
+                # Real, not a guess: a dedicated kernel created the g1 task's
+                # IsaacGymSimulator env at num_envs=4096 on this exact P100
+                # and it succeeded (no OOM, no crash) — confirmed alongside
+                # general community guidance for a 16GB GPU on non-vision
+                # humanoid tasks (~2048-4096 is the typical range; see
+                # HANDOFF_kaggle_cloud_gpu.md). "comfortable" is set below
+                # the confirmed-working ceiling, same conservative spirit as
+                # the local suggestion, not AT the edge of what's proven to
+                # still work.
+                "suggested_num_envs": {"comfortable": 1024, "upper": 4096},
             },
         }
 

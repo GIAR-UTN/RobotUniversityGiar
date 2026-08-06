@@ -1122,6 +1122,8 @@ function renderHardwarePanel(info) {
         ? `~${Math.round(kp.bootstrap_overhead_s / 60)} min (fresh venv + Isaac Gym install, every job)` : '–'],
       ['Session cap', kp.session_cap_hours != null
         ? `${kp.session_cap_hours}h (Kaggle's own GPU session limit)` : '–'],
+      ['Suggested parallel envs', kp.suggested_num_envs
+        ? `${kp.suggested_num_envs.comfortable}–${kp.suggested_num_envs.upper}` : '–'],
     ];
     for (const [k, v] of kaggleRows) {
       const dt = document.createElement('dt'); dt.textContent = k;
@@ -1137,7 +1139,10 @@ function renderHardwarePanel(info) {
       + 'backend needs Volta+ hardware this tier doesn\'t have, so Kaggle jobs run Isaac Gym instead — a '
       + 'different simulator than every local job (see Docs → Simulators). Its own time estimate in Create '
       + 'Policy is measured separately from local runs, and includes the per-job bootstrap above, which '
-      + 'dominates a short job\'s wall-clock time in a way local runs never account for.';
+      + 'dominates a short job\'s wall-clock time in a way local runs never account for. The suggested '
+      + 'parallel-envs range is real too, not a guess — a diagnostic kernel confirmed g1 creates cleanly at '
+      + '4096 envs on this exact P100 (no OOM), matching typical community guidance for a 16GB GPU on a '
+      + 'non-vision humanoid task.';
     kaggle.appendChild(kaggleP);
   } else {
     const p = document.createElement('p');
@@ -1156,17 +1161,36 @@ function renderHardwarePanel(info) {
   hardwarePanel.appendChild(choose);
 }
 
+// The suggestion (both the number and the hint text) reflects whichever
+// backend is currently selected — local's is CPU-core-based, Kaggle's comes
+// from a real diagnostic kernel (see kaggle_profile's own comment in
+// training.py) — never a blend of the two.
+function updateEnvsHint() {
+  if (!systemInfo) return;
+  if (trainBackend === 'kaggle') {
+    const kp = systemInfo.kaggle_profile;
+    if (!kp || !kp.suggested_num_envs) {
+      trainEnvsHint.textContent = 'Suggested range unavailable — this server needs a restart to pick up Kaggle\'s profile.';
+      return;
+    }
+    if (!envsFieldTouched) trainEnvs.value = kp.suggested_num_envs.comfortable;
+    trainEnvsHint.textContent =
+      `Suggested for Kaggle's GPU: ${kp.suggested_num_envs.comfortable}–${kp.suggested_num_envs.upper} ` +
+      `— confirmed g1 creates cleanly up to 4096 envs on that hardware (see Hardware tab).`;
+  } else {
+    const s = systemInfo.suggested_num_envs;
+    if (!envsFieldTouched) trainEnvs.value = s.comfortable;
+    trainEnvsHint.textContent =
+      `Suggested for this machine: ${s.comfortable}–${s.upper} ` +
+      `(${systemInfo.cpu_count} cores detected) — more scales training speed less on CPU past that.`;
+  }
+}
+
 function refreshSystemInfo() {
   call('system_info').then((info) => {
     systemInfo = info;
     renderHardwarePanel(info);
-
-    if (!envsFieldTouched) {
-      trainEnvs.value = info.suggested_num_envs.comfortable;
-    }
-    trainEnvsHint.textContent =
-      `Suggested for this machine: ${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper} ` +
-      `(${info.cpu_count} cores detected) — more scales training speed less on CPU past that.`;
+    updateEnvsHint();
     updateEstimate();
 
     // Only offer the toggle when ~/.kaggle/kaggle.json exists server-side
@@ -1426,6 +1450,7 @@ trainBackendTabs.querySelectorAll('button').forEach((btn) => {
     trainBase.disabled = trainBackend === 'kaggle';
     if (trainBackend === 'kaggle') trainBase.value = '';
     updateCommandPreview();
+    updateEnvsHint(); // different backend = different suggested range, see updateEnvsHint()
     updateEstimate(); // different backend = different history bucket, see estimate()
   });
 });
