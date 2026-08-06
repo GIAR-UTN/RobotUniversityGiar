@@ -24,8 +24,14 @@ dependencies = [
 
 [project.optional-dependencies]
 isaacgym = [
-    "torch==2.4.1+cu121",
-    'torchvision==0.19.1+cu121',
+    # torch/torchvision deliberately NOT pinned here: "+cu121" local-version
+    # wheels don't exist on PyPI, only on download.pytorch.org/whl/cu121, so
+    # a plain `pip install -e .[isaacgym]` against the default index always
+    # hits ResolutionImpossible on this pin. Install torch from that index
+    # explicitly BEFORE this extra (see kaggle_backend.py's gpu_lines for
+    # the Genesis-path precedent, and the colleague's proven Kaggle recipe
+    # this mirrors) -- one place owns the torch pin, the place that knows
+    # the target hardware.
     "numpy==1.24.1",
     "pandas==2.0.3",
     "scipy==1.10.1",
