@@ -420,6 +420,12 @@ class ViserViewer:
         self._build_scene()
 
     def _build_scene(self) -> None:
+        # Dark by default (the control web this is embedded in is dark-only —
+        # see web/index.html), and no Share button: it posts a link through
+        # viser's own relay service, which this deployment has no route to,
+        # so it always just fails silently.
+        self.server.gui.configure_theme(dark_mode=True, show_share_button=False)
+
         for env_idx in range(self.num_envs):
             prefix = f"/env_{env_idx}" if self.num_envs > 1 else ""
             frame = self.server.scene.add_frame(f"{prefix}/robot", show_axes=False)
@@ -482,12 +488,44 @@ class ViserViewer:
     def _setup_camera(self) -> None:
         self._camera_offset = np.array([2.0, 2.0, 1.5])
         self._camera_look_at_offset = np.array([0.0, 0.0, 0.3])
+        # None means "not tracking yet" -- the next _apply_camera_tracking()
+        # call snaps every client to the default offset above instead of
+        # translating from a stale base position. Set on connect, and reset
+        # whenever tracking is (re-)enabled, so turning it back on after
+        # manually flying away snaps back predictably instead of jumping by
+        # whatever the robot moved while tracking was off.
+        self._camera_track_last_base_pos: Optional[np.ndarray] = None
 
         @self.server.on_client_connect
         def _(client: viser.ClientHandle) -> None:
             client.camera.position = self._camera_offset.copy()
             client.camera.look_at = self._camera_look_at_offset.copy()
             client.camera.fov = np.radians(60.0)
+            self._camera_track_last_base_pos = None
+
+    def _apply_camera_tracking(self, base_pos: np.ndarray) -> None:
+        """Follow the robot without fighting the user's own camera control.
+
+        The naive version of this (seen in earlier code here) reset every
+        client's camera to `base_pos + self._camera_offset` on every single
+        call -- and this runs every sim/render tick. Any zoom (scroll wheel,
+        touch pinch) or orbit the user did was immediately stomped by the
+        next tick, so "Track robot" effectively disabled camera control
+        altogether. Instead, translate each client's current camera by
+        exactly how far the robot moved since the last tick -- the user's
+        chosen distance/angle survives, the camera just keeps riding along.
+        """
+        if self._camera_track_last_base_pos is None:
+            for client in self.server.get_clients().values():
+                client.camera.position = base_pos + self._camera_offset
+                client.camera.look_at = base_pos + self._camera_look_at_offset
+        else:
+            delta = base_pos - self._camera_track_last_base_pos
+            if np.any(delta != 0):
+                for client in self.server.get_clients().values():
+                    client.camera.position = client.camera.position + delta
+                    client.camera.look_at = client.camera.look_at + delta
+        self._camera_track_last_base_pos = base_pos.copy()
 
     def _setup_camera_gui(self) -> None:
         """Add camera tracking and FOV controls."""
@@ -503,6 +541,8 @@ class ViserViewer:
             @cb_tracking.on_update
             def _(_) -> None:
                 self._camera_tracking_enabled = cb_tracking.value
+                if self._camera_tracking_enabled:
+                    self._camera_track_last_base_pos = None
 
             slider_fov = self.server.gui.add_slider(
                 "FOV (\u00b0)",
@@ -635,9 +675,7 @@ class ViserViewer:
                     handle.wxyz = quat
 
             if self._camera_tracking_enabled:
-                for client in self.server.get_clients().values():
-                    client.camera.position = base_pos + self._camera_offset
-                    client.camera.look_at = base_pos + self._camera_look_at_offset
+                self._apply_camera_tracking(base_pos)
 
         self.server.flush()
 
@@ -665,9 +703,7 @@ class ViserViewer:
                 handle.wxyz = _xyzw_to_wxyz(state["quat"][robot_index].detach().cpu().numpy())
 
             if self._camera_tracking_enabled:
-                for client in self.server.get_clients().values():
-                    client.camera.position = base_pos + self._camera_offset
-                    client.camera.look_at = base_pos + self._camera_look_at_offset
+                self._apply_camera_tracking(base_pos)
 
         self.server.flush()
 

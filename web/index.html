@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LeggedGym-Ex — Control Web</title>
+<title>RobotUniversityGiar — Control Web</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='16' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='42' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='10' y='18' width='44' height='34' rx='10' fill='%2316202b'/%3E%3Ccircle cx='24' cy='34' r='5' fill='%23d9531a'/%3E%3Ccircle cx='40' cy='34' r='5' fill='%23d9531a'/%3E%3Crect x='26' y='44' width='12' height='4' rx='2' fill='%23d9531a'/%3E%3C/svg%3E">
 <style>
   :root{
@@ -72,7 +72,13 @@
     padding:.6rem 1rem; border-bottom:1px solid var(--line);
     background:var(--bg-raised);
   }
-  header h1{font-size:.95rem; margin:0; font-weight:600; white-space:nowrap;}
+  .brand{display:flex; align-items:center; gap:.65rem; text-decoration:none; color:inherit;}
+  .brand img{height:34px; width:auto; border-radius:4px; display:block;}
+  .brand-text{display:flex; flex-direction:column; line-height:1.15;}
+  .brand-text .app-name{font-size:.85rem; font-weight:400; white-space:nowrap; letter-spacing:.01em;}
+  .brand-text .app-name strong{font-weight:800;}
+  .brand-text .app-name .name-giar{font-weight:700; color:var(--accent2);}
+  .brand-text .app-sub{font-size:.68rem; color:var(--muted); white-space:nowrap;}
   nav{display:flex; gap:.25rem;}
   nav button{
     border:1px solid transparent; background:none; color:var(--muted);
@@ -463,7 +469,13 @@
 <body>
 
 <header>
-  <h1>LeggedGym-Ex — Control Web</h1>
+  <a class="brand" href="https://giar.ai/" target="_blank" rel="noopener" title="GIAR — Grupo de Inteligencia Artificial y Robótica, UTN.BA">
+    <img src="/assets/giar-mark.png" alt="GIAR — Grupo de IA &amp; Robótica">
+    <span class="brand-text">
+      <span class="app-name"><strong>R</strong>obot<strong>U</strong>niversity<span class="name-giar">Giar</span> — Control Web</span>
+      <span class="app-sub">A GIAR project · UTN Buenos Aires</span>
+    </span>
+  </a>
   <nav id="tabs">
     <button data-drawer="hardware">Hardware</button>
     <button data-drawer="docs">Docs</button>
@@ -574,12 +586,17 @@
         <h2>Pause &amp; Restart</h2>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Pause/Restart affect the sim run itself, separate from driving it or switching policies.</p>
+          <p>Pause/Restart affect the sim run itself, separate from driving it or switching policies. Auto-restart timer is off by default — the robot only resets when you hit Restart (or on a real fall) — turn it on to get the training-style episode timeout back.</p>
         </div>
       </div>
       <div class="section-body">
         <button class="action-btn" id="btn-pause">Pause <span class="keycap">P</span></button>
         <button class="action-btn" id="btn-restart">Restart <span class="keycap">R</span></button>
+        <label class="toggle-row"><input type="checkbox" id="chk-episode-timeout"> Auto-restart timer</label>
+        <div class="field-row" id="episode-timeout-row" style="margin-left:1.5rem; margin-top:-.2rem;" hidden>
+          <label for="episode-timeout-s">Interval (seconds)</label>
+          <input type="number" id="episode-timeout-s" min="1" step="1" value="20">
+        </div>
       </div>
     </section>
 

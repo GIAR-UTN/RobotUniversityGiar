@@ -105,6 +105,8 @@
     color:var(--muted);
     margin-bottom:18px;
   }
+  .sidebar .brand strong{font-weight:800; color:var(--ink-soft);}
+  .sidebar .brand .name-giar{font-weight:700; color:var(--accent2);}
   .toc{list-style:none; margin:0; padding:0; font-size:12.5px;}
   .toc li{margin:0;}
   .toc a{
@@ -349,11 +351,38 @@
     color:var(--muted); font-size:13px;
   }
   .theme-note{font-size:11px; color:var(--muted); margin-top:4px;}
+
+  /* ---- GIAR banner ---- */
+  .giar-banner{
+    max-width:1180px; margin:0 auto;
+    border-radius:0 0 10px 10px;
+    overflow:hidden;
+  }
+  .giar-banner-img{
+    display:block; width:100%; height:auto; max-height:170px;
+    object-fit:cover; object-position:75% center;
+  }
+  .giar-banner-text{
+    padding:14px 24px 18px;
+    background:var(--bg-raised);
+    border-bottom:1px solid var(--line);
+    font-size:13.5px; color:var(--ink-soft);
+  }
+  .giar-banner-text p{margin:0; max-width:none;}
+  .giar-banner-text a{color:var(--accent2);}
+  @media (max-width:560px){ .giar-banner-img{max-height:110px;} }
 </style>
+
+<div class="giar-banner">
+  <img class="giar-banner-img" src="/assets/giar-logo.png" alt="GIAR — Grupo de Inteligencia Artificial y Robótica">
+  <div class="giar-banner-text">
+    <p>Este proyecto es desarrollado por <strong>GIAR</strong> — Grupo de Inteligencia Artificial y Robótica, laboratorio de I+D de la <strong>Universidad Tecnológica Nacional, Facultad Regional Buenos Aires</strong>. Fundado en 1986, es uno de los grupos de investigación en IA y robótica más antiguos de Latinoamérica, trabajando en sistemas robóticos autónomos, visión por computadora y aprendizaje automático. Más información en <a href="https://giar.ai/" target="_blank" rel="noopener">giar.ai</a> · <a href="https://frba.utn.edu.ar/giar/historia/" target="_blank" rel="noopener">historia del grupo</a>.</p>
+  </div>
+</div>
 
 <div class="layout">
   <nav class="sidebar" aria-label="Table of contents">
-    <div class="brand">LeggedGym-Ex (GIAR fork) — field guide</div>
+    <div class="brand"><strong>R</strong>obot<strong>U</strong>niversity<span class="name-giar">Giar</span> — field guide</div>
     <ul class="toc">
       <li><a href="#top">Start</a></li>
       <div class="grp">The hardware</div>
@@ -364,7 +393,6 @@
       <li><a href="#pd">PD control</a></li>
       <div class="grp">The learning</div>
       <li><a href="#rl">Learning to walk</a></li>
-      <li><a href="#sims">Two simulators, one policy</a></li>
       <li><a href="#pipeline">The full pipeline</a></li>
       <div class="grp">Reading the repo</div>
       <li><a href="#config">Anatomy of a config</a></li>
@@ -372,10 +400,9 @@
       <li><a href="#sim2real">Onto the real robot</a></li>
       <li><a href="#diy">Build your own</a></li>
       <div class="grp">This fork</div>
-      <li><a href="#genesis-fork">Running on Genesis instead</a></li>
+      <li><a href="#sims">Simulators: what runs where, and why</a></li>
       <li><a href="#control-arch">Switching policies live</a></li>
       <li><a href="#team">Working as a team</a></li>
-      <li><a href="#envs">Simulators &amp; where training runs</a></li>
       <div class="grp">Reference</div>
       <li><a href="#glossary">Glossary</a></li>
       <li><a href="#credits">Credits &amp; license</a></li>
@@ -386,7 +413,7 @@
     <div class="hero" id="top">
       <div class="eyebrow">A field guide to unitree_rl_gym — and this Genesis-based fork</div>
       <h1>How a Unitree robot learns to walk</h1>
-      <p class="lede">You don't need to know anything about robotics or machine learning to start. By the end of this page you'll understand — down to the real Python — how a simulated Unitree robot teaches itself to walk, how that same brain ends up moving a physical machine, and (§12–§13) how this fork lets you switch between trained policies live, safely, in a way built to work the same whether the robot is simulated or real.</p>
+      <p class="lede">You don't need to know anything about robotics or machine learning to start. By the end of this page you'll understand — down to the real Python — how a simulated Unitree robot teaches itself to walk, how that same brain ends up moving a physical machine, and (§12) how this fork lets you switch between trained policies live, safely, in a way built to work the same whether the robot is simulated or real.</p>
 
       <div class="journey">
         <div class="box"><div class="t">1. Simulator</div><div class="s">thousands of fake robots fall down, get up, try again</div></div>
@@ -565,7 +592,7 @@ decimation = 4               # 4 PD steps per policy step</code></pre>
         <div class="num">§5 — the learning</div>
         <h2>Learning to walk</h2>
         <p class="lead-q">Nobody hand-writes the walking motion. So where does it come from?</p>
-        <p>Think of it as a video game played by an athlete who starts out unable to stand, and only gets a score at the end of each attempt. The <strong>simulator</strong> is the game (you'll meet it properly in <a href="#sims">§6</a>) — physics, gravity, contact with the ground. The <strong>policy</strong> is the athlete's reflexes: a small neural network that reads the current situation (the <em>observation</em>) and outputs what to do next (the <em>action</em> — those target joint angles from §4).</p>
+        <p>Think of it as a video game played by an athlete who starts out unable to stand, and only gets a score at the end of each attempt. The <strong>simulator</strong> is the game (you'll meet the whole cast of simulators this fork uses in <a href="#sims">§11</a>) — physics, gravity, contact with the ground. The <strong>policy</strong> is the athlete's reflexes: a small neural network that reads the current situation (the <em>observation</em>) and outputs what to do next (the <em>action</em> — those target joint angles from §4).</p>
 
         <ul>
           <li><strong>Observation</strong> — everything the robot can currently sense: orientation, joint angles &amp; speeds, the velocity command it's been asked to follow, and what it did last tick.</li>
@@ -670,23 +697,8 @@ def act(self, observations):
         </div>
       </section>
 
-      <section id="sims">
-        <div class="num">§6 — the learning</div>
-        <h2>Two simulators, one policy</h2>
-        <p>The "game" from §5 is played in more than one physics engine — on purpose.</p>
-        <div class="tabwrap">
-          <table>
-            <tr><th>Stage</th><th>Engine</th><th>Why</th></tr>
-            <tr><td class="k">Train &amp; Play</td><td><abbr class="term" title="NVIDIA's GPU-accelerated rigid-body physics simulator (PhysX-based). Runs thousands of robot copies in parallel on one GPU, which is what makes RL training over millions of ticks feasible in hours instead of years.">Isaac Gym</abbr></td><td>GPU-parallel — thousands of robots physically simulated at once, fast enough to train in hours.</td></tr>
-            <tr><td class="k">Sim2Sim</td><td>MuJoCo</td><td>A second opinion from a <em>different</em> physics engine. If a policy only works in Isaac Gym, it likely memorized that engine's specific numerical quirks rather than learning real physics — MuJoCo catches that before risking hardware.</td></tr>
-            <tr><td class="k">Sim2Real</td><td>the real robot</td><td>The final and only test that actually matters.</td></tr>
-          </table>
-        </div>
-        <p>Isaac Gym reads <abbr class="term" title="Unified Robot Description Format — XML robot description, used by Isaac Gym.">URDF</abbr> (Unified Robot Description Format) files; MuJoCo reads its own format, <abbr class="term" title="MuJoCo XML Configuration Format — MuJoCo's native XML robot-description schema. Describes the same robot geometry as a URDF, just in MuJoCo's own vocabulary.">MJCF</abbr> (MuJoCo XML Configuration Format — files like <code>scene.xml</code>). Both describe the same physical Go2 or G1 — just for two different simulators.</p>
-      </section>
-
       <section id="pipeline">
-        <div class="num">§7 — the learning</div>
+        <div class="num">§6 — the learning</div>
         <h2>The full pipeline</h2>
         <p>Four commands, four stages, each one's output feeding the next:</p>
 
@@ -713,7 +725,7 @@ def act(self, observations):
       </section>
 
       <section id="config">
-        <div class="num">§8 — reading the repo</div>
+        <div class="num">§7 — reading the repo</div>
         <h2>Anatomy of a config: Go2</h2>
         <p>Every robot in this repo is defined almost entirely by one Python config file. Here's Go2's, in full, mapped back to what you've already learned:</p>
 
@@ -759,7 +771,7 @@ class rewards(LeggedRobotCfg.rewards):
       </section>
 
       <section id="g1">
-        <div class="num">§9 — reading the repo</div>
+        <div class="num">§8 — reading the repo</div>
         <h2>A harder robot: G1</h2>
         <p>G1 is a humanoid, and its config shows two ideas Go2 didn't need.</p>
 
@@ -813,7 +825,7 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
         <p>Two engineering details worth knowing, because they're the kind of thing that's invisible until a policy fails in a specific, confusing way:</p>
         <ul>
           <li><strong>Only positive rewards.</strong> After every term above is summed, the total is clipped to never go below zero before it's used to update the network (<code>only_positive_rewards = True</code>). Without this, a reward function this dense — mostly small, ever-present penalties — gives a struggling policy a perverse shortcut: end the episode immediately (fall on purpose) to stop accumulating penalty, rather than push through and actually learn to walk. Clipping the total at zero removes that shortcut's payoff.</li>
-          <li><strong>The <code>cautious</code> variant (§12–§13) is this same table, re-weighted — not a different reward function.</strong> Switching to it changes four numbers: gentler speed tracking (<code>tracking_lin_vel</code> 1.0→0.5), a new <code>torques</code> penalty not present at all above, and roughly 10× harsher penalties on <code>dof_acc</code>, <code>dof_vel</code>, and <code>action_rate</code>. Same bribe list, different priorities — which is also why it could be produced by <em>resuming</em> training from the stable checkpoint's weights (§12) rather than starting over.</li>
+          <li><strong>The <code>cautious</code> variant (§11–§12) is this same table, re-weighted — not a different reward function.</strong> Switching to it changes four numbers: gentler speed tracking (<code>tracking_lin_vel</code> 1.0→0.5), a new <code>torques</code> penalty not present at all above, and roughly 10× harsher penalties on <code>dof_acc</code>, <code>dof_vel</code>, and <code>action_rate</code>. Same bribe list, different priorities — which is also why it could be produced by <em>resuming</em> training from the stable checkpoint's weights (§11) rather than starting over.</li>
         </ul>
 
         <h3>What the "brain" can't see about itself</h3>
@@ -821,7 +833,7 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
       </section>
 
       <section id="sim2real">
-        <div class="num">§10 — reading the repo</div>
+        <div class="num">§9 — reading the repo</div>
         <h2>Onto the real robot</h2>
         <p>The exported policy from §7 gets loaded by <code>deploy/deploy_real/deploy_real.py</code>, which talks to the robot over the network using Unitree's own SDK, <code>unitree_sdk2py</code>. Underneath, it uses <abbr class="term" title="Data Distribution Service — a publish/subscribe network protocol. Unitree's SDK uses it to send joint commands and receive sensor state over Ethernet between your control computer and the robot's onboard computer.">DDS</abbr> (Data Distribution Service) — messages are published on a topic <code>rt/lowcmd</code> (your commands out) and read back from <code>rt/lowstate</code> (the robot's sensors in), over a plain Ethernet connection.</p>
 
@@ -850,7 +862,7 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
       </section>
 
       <section id="diy">
-        <div class="num">§11 — reading the repo</div>
+        <div class="num">§10 — reading the repo</div>
         <h2>Build your own example</h2>
         <p>Every piece above composes into a recipe. To bring up a new robot or task:</p>
         <ol class="recipe">
@@ -867,22 +879,56 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
         </div>
       </section>
 
-      <section id="genesis-fork">
-        <div class="num">§12 — this fork</div>
-        <h2>Running on Genesis instead</h2>
-        <p>Everything above describes <code>unitree_rl_gym</code> itself, which trains exclusively in <abbr class="term" title="NVIDIA's GPU-accelerated physics simulator, Linux + NVIDIA GPU only.">Isaac Gym</abbr> — Linux and an NVIDIA GPU, no exceptions. This fork (built and tested entirely on an Apple Silicon Mac) instead runs on <a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a>, a physics engine that also targets Metal on Apple Silicon, via <a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a> — a separate open-source project that ports <code>legged_gym</code>'s training framework onto Genesis (and Isaac Sim) while keeping the same config/task-registry conventions this page already walked through.</p>
+      <section id="sims">
+        <div class="num">§11 — this fork</div>
+        <h2>Simulators: what runs where, and why</h2>
+        <p>A <strong>simulator</strong> is the physics engine that steps a robot (or thousands of copies of one) forward in time — gravity, contact, joint torques. That's a completely different piece of software from a <strong>viewer</strong>, which just draws what's already happening onto a screen (Viser, met at the end of this section) — a training job needs the former, and often runs with none of the latter at all. This fork touches up to <em>four</em> different simulators/viewers depending on where a policy is in its life; here's the whole cast in one place.</p>
+
+        <div class="plate">
+          <div class="flow">
+            <span class="chip hot">Genesis <small style="display:block;color:var(--muted)">train &amp; play, local Mac</small></span>
+            <span class="sep">/</span>
+            <span class="chip hot">Isaac Gym <small style="display:block;color:var(--muted)">train &amp; play, Kaggle GPU</small></span>
+            <span class="sep">→</span>
+            <span class="chip">MuJoCo <small style="display:block;color:var(--muted)">sim2sim, a second opinion</small></span>
+            <span class="sep">→</span>
+            <span class="chip">the real robot <small style="display:block;color:var(--muted)">sim2real, the only test that counts</small></span>
+          </div>
+          <div class="cap">Train wherever the hardware is — the SAME exported checkpoint then has to survive a different physics engine's opinion before it's ever trusted near real motors.</div>
+        </div>
 
         <div class="tabwrap">
           <table>
-            <tr><th>What</th><th>unitree_rl_gym</th><th>this fork</th></tr>
-            <tr><td class="k">Simulator</td><td>Isaac Gym</td><td>Genesis (<code>gs.metal</code> backend on Apple Silicon, falls back to CPU)</td></tr>
-            <tr><td class="k">Hardware needed to train</td><td>Linux + NVIDIA GPU</td><td>none — a laptop is enough</td></tr>
-            <tr><td class="k">G1 config</td><td><code>legged_gym/envs/g1/g1_config.py</code></td><td>same shape (12 actions, 47 obs) — the same pretrained checkpoint loads and walks in both</td></tr>
+            <tr><th>Where</th><th>Simulator / tool</th><th>What it's for</th></tr>
+            <tr><td class="k">This machine (local)</td><td><abbr class="term" title="A physics simulator that also targets Apple Silicon via a Metal backend, and falls back cleanly to CPU everywhere else — what makes this fork runnable on a GPU-less Mac laptop with zero code changes.">Genesis</abbr></td><td>Train &amp; Play — every local job (Create Policy's 💻 option, or a hand-run <code>web_train.py</code>)</td></tr>
+            <tr><td class="k">Kaggle (☁️ free GPU)</td><td><abbr class="term" title="NVIDIA's GPU-parallel physics simulator (PhysX-based). Runs thousands of robot copies in parallel on one GPU. The original unitree_rl_gym trains exclusively on it.">Isaac Gym</abbr></td><td>Train &amp; Play — the only one of the two that gets real GPU speed on Kaggle's hardware (see below)</td></tr>
+            <tr><td class="k">Either, before hardware</td><td>MuJoCo</td><td>Sim2Sim — if a policy only works in the engine it trained in, it likely memorized that engine's own numerical quirks rather than real physics</td></tr>
+            <tr><td class="k">After Sim2Sim passes</td><td>the real Go2/G1</td><td>Sim2Real — nothing before this stage is the actual test</td></tr>
+            <tr><td class="k">Watching any of the above, live</td><td><abbr class="term" title="A Python library serving an interactive 3D scene to a browser over WebSockets — no native window or GPU display driver needed on the server.">Viser</abbr> (a viewer, not a simulator)</td><td>draws the scene in a browser — this is what's rendering at <code>:9014</code> next to this fork's control web on <code>:9013</code></td></tr>
+          </table>
+        </div>
+
+        <p>Isaac Gym reads <abbr class="term" title="Unified Robot Description Format — XML robot description, used by Isaac Gym.">URDF</abbr> files; MuJoCo reads its own format, <abbr class="term" title="MuJoCo XML Configuration Format — MuJoCo's native XML robot-description schema. Describes the same robot geometry as a URDF, just in MuJoCo's own vocabulary.">MJCF</abbr> (files like <code>scene.xml</code>). Both describe the same physical Go2 or G1 — just translated for two different simulators.</p>
+
+        <h3>Why two <em>training</em> simulators, not one</h3>
+        <p><code>unitree_rl_gym</code> upstream trains exclusively on Isaac Gym — Linux and an NVIDIA GPU, no exceptions. This fork (built and tested entirely on an Apple Silicon Mac) added <a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a> via <a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a> specifically so training works with no GPU at all — but kept Isaac Gym alive for one reason: Kaggle's free-tier cloud GPU.</p>
+
+        <div class="aside">
+          <div class="label">Why Kaggle doesn't just run Genesis on its GPU</div>
+          Kaggle's free tier hands out a Tesla P100 (Pascal-generation, compute capability 6.0). Genesis's GPU backend JIT-compiles kernels that need a hardware feature (<code>warp.sync</code>) only present from Volta onward (capability 7.0+) — Pascal simply doesn't have it, no driver update fixes that. Isaac Gym's PhysX GPU pipeline has no such requirement, and was confirmed running for real on Kaggle's P100 (<code>GPU Pipeline: enabled</code> — see <code>HANDOFF_kaggle_cloud_gpu.md</code>). So: local stays on Genesis for the GPU-less-Mac use case this fork exists for; Kaggle stays on Isaac Gym because it's the only one of the two that actually gets GPU speed on the hardware Kaggle hands out.
+        </div>
+
+        <p>Selection isn't an environment variable alone — <code>legged_gym/__init__.py</code> hardcodes <code>SIMULATOR=isaacgym</code> under Python ≤3.8 and only reads <code>SIMULATOR=genesis</code> under 3.10+, so it's really <strong>which Python interpreter runs the job</strong> that decides:</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Runs on</th><th>What actually picks the simulator</th></tr>
+            <tr><td class="k">Local</td><td>This machine's normal Python (3.10+), <code>SIMULATOR=genesis</code> exported before <code>web_train.py</code> runs. By hand, <code>switch_simulator.sh</code> does the same thing via a dedicated conda env (<code>lr_gym</code>/<code>lr_gen</code>/<code>lr_lab</code> — Isaac Gym's old numpy/pandas/scipy pins can't coexist with Genesis's in one interpreter).</td></tr>
+            <tr><td class="k">Kaggle</td><td>A Python 3.8 venv bootstrapped fresh inside the kernel, Isaac Gym Preview 4 + pinned <code>torch==2.3.1+cu121</code> — <code>web_train.py</code> runs under <em>that</em> interpreter. See <code>kaggle_backend.py</code>'s <code>_build_kernel_script()</code>.</td></tr>
           </table>
         </div>
 
         <h3>Two clocks, one policy: how Genesis actually steps a tick</h3>
-        <p>§3 introduced <em>decimation</em> — the ratio between how often the policy "thinks" and how often the low-level control loop runs. Here is exactly what that looks like inside <code>GenesisSimulator</code>, this fork's translation layer between a policy's action and real physics:</p>
+        <p>§3 introduced <em>decimation</em> — how often the policy "thinks" vs. how often the low-level control loop runs. Here's exactly what that looks like inside <code>GenesisSimulator</code>, this fork's translation layer between a policy's action and real physics:</p>
         <div class="plate">
           <div class="flow">
             <span class="chip">policy decides once<br><small style="color:var(--muted)">50Hz — every 0.02s</small></span>
@@ -899,21 +945,30 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
         self._scene.step()                              # Genesis advances physics 0.005s
     self.post_physics_step()                            # read state back, once</code></pre>
         </details>
-        <p>The reason to run the PD loop faster than the network needs to "think" is the same reason a thermostat doesn't wait for a committee meeting to turn the furnace on: a dumb, fast, reliable local loop reacting to the last known target is more stable than forcing the comparatively slow neural network to make every single physics-rate decision itself.</p>
-        <p>One more Genesis-specific number, tuned for a very concrete failure mode: <code>substeps = 4</code> — extra contact-solver iterations <em>within</em> each of those physics steps, raised from Genesis's default specifically for G1 after early training (with a still-random, untrained policy) produced contact forces violent enough to blow up into <code>NaN</code>s (Not-a-Number — the numerical error state a computer produces when a calculation divides by zero or overflows; once one appears, it poisons every downstream computation) on frequent, hard early falls. More solver iterations per step means a more accurate — if slightly slower — resolution of exactly those violent, high-force contacts: the kind that only shows up when a robot the size of G1 face-plants from standing height, over and over, thousands of times, before it learns not to.</p>
+        <p>Running the PD loop faster than the network needs to "think" is the same reason a thermostat doesn't wait for a committee meeting to turn the furnace on: a dumb, fast, reliable local loop reacting to the last known target is more stable than making the slow network decide every single physics-rate step itself.</p>
+        <p>One more Genesis-specific tuning knob: <code>substeps = 4</code>, extra contact-solver iterations <em>within</em> each physics step — raised from Genesis's default after early training (with a still-random, untrained policy) produced contact forces violent enough to blow up into <code>NaN</code>s on frequent, hard early falls. More solver iterations per step resolves exactly those violent, high-force contacts more accurately, at some speed cost.</p>
 
-        <p>We trained a G1 walking policy from scratch this way — 1800 <abbr class="term" title="Proximal Policy Optimization, the RL training algorithm.">PPO</abbr> iterations, 64 parallel environments, all on CPU. It's a real, if modest, walking gait — nowhere near the polish of a full training run (this repo's own defaults train for 10,000 iterations), but genuinely learned, not scripted. We then confirmed something more useful: <strong><code>unitree_rl_gym</code>'s own shipped, fully-trained checkpoint</strong> (<code>deploy/pre_train/g1/motion.pt</code>) loads and walks correctly in this Genesis fork too — same URDF, same joint order, same PD gains — and stays upright at its target height (~0.78m) for hundreds of steps, dramatically more stable than anything trainable locally in a few minutes. That pretrained checkpoint became the reference "stable" policy for everything in the next section.</p>
+        <p>We trained a G1 walking policy from scratch this way — 1800 <abbr class="term" title="Proximal Policy Optimization, the RL training algorithm.">PPO</abbr> iterations, 64 parallel environments, all on CPU. Real, if modest — nowhere near a full 10,000-iteration run's polish, but genuinely learned, not scripted. More usefully, we confirmed <strong><code>unitree_rl_gym</code>'s own shipped checkpoint</strong> (<code>deploy/pre_train/g1/motion.pt</code>) loads and walks correctly in this Genesis fork too — same URDF, joint order, PD gains — staying upright at its target height (~0.78m) for hundreds of steps. That checkpoint became this fork's reference "stable" policy.</p>
 
         <div class="aside">
           <div class="label">A fine-tuned variant, not an independent one</div>
-          We also produced a second policy by <strong>resuming training from that stable checkpoint's weights</strong> (not from scratch) under a reward that penalizes torque and joint velocity far more heavily — a genuinely more "cautious" gait, descended from the stable one rather than an unrelated policy that happens to share the same input/output shape.
+          A second policy came from <strong>resuming training from that stable checkpoint's weights</strong> (not from scratch) under a reward that penalizes torque and joint velocity far more heavily — a genuinely more "cautious" gait, descended from the stable one rather than an unrelated policy that happens to share the same input/output shape.
+        </div>
+
+        <h3>Viser: the viewer behind the web control panel</h3>
+        <p>Viser exists in this fork because Genesis's own native viewer window has a rendering bug on this project's Mac/asset combination — <code>--viewer=viser --viser_port=&lt;port&gt;</code> serves the same 3D scene over a WebSocket instead. That's also exactly what a <em>headless</em> Kaggle kernel needs: no display is attached to a cloud GPU kernel at all, so Kaggle jobs always run <code>--headless</code>, with no viewer serving anything.</p>
+        <p>It's the same Viser instance powering <a href="#control-arch">§12</a>'s live policy-switching demo: <code>swap_experiment.py</code> starts Viser on one port (the raw 3D view) and, alongside it on a second port, the unified control web — Pause/Restart, policy switching, E-STOP, velocity commands — that a browser tab talks to over its own WebSocket (<code>/ws</code>, see <code>legged_gym/control/transport.py</code>). Viser only ever matters for watching a policy live on a machine with a browser pointed at it; it plays no role in a training job's speed or correctness on either simulator.</p>
+
+        <div class="aside">
+          <div class="label">The Hardware panel</div>
+          The control web's <strong>Hardware</strong> tab (next to Docs) shows this machine's live-measured specs side by side with Kaggle's typical free-tier profile, and which simulator each one actually uses — a quick reference for this whole section without leaving the app.
         </div>
       </section>
 
       <section id="control-arch">
-        <div class="num">§13 — this fork</div>
+        <div class="num">§12 — this fork</div>
         <h2>Switching policies live</h2>
-        <p>Having two policies that both control the same G1 raises an obvious question: can you change which one is driving the robot <em>while it's running</em> — in the simulator, and eventually on the real robot — without restarting anything? This section is the short version; the repo's <a href="https://github.com/josetabuyo/LeggedGym-Ex#4-architecture" target="_blank" rel="noopener">root README</a> has the full design write-up.</p>
+        <p>Having two policies that both control the same G1 raises an obvious question: can you change which one is driving the robot <em>while it's running</em> — in the simulator, and eventually on the real robot — without restarting anything? This section is the short version; the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar#4-architecture" target="_blank" rel="noopener">root README</a> has the full design write-up.</p>
 
         <p class="lead-q">Three things go wrong if you just reassign which network gets called each tick:</p>
         <ul>
@@ -981,7 +1036,7 @@ def step(self, obs):
       </section>
 
       <section id="team">
-        <div class="num">§14 — this fork</div>
+        <div class="num">§13 — this fork</div>
         <h2>Working as a team</h2>
         <p>This fork is developed by a small team split across Mac, Linux, and Windows, with occasional access to a much more powerful (sometimes remote) GPU machine for training. None of what follows is a hard rule — Genesis itself runs identically (just slower) on a GPU-less laptop as it does on a workstation, and Docker erases most of the remaining OS differences — but it's worth being explicit about where each platform is genuinely more comfortable, so people default to the path of least friction instead of fighting their own machine.</p>
 
@@ -1002,7 +1057,7 @@ def step(self, obs):
         </div>
 
         <h3>Docker, kept current</h3>
-        <p>The Docker Compose setup this whole demo runs on — <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>docker-entrypoint.sh</code>'s auto-discovery of every checkpoint in <code>./policies/</code>, and working CUDA passthrough — was contributed by <a href="https://github.com/RawthiL" target="_blank" rel="noopener">Ramiro R. C. (RawthiL)</a>, not the original author: real evidence the "everyone adds what they can" model below is already working, not just an aspiration. See the root <a href="https://github.com/josetabuyo/LeggedGym-Ex#docker-compose-recommended-for-reproducible-runs" target="_blank" rel="noopener">README's Docker Compose section</a> for the full up-to-date instructions (GPU overlay, environment variables, what gets mounted) — it's kept current as the control stack grows, most recently to auto-discover <code>.onnx</code> checkpoints (community releases that only ship ONNX) exactly like <code>.pt</code> ones.</p>
+        <p>The Docker Compose setup this whole demo runs on — <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>docker-entrypoint.sh</code>'s auto-discovery of every checkpoint in <code>./policies/</code>, and working CUDA passthrough — was contributed by <a href="https://github.com/RawthiL" target="_blank" rel="noopener">Ramiro R. C. (RawthiL)</a>, not the original author: real evidence the "everyone adds what they can" model below is already working, not just an aspiration. See the root <a href="https://github.com/josetabuyo/RobotUniversityGiar#docker-compose-recommended-for-reproducible-runs" target="_blank" rel="noopener">README's Docker Compose section</a> for the full up-to-date instructions (GPU overlay, environment variables, what gets mounted) — it's kept current as the control stack grows, most recently to auto-discover <code>.onnx</code> checkpoints (community releases that only ship ONNX) exactly like <code>.pt</code> ones.</p>
 
         <h3>Who's comfortable where</h3>
         <div class="plate">
@@ -1015,45 +1070,8 @@ def step(self, obs):
         </div>
       </section>
 
-      <section id="envs">
-        <div class="num">§15 — this fork</div>
-        <h2>Simulators &amp; where training runs</h2>
-        <p>A <strong>simulator</strong> is the physics engine that steps thousands of fake robot copies forward in time — gravity, contact, joint torques — fast enough that a policy can fail and retry millions of times in hours instead of years (see <a href="#sims">§7</a>). It's a completely different piece of software from the <strong>viewer</strong> that draws what's happening in a browser (Viser, covered below) — a training job needs the former and, for headless cloud jobs, none of the latter at all.</p>
-
-        <p>This fork can train under two different simulators, and which one runs is a property of <em>where</em> the job runs, not a user-facing choice inside the training code itself:</p>
-        <div class="tabwrap">
-          <table>
-            <tr><th>Runs on</th><th>Simulator</th><th>Why</th></tr>
-            <tr><td class="k">This machine (local)</td><td><abbr class="term" title="A physics simulator that also targets Apple Silicon via a Metal backend, and falls back cleanly to CPU everywhere else — what makes this fork runnable on a GPU-less Mac laptop with zero code changes.">Genesis</abbr></td><td>Always — every local job (Create Policy's 💻 option, or a hand-run <code>web_train.py</code>) sets <code>SIMULATOR=genesis</code> and runs on this machine's own CPU (or Metal, on Apple Silicon with <code>GENESIS_BACKEND=cuda</code>/<code>metal</code>).</td></tr>
-            <tr><td class="k">Kaggle (☁️ GPU)</td><td><abbr class="term" title="NVIDIA's GPU-parallel physics simulator (PhysX-based) — see §7. The original unitree_rl_gym trained exclusively on it.">Isaac Gym</abbr></td><td>Always, and only Isaac Gym — see why below. Never Genesis.</td></tr>
-          </table>
-        </div>
-
-        <h3>Why Kaggle doesn't just run Genesis on a GPU</h3>
-        <p>Kaggle's free tier keeps assigning a Tesla P100 (a Pascal-generation GPU, compute capability 6.0/"sm_60"). Genesis's GPU backend JIT-compiles its own kernels and needs a hardware feature (<code>warp.sync</code>) that only exists from Volta onward (compute capability 7.0+/"sm_70") — Pascal silicon simply doesn't have it, no driver or library version routes around that. Isaac Gym's physics stepping instead runs through NVIDIA's PhysX GPU pipeline, which has no such requirement and was confirmed running for real on Kaggle's actual P100 (a live environment created, stepped, <code>GPU Pipeline: enabled</code> — see the root repo's <code>HANDOFF_kaggle_cloud_gpu.md</code> for the full investigation). So: local stays on Genesis because that's what makes this fork runnable on a GPU-less Mac with zero setup (the whole point of forking away from Isaac Gym in the first place — see <a href="#genesis-fork">§12</a>); Kaggle runs Isaac Gym because that's the only one of the two that actually gets GPU speed on the hardware Kaggle's free tier hands out.</p>
-
-        <h3>How each one actually gets selected</h3>
-        <p>Not by an environment variable alone, which is a common trap: <code>legged_gym/__init__.py</code> only accepts <code>SIMULATOR=genesis</code> (or <code>isaaclab</code>) under Python 3.10+, and separately <em>hardcodes</em> <code>SIMULATOR=isaacgym</code> for any interpreter running Python 3.8 or older — it never reads the env var at all for Isaac Gym. In practice that means simulator selection is really <strong>which Python interpreter runs the job</strong>:</p>
-        <div class="tabwrap">
-          <table>
-            <tr><th>Runs on</th><th>What actually selects the simulator</th></tr>
-            <tr><td class="k">Local</td><td>This machine's normal Python (3.10+), with <code>SIMULATOR=genesis</code> exported before <code>web_train.py</code> runs.</td></tr>
-            <tr><td class="k">Kaggle</td><td>A Python 3.8 venv, bootstrapped fresh inside the Kaggle kernel itself, with Isaac Gym Preview 4 and a pinned <code>torch==2.3.1+cu121</code> installed into it — <code>web_train.py</code> then runs under <em>that</em> interpreter, not Kaggle's own default one. See <code>legged_gym/control/kaggle_backend.py</code>'s <code>_build_kernel_script()</code> for the exact bootstrap.</td></tr>
-          </table>
-        </div>
-        <p>This mirrors how switching simulators works when running by hand on this machine too — <code>switch_simulator.sh</code> activates a whole separate conda environment (<code>lr_gym</code>/<code>lr_gen</code>/<code>lr_lab</code>) per simulator, for the same underlying reason: Isaac Gym's own dependency pins (old numpy/pandas/scipy, Python ≤3.8) are incompatible with Genesis's, so they can't coexist in one interpreter's installed packages.</p>
-
-        <h3>Viser: the viewer, not the simulator</h3>
-        <p><abbr class="term" title="A Python library for serving an interactive 3D scene to a browser over WebSockets — camera controls, live-updating meshes, no native window or GPU display driver needed on the server.">Viser</abbr> is unrelated to either simulator above — it's what draws a running scene (robot pose, terrain, live policy switches) into a browser tab instead of a native OS window. It exists in this fork specifically because Genesis's own native viewer window has a rendering bug on this project's Mac/asset combination (see <a href="#control-arch">§13</a>'s live demo and <a href="#team">§14</a>'s "watch a checkpoint" walkthrough) — <code>--viewer=viser --viser_port=&lt;port&gt;</code> serves the same 3D scene over a WebSocket instead, which also happens to be exactly what a <em>headless</em> Kaggle kernel needs: there's no display attached to a cloud GPU kernel at all, so Kaggle jobs always run with no viewer serving anything (<code>--headless</code>, Isaac Gym's own graphics/viewer context switched off — see <code>web_train.py</code>'s default). Viser only ever matters for watching a policy live on a machine with a browser pointed at it; it plays no role in a training job's speed or correctness on either simulator.</p>
-
-        <div class="aside">
-          <div class="label">The Hardware panel</div>
-          The control web's <strong>Hardware</strong> tab (next to Docs) shows this machine's live-measured specs side by side with Kaggle's typical free-tier profile, and which simulator each one actually uses — a quick reference for this whole section without leaving the app.
-        </div>
-      </section>
-
       <section id="glossary">
-        <div class="num">§16 — reference</div>
+        <div class="num">§14 — reference</div>
         <h2>Glossary</h2>
         <div class="tabwrap">
           <table>
@@ -1065,45 +1083,45 @@ def step(self, obs):
             <tr><td class="k">Kp / stiffness</td><td>The proportional gain — how hard the joint pulls toward its target. <a href="#pd">§4</a></td></tr>
             <tr><td class="k">Kd / damping</td><td>The derivative gain — resists current velocity, prevents overshoot/oscillation. <a href="#pd">§4</a></td></tr>
             <tr><td class="k">URDF</td><td>Unified Robot Description Format — XML file defining a robot's links, joints, and physical limits. Used by Isaac Gym. <a href="#pd">§4</a></td></tr>
-            <tr><td class="k">MJCF</td><td>MuJoCo XML Configuration Format — MuJoCo's own XML robot-description format. <a href="#sims">§6</a></td></tr>
+            <tr><td class="k">MJCF</td><td>MuJoCo XML Configuration Format — MuJoCo's own XML robot-description format. <a href="#sims">§11</a></td></tr>
             <tr><td class="k">Observation / Action</td><td>What the policy senses each tick, and what it outputs (target joint offsets). <a href="#rl">§5</a></td></tr>
-            <tr><td class="k">Reward</td><td>The per-tick score the policy is trained to maximize. <a href="#config">§8</a></td></tr>
+            <tr><td class="k">Reward</td><td>The per-tick score the policy is trained to maximize. <a href="#config">§7</a></td></tr>
             <tr><td class="k">PPO</td><td>Proximal Policy Optimization — the RL algorithm used to train the policy, in small careful steps. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">LSTM</td><td>Long Short-Term Memory — a recurrent network that carries a hidden state between ticks, giving the policy a short memory instead of reacting to a single instant. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">GAE</td><td>Generalized Advantage Estimation — how PPO estimates "how much better than average was this action," trading off bias and variance via λ. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Actor-critic</td><td>Two networks during training: the actor (kept, becomes the policy) and the critic (discarded, only helps training). <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Privileged observation</td><td>Extra ground-truth info fed only to the critic — things the real robot can't sense directly. <a href="#rl">§5</a></td></tr>
             <tr><td class="k">Domain randomization</td><td>Randomizing physics (friction, mass, pushes) across the training population so the policy generalizes to the real robot. <a href="#rl">§5</a></td></tr>
-            <tr><td class="k">Isaac Gym</td><td>NVIDIA's GPU-parallel physics simulator. The original unitree_rl_gym trains exclusively on it; this fork uses it only for Kaggle cloud jobs (local jobs use Genesis instead). <a href="#sims">§6</a>, <a href="#envs">§15</a></td></tr>
-            <tr><td class="k">Sim2Sim</td><td>Re-running a trained policy in a second simulator (MuJoCo) as a sanity check. <a href="#sims">§6</a></td></tr>
-            <tr><td class="k">Sim2Real</td><td>Deploying a simulator-trained policy onto the physical robot. <a href="#sim2real">§10</a></td></tr>
-            <tr><td class="k">TorchScript</td><td>A frozen, portable export of a trained PyTorch network, runnable without the training stack. <a href="#pipeline">§7</a></td></tr>
-            <tr><td class="k">Gait-phase clock</td><td>A sin/cos signal marking where in the stride cycle each leg currently is. <a href="#g1">§9</a></td></tr>
-            <tr><td class="k">IMU</td><td>Inertial Measurement Unit — gyroscope + accelerometer, gives orientation and angular velocity. <a href="#sim2real">§10</a></td></tr>
-            <tr><td class="k">DDS</td><td>Data Distribution Service — the pub/sub network protocol used to talk to the real robot. <a href="#sim2real">§10</a></td></tr>
-            <tr><td class="k">Genesis</td><td>A physics simulator that (unlike Isaac Gym) also targets Apple Silicon via a Metal backend — what every LOCAL job in this fork trains on (Kaggle jobs use Isaac Gym instead — see §15). <a href="#genesis-fork">§12</a>, <a href="#envs">§15</a></td></tr>
-            <tr><td class="k">Viser</td><td>A Python library serving an interactive 3D scene to a browser over WebSockets — the viewer used in this fork wherever Genesis's own native window doesn't work, and the only viewer a headless Kaggle job could use at all (though Kaggle jobs run with no viewer, since nothing's watching). Not a simulator — just how a running scene gets drawn. <a href="#envs">§15</a></td></tr>
-            <tr><td class="k">Kaggle</td><td>The free-tier cloud GPU backend Create Policy can train on instead of this machine — always via Isaac Gym, never Genesis (see §15 for why), because Kaggle's free-tier P100 lacks the hardware feature Genesis's GPU backend needs. <a href="#envs">§15</a></td></tr>
-            <tr><td class="k">RobotAdapter</td><td>The one interface separating "how do I talk to this specific robot" from everything else — SimAdapter (Genesis) and RealAdapter (real G1) both implement it. <a href="#control-arch">§13</a></td></tr>
-            <tr><td class="k">PolicySupervisor</td><td>Owns the loaded policies and performs the actual switch, cross-fading the output action instead of cutting hard. <a href="#control-arch">§13</a></td></tr>
-            <tr><td class="k">SafetyGovernor</td><td>The one place that decides "is this instant safe to act on a pending policy switch." <a href="#control-arch">§13</a></td></tr>
-            <tr><td class="k">Selector</td><td>Proposes autonomous policy switches (a simple tilt-threshold rule today; a learned gating network is the researched next step). <a href="#control-arch">§13</a></td></tr>
-            <tr><td class="k">Cross-fade / ramp</td><td>Blending the outgoing and incoming policy's actions linearly over several ticks on a switch, instead of jumping the target instantly. <a href="#control-arch">§13</a></td></tr>
-            <tr><td class="k">Lifecycle (INACTIVE/READY/ACTIVE/FAULT)</td><td>The state vocabulary an adapter reports, borrowed on purpose from ROS 2's <code>ros2_control</code> naming. <a href="#control-arch">§13</a></td></tr>
+            <tr><td class="k">Isaac Gym</td><td>NVIDIA's GPU-parallel physics simulator. The original unitree_rl_gym trains exclusively on it; this fork uses it only for Kaggle cloud jobs (local jobs use Genesis instead). <a href="#sims">§11</a></td></tr>
+            <tr><td class="k">Sim2Sim</td><td>Re-running a trained policy in a second simulator (MuJoCo) as a sanity check. <a href="#sims">§11</a></td></tr>
+            <tr><td class="k">Sim2Real</td><td>Deploying a simulator-trained policy onto the physical robot. <a href="#sim2real">§9</a></td></tr>
+            <tr><td class="k">TorchScript</td><td>A frozen, portable export of a trained PyTorch network, runnable without the training stack. <a href="#pipeline">§6</a></td></tr>
+            <tr><td class="k">Gait-phase clock</td><td>A sin/cos signal marking where in the stride cycle each leg currently is. <a href="#g1">§8</a></td></tr>
+            <tr><td class="k">IMU</td><td>Inertial Measurement Unit — gyroscope + accelerometer, gives orientation and angular velocity. <a href="#sim2real">§9</a></td></tr>
+            <tr><td class="k">DDS</td><td>Data Distribution Service — the pub/sub network protocol used to talk to the real robot. <a href="#sim2real">§9</a></td></tr>
+            <tr><td class="k">Genesis</td><td>A physics simulator that (unlike Isaac Gym) also targets Apple Silicon via a Metal backend — what every LOCAL job in this fork trains on (Kaggle jobs use Isaac Gym instead — see §11). <a href="#sims">§11</a></td></tr>
+            <tr><td class="k">Viser</td><td>A Python library serving an interactive 3D scene to a browser over WebSockets — the viewer used in this fork wherever Genesis's own native window doesn't work, and the only viewer a headless Kaggle job could use at all (though Kaggle jobs run with no viewer, since nothing's watching). Not a simulator — just how a running scene gets drawn. <a href="#sims">§11</a></td></tr>
+            <tr><td class="k">Kaggle</td><td>The free-tier cloud GPU backend Create Policy can train on instead of this machine — always via Isaac Gym, never Genesis (see §11 for why), because Kaggle's free-tier P100 lacks the hardware feature Genesis's GPU backend needs. <a href="#sims">§11</a></td></tr>
+            <tr><td class="k">RobotAdapter</td><td>The one interface separating "how do I talk to this specific robot" from everything else — SimAdapter (Genesis) and RealAdapter (real G1) both implement it. <a href="#control-arch">§12</a></td></tr>
+            <tr><td class="k">PolicySupervisor</td><td>Owns the loaded policies and performs the actual switch, cross-fading the output action instead of cutting hard. <a href="#control-arch">§12</a></td></tr>
+            <tr><td class="k">SafetyGovernor</td><td>The one place that decides "is this instant safe to act on a pending policy switch." <a href="#control-arch">§12</a></td></tr>
+            <tr><td class="k">Selector</td><td>Proposes autonomous policy switches (a simple tilt-threshold rule today; a learned gating network is the researched next step). <a href="#control-arch">§12</a></td></tr>
+            <tr><td class="k">Cross-fade / ramp</td><td>Blending the outgoing and incoming policy's actions linearly over several ticks on a switch, instead of jumping the target instantly. <a href="#control-arch">§12</a></td></tr>
+            <tr><td class="k">Lifecycle (INACTIVE/READY/ACTIVE/FAULT)</td><td>The state vocabulary an adapter reports, borrowed on purpose from ROS 2's <code>ros2_control</code> naming. <a href="#control-arch">§12</a></td></tr>
           </table>
         </div>
       </section>
 
       <section id="credits" style="border-bottom:none;">
-        <div class="num">§17 — reference</div>
+        <div class="num">§15 — reference</div>
         <h2>Credits &amp; license</h2>
-        <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/LeggedGym-Ex" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
+        <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
       </section>
 
     </div>
 
     <footer>
-      This page explains both the original <code>unitree_rl_gym</code> repository (§1–§11) and what this specific fork adds on top — running on Genesis instead of Isaac Gym, and a control architecture for switching between trained policies (§12–§13). Every file path and code excerpt above points at a real file in one of those two repos.
+      This page explains both the original <code>unitree_rl_gym</code> repository (§1–§10) and what this specific fork adds on top — running on Genesis instead of Isaac Gym, and a control architecture for switching between trained policies (§11–§13). Every file path and code excerpt above points at a real file in one of those two repos.
     </footer>
   </main>
 </div>

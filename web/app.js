@@ -39,7 +39,12 @@ let viserPort = null; // filled in from /config at boot
 function mountSimIframe() {
   if (!viserPort) return;
   const iframe = document.createElement('iframe');
-  iframe.src = `http://localhost:${viserPort}/`;
+  // ?darkMode forces viser's own color scheme client-side. Its Python-side
+  // equivalent (ViserServer.gui.configure_theme(dark_mode=True)) is also set
+  // server-side (see viser_viewer.py) but is a persisted *message* the client
+  // applies asynchronously after connecting — this URL flag is read at first
+  // paint, so the panel never flashes light before flipping dark.
+  iframe.src = `http://localhost:${viserPort}/?darkMode`;
   $('#view-sim').appendChild(iframe);
 }
 
@@ -53,6 +58,9 @@ const policyList = $('#policy-list');
 const chkPush = $('#chk-push');
 const chkAutoCmd = $('#chk-auto-cmd');
 const simPushDir = $('#sim-push-dir');
+const chkEpisodeTimeout = $('#chk-episode-timeout');
+const episodeTimeoutRow = $('#episode-timeout-row');
+const episodeTimeoutS = $('#episode-timeout-s');
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
@@ -353,6 +361,20 @@ function applyStatus(status) {
   restartBtn.disabled = !restartAvailable;
   restartBtn.title = restartAvailable ? '' : `not available on backend "${status.backend}"`;
 
+  // episode_timeout_s is absent on adapters that don't support it (e.g. a
+  // not-yet-built RealAdapter path) — hide the whole control rather than
+  // showing a toggle that would just NotImplementedError on click.
+  const timeoutSupported = 'episode_timeout_s' in status;
+  chkEpisodeTimeout.closest('.toggle-row').style.display = timeoutSupported ? '' : 'none';
+  if (timeoutSupported) {
+    const enabled = status.episode_timeout_s != null;
+    chkEpisodeTimeout.checked = enabled;
+    episodeTimeoutRow.hidden = !enabled;
+    if (enabled && document.activeElement !== episodeTimeoutS) {
+      episodeTimeoutS.value = status.episode_timeout_s;
+    }
+  }
+
   const realTab = document.querySelector('nav button[data-drawer="real"]');
   const realPlaceholder = $('#real-placeholder');
   if (status.backend === 'real') {
@@ -579,6 +601,18 @@ $('#btn-pause').addEventListener('click', () => {
   send(latestStatus?.paused ? 'resume' : 'pause');
 });
 $('#btn-restart').addEventListener('click', () => send('restart'));
+
+function sendEpisodeTimeout() {
+  const seconds = Math.max(1, Number(episodeTimeoutS.value) || 1);
+  send('set_episode_timeout', { seconds: chkEpisodeTimeout.checked ? seconds : null });
+}
+chkEpisodeTimeout.addEventListener('change', () => {
+  episodeTimeoutRow.hidden = !chkEpisodeTimeout.checked;
+  sendEpisodeTimeout();
+});
+episodeTimeoutS.addEventListener('change', () => {
+  if (chkEpisodeTimeout.checked) sendEpisodeTimeout();
+});
 
 // ---- stimuli: random events + manual velocity command ----
 
