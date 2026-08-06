@@ -192,6 +192,15 @@ class TrainingJob:
                              # for why a Kaggle job's poll() branch never touches the network
     kaggle_kernel_slug: Optional[str] = None  # "<username>/<slug>" once push succeeds —
                                                # the UI's "view on Kaggle" link, kaggle jobs only
+    simulator: str = "genesis"  # "genesis" | "isaacgym" — which Simulator backend actually
+                                 # trained this policy (see legged_gym/simulator/). Kaggle jobs
+                                 # use isaacgym: Genesis's GPU JIT needs Volta+ (sm_70+) hardware
+                                 # Kaggle's free-tier P100 (Pascal, sm_60) doesn't have, while
+                                 # Isaac Gym's PhysX GPU pipeline runs on Pascal fine (see
+                                 # HANDOFF_kaggle_cloud_gpu.md). Recorded here (not derived from
+                                 # `backend`) because it's what actually determines sim2sim risk
+                                 # for a policy trained under it — surfaced in meta.json so the
+                                 # UI can flag it (see finalize_policy()).
 
     def to_dict(self) -> dict:
         return {
@@ -214,6 +223,7 @@ class TrainingJob:
             "reward_scale_overrides": self.reward_scale_overrides,
             "backend": self.backend,
             "kaggle_kernel_slug": self.kaggle_kernel_slug,
+            "simulator": self.simulator,
         }
 
 
@@ -501,7 +511,8 @@ class TrainingManager:
             dest_train_checkpoint = dest_dir / "train_checkpoint.pt"
             shutil.copyfile(train_checkpoint, dest_train_checkpoint)
 
-        meta = {"task": task, "created_at": time.time(), "trained_via": "control web"}
+        meta = {"task": task, "created_at": time.time(), "trained_via": "control web",
+                "simulator": job.simulator if job is not None else "genesis"}
         if job is not None:
             metrics = parse_training_log(job.log_path)
             dest_log = None
@@ -869,6 +880,7 @@ class TrainingManager:
             base_policy=base_policy, entropy_coef=entropy_coef,
             reward_scale_overrides=dict(reward_scale_overrides) if reward_scale_overrides else None,
             backend=backend,
+            simulator="isaacgym" if backend == "kaggle" else "genesis",
         )
 
         if backend == "kaggle":

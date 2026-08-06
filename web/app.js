@@ -2222,6 +2222,7 @@ function renderPolicyInfo(info) {
   const provenance = infoSection('Provenance');
   provenance.appendChild(kvList([
     ['Task', info.task],
+    ['Simulator', info.simulator],
     ['Cloned from', info.base_policy, '– (trained from scratch)'],
     ['Trained via', info.trained_via],
     ['Created', fmtDate(info.created_at)],

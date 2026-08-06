@@ -45,20 +45,16 @@ MAX_RUNTIME_S = 6 * 3600
 
 TERMINAL_STATUSES = {"complete", "error", "cancel_acknowledged"}
 
-# A standalone diagnostic kernel (clone -> pip install -e .[genesis] -> pip
-# install torch==2.3.1+cu121 -> matmul on cuda, in that exact order) CONFIRMED
-# this works: genesis[extras] pulls torch 2.10.0+cu128 (no sm_60 kernels —
-# Kaggle's free P100 is compute capability 6.0), the 2.3.1 pin overwrites it
-# correctly, and a real matmul on the P100 passes. An earlier attempt running
-# this same sequence through the full web_train.py pipeline still crashed —
-# root cause of THAT discrepancy not fully nailed down (a diagnostic print
-# added at the time never showed up in the kernel's log either, most likely
-# some stdout-capture quirk specific to how KaggleRunner pushes/logs vs. a
-# manual kernels_push — not the pin itself, which is now proven to work in
-# isolation). Flip this back on to resume
-# that investigation; until then, Kaggle jobs train on CPU — same speed as
-# local, but they reliably finish instead of crashing.
-ATTEMPT_GPU = True
+# Kaggle's free tier keeps assigning a Tesla P100 (Pascal, compute capability
+# sm_60) — not the T4 the UI/docs suggest is the default (machine_shape
+# below doesn't seem reliably honored). Genesis's GPU backend needs Volta+
+# (sm_70+, for the `warp.sync` intrinsic its JIT compiler emits) — Pascal
+# doesn't have the silicon for that, full stop, no dependency version routes
+# around it (see HANDOFF_kaggle_cloud_gpu.md). Isaac Gym's PhysX GPU
+# pipeline has no such requirement — confirmed working on Kaggle's actual
+# P100 this session (real g1 env created, GPU Pipeline: enabled, stepped
+# cleanly) — so Kaggle jobs run Isaac Gym, not Genesis, despite every local
+# job on this repo defaulting to Genesis. See _build_kernel_script.
 
 
 def _status_name(status) -> str:
@@ -80,98 +76,102 @@ def kaggle_credentials_available() -> bool:
 
 
 def _build_kernel_script(train_flags: List[str], branch: str) -> str:
-    """The actual Python program Kaggle executes. Clones THIS repo fresh and
-    runs the exact same legged_gym/scripts/web_train.py the control web
-    already uses for local jobs (see training.py's TrainingManager.start())
-    — no training logic is duplicated here, only the environment bootstrap a
-    fresh Kaggle session needs that a local dev machine already has (repo
-    checkout, editable install, the SIMULATOR env var — see README's own
-    manual install steps).
+    """The actual Python program Kaggle executes. Bootstraps a Python 3.8
+    venv with Isaac Gym installed, clones THIS repo fresh into it, and runs
+    the exact same legged_gym/scripts/web_train.py the control web already
+    uses for local jobs (see training.py's TrainingManager.start()) — no
+    training logic is duplicated here, only the environment bootstrap a
+    fresh Kaggle session needs.
+
+    Why Isaac Gym, not Genesis (this repo's default everywhere else): Kaggle's
+    free tier keeps assigning a Tesla P100 (Pascal, sm_60). Genesis's GPU
+    backend needs Volta+ (sm_70+, for the `warp.sync` intrinsic its JIT
+    compiler emits) — Pascal doesn't have the silicon for that, no dependency
+    pin routes around it. Isaac Gym's PhysX GPU pipeline has no such
+    requirement and was confirmed working end-to-end on Kaggle's actual P100
+    this session (real g1 env created, GPU Pipeline: enabled, stepped
+    cleanly) — see HANDOFF_kaggle_cloud_gpu.md.
+
+    Why a whole second Python interpreter: legged_gym/__init__.py picks the
+    simulator by PYTHON VERSION, not (for isaacgym) the SIMULATOR env var —
+    it hardcodes SIMULATOR="isaacgym" for any interpreter <=3.8, and on
+    Kaggle's default (>=3.10) interpreter, "isaacgym" isn't even an accepted
+    value for SIMULATOR (raises ValueError). So the ONLY way to select Isaac
+    Gym is to run web_train.py under a 3.8 interpreter — this bootstraps one,
+    mirroring both a colleague's own proven Kaggle recipe
+    (kaggle.com/code/jvillalba007/unitree-rl) and this repo's own
+    switch_simulator.sh (which likewise gives Isaac Gym its own environment).
 
     Built via plain string concatenation, not str.format()/an f-string,
     because the generated code below is full of its own braces (f-strings,
     dict literals) that would collide with format placeholders. Dynamic
     values (branch, flags) are embedded with json.dumps() so they come out
-    as safe Python literals regardless of quotes/spaces inside them.
-
-    GPU usage is gated behind ATTEMPT_GPU (see its own docstring). The probe
-    below checks compute capability directly (sm_70+) rather than trying to
-    run something and see if it crashes — see ATTEMPT_GPU's docstring for
-    why: this isn't a "missing precompiled kernel" problem a torch version
-    pin can route around (that part IS fixed by the pin below), it's that
-    Genesis's own GPU backend needs a hardware feature (`warp.sync`, part of
-    Volta's independent thread scheduling) Pascal-generation silicon simply
-    doesn't have — no software fix changes that."""
-    gpu_lines = [
-        # genesis[extras] pulls in an unpinned "torch", which on a fresh
-        # Kaggle container resolves to whatever's newest on PyPI right now —
-        # and current torch releases have dropped compiled kernels for
-        # Pascal (sm_60, what Kaggle's free-tier P100 is). A colleague's own
-        # unitree_rl_gym-on-Kaggle notebook (kaggle.com/code/jvillalba007/
-        # unitree-rl) hit this same wall and fixed it by pinning an exact
-        # older release still built for it — confirmed working here too
-        # (verified via an isolated diagnostic kernel): the resulting torch
-        # correctly reports sm_60 in its arch list and runs a real matmul on
-        # the P100 fine. Kept regardless of which GPU actually gets assigned
-        # — harmless on a newer one, required on Pascal.
-        'subprocess.run([sys.executable, "-m", "pip", "install", "-q", '
-        '"torch==2.3.1", "torchvision==0.18.1", "torchaudio==2.3.1", '
-        '"--index-url", "https://download.pytorch.org/whl/cu121"], check=True)',
-        "",
-        # The torch pin above is necessary but NOT sufficient — a real run
-        # with it in place got past torch's own compatibility check and
-        # crashed instead inside Genesis's own GPU kernel compiler:
-        # `LLVM Fatal Error: Cannot select: intrinsic %llvm.nvvm.bar.warp.sync`.
-        # warp.sync is a Volta-generation (sm_70+) hardware feature — Pascal
-        # (sm_60, Kaggle's free-tier P100) doesn't have the silicon for it at
-        # all, so no torch build or version can route around this the way it
-        # could for the earlier "kernel just wasn't precompiled" failure.
-        # Checking compute capability directly (a cheap device-property
-        # query, no kernel compile/launch involved) is also just a more
-        # reliable probe than the "try an op and see if it crashes" attempts
-        # this replaced, some of which passed clean on hardware that failed
-        # for real moments later.
-        "import torch",
-        "major, _minor = torch.cuda.get_device_capability(0)",
-        "if major >= 7:",
-        '    gpu_flag = ["--gpu"]',
-        "else:",
-        '    print(f"GPU compute capability {major}.x is Pascal or older -- Genesis\'s GPU backend '
-        'needs Volta+ (7.0+); training on CPU instead.")',
-        "    gpu_flag = []",
-    ] if ATTEMPT_GPU else ['gpu_flag = []  # ATTEMPT_GPU is off — see kaggle_backend.py']
-
+    as safe Python literals regardless of quotes/spaces inside them."""
     lines = [
         "import json, os, shutil, subprocess, sys",
         "",
         # Deliberately OUTSIDE /kaggle/working — that directory is exactly
         # what kernels_output() downloads wholesale afterward (see
         # KaggleRunner._run()), and a full repo checkout (.git, logs/,
-        # rsl_rl's TensorBoard scratch space) in there turned kernels_output
-        # into a multi-minute download for a job whose result is three small
-        # files. Only those three (copied out below) ever need to survive.
+        # rsl_rl's TensorBoard scratch space, the isaacgym venv itself) in
+        # there turned kernels_output into a multi-minute (or, for the venv,
+        # multi-GB) download for a job whose result is three small files.
+        # Only those three (copied out below) ever need to survive.
         'REPO_DIR = "/tmp/repo"',
+        'VENV_DIR = "/tmp/isaacgym-venv"',
+        'VENV_PY = VENV_DIR + "/bin/python"',
         'RESULT_PATH = "/kaggle/working/result.json"',
         'LOG_PATH = "/kaggle/working/train.log"',
+        "",
+        # Python 3.8 venv + the exact torch build Isaac Gym Preview 4's own
+        # compiled bindings need (also the build proven to still ship sm_60
+        # kernels, unlike current torch releases) -- confirmed this exact
+        # sequence installs and imports cleanly on a real Kaggle kernel.
+        'subprocess.run(["sudo", "apt", "install", "-y", "python3.8", "python3.8-venv", '
+        '"python3.8-dev"], check=True)',
+        'subprocess.run(["python3.8", "-m", "venv", VENV_DIR], check=True)',
+        'subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "--upgrade", "pip"], check=True)',
+        'subprocess.run([VENV_PY, "-m", "pip", "install", "-q", '
+        '"torch==2.3.1", "torchvision==0.18.1", "torchaudio==2.3.1", '
+        '"--index-url", "https://download.pytorch.org/whl/cu121"], check=True)',
+        "",
+        # Isaac Gym itself isn't on PyPI -- NVIDIA ships it as a tarball.
+        'subprocess.run(["wget", "-q", "-O", "/tmp/isaac-gym-preview-4.tar.gz", '
+        '"https://developer.nvidia.com/isaac-gym-preview-4"], check=True)',
+        'subprocess.run(["tar", "-xzf", "/tmp/isaac-gym-preview-4.tar.gz", "-C", "/tmp"], check=True)',
+        'subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "-e", '
+        '"/tmp/isaacgym/python"], check=True)',
         "",
         "subprocess.run(["
         f'"git", "clone", "--depth", "1", "--branch", {json.dumps(branch)}, '
         f'{json.dumps(REPO_URL)}, REPO_DIR], check=True)',
-        'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", '
-        'f"{REPO_DIR}[genesis]"], check=True)',
+        # pyproject.toml's isaacgym extra deliberately doesn't pin torch/
+        # torchvision (a "+cu121" local-version pin isn't resolvable against
+        # the default PyPI index -- confirmed the hard way) -- torch is
+        # already installed above, from the index that actually has it.
+        'subprocess.run([VENV_PY, "-m", "pip", "install", "-q", "-e", '
+        'f"{REPO_DIR}[isaacgym]"], check=True)',
         "",
         "env = dict(os.environ)",
-        'env["SIMULATOR"] = "genesis"',
+        # Not load-bearing for simulator SELECTION under this 3.8 venv (see
+        # docstring above) -- set anyway in case anything downstream reads
+        # it directly rather than relying on legged_gym/__init__.py.
+        'env["SIMULATOR"] = "isaacgym"',
         "",
-    ] + gpu_lines + [
+        # Isaac Gym's PhysX GPU pipeline runs fine on Pascal -- unlike
+        # Genesis, there's no compute-capability floor to probe for. Just
+        # confirm CUDA is actually present before requesting --gpu.
+        "gpu_probe = subprocess.run([VENV_PY, '-c', "
+        "'import torch; print(torch.cuda.is_available())'], "
+        "capture_output=True, text=True)",
+        "gpu_flag = ['--gpu'] if gpu_probe.stdout.strip() == 'True' else []",
+        "if not gpu_flag:",
+        "    print('CUDA not available on this Kaggle kernel -- training on CPU instead.')",
         "",
-        # --gpu (when gpu_flag says CUDA actually works), not --cpu's
-        # absence: web_train.py's --cpu is store_true with default=True, so
-        # simply omitting it (as this used to do) never meant "use GPU" —
-        # sim_device stayed "cpu" (see task_registry.py) no matter what
-        # accelerator Kaggle assigned. This was the actual reason an earlier
-        # smoke test ran at local-CPU speed on a supposedly-GPU Kaggle kernel.
-        'argv = [sys.executable, "-u", "legged_gym/scripts/web_train.py",'
+        # web_train.py's --headless already defaults to True; passed
+        # explicitly anyway to match what a human would type, same as the
+        # local-job command preview.
+        'argv = [VENV_PY, "-u", "legged_gym/scripts/web_train.py",'
         ' "--headless", "--result_path", RESULT_PATH] + gpu_flag + '
         f"{json.dumps(train_flags)}",
         "",
