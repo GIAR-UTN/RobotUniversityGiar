@@ -70,6 +70,14 @@ def main():
     parser.add_argument('--num_envs', type=int, default=64)
     parser.add_argument('--headless', action='store_true', default=True)
     parser.add_argument('--cpu', action='store_true', default=True)
+    parser.add_argument('--gpu', action='store_true', default=False,
+                         help="run Genesis (and rsl_rl's own tensors — see task_registry.py's "
+                              "sim_device) on GPU instead of CPU. Overrides --cpu. A separate flag "
+                              "rather than making --cpu take on/off, because --cpu is store_true "
+                              "with default=True — simply NOT passing it can never mean 'off', so "
+                              "there was previously no CLI way at all to request GPU here. Only "
+                              "makes sense on a machine that actually has a CUDA GPU (e.g. a Kaggle "
+                              "kernel — see kaggle_backend.py's _build_kernel_script).")
     parser.add_argument('--from_checkpoint', type=str, default=None,
                          help="fine-tune from this checkpoint's weights (optimizer state NOT carried over) instead of random init")
     parser.add_argument('--cmd_vx_range', type=float, nargs=2, default=None, metavar=('LO', 'HI'))
@@ -110,6 +118,8 @@ def main():
                               "progress on a still-running job — same 'poll a file instead of parsing stdout' "
                               "pattern as --result_path, just written mid-run instead of once at the end")
     cli = parser.parse_args()
+    if cli.gpu:
+        cli.cpu = False
 
     if cli.max_iterations is None and cli.max_minutes is None:
         parser.error("give at least one of --max_iterations / --max_minutes")

@@ -448,7 +448,13 @@
     border:1px solid var(--line); border-radius:6px; padding:.4rem .5rem; font-size:.76rem;
   }
   .job-row .job-head{display:flex; justify-content:space-between; align-items:center; gap:.4rem;}
+  .job-row .job-name-group{display:flex; align-items:center; gap:.35rem;}
   .job-row .job-name{font-weight:600;}
+  .job-row .job-backend-badge{
+    font-size:.62rem; text-transform:uppercase; letter-spacing:.03em;
+    color:var(--accent2); border:1px solid var(--accent2); border-radius:4px; padding:.05rem .3rem;
+  }
+  .job-row .job-backend-badge a{color:inherit; text-decoration:none;}
   .job-row .job-status{font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted);}
   .job-row.running .job-status{color:var(--accent2);}
   .job-row.failed .job-status{color:var(--danger);}
@@ -700,6 +706,14 @@
 
           <div class="field-group field-group-context">
             <p class="field-group-label"><span class="dot"></span>Context — what this run starts from</p>
+            <div class="field-row" id="train-backend-row" hidden>
+              <label>Run on</label>
+              <div class="mode-tabs" id="train-backend">
+                <button type="button" data-backend="local" class="active">💻 This machine</button>
+                <button type="button" data-backend="kaggle">☁️ Kaggle (GPU)</button>
+              </div>
+              <p class="field-hint" id="train-backend-hint"></p>
+            </div>
             <div class="field-row">
               <label for="train-name">Policy name</label>
               <input type="text" id="train-name" placeholder="e.g. cautious_v2" autocomplete="off">

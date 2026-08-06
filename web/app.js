@@ -1086,6 +1086,17 @@ function refreshSystemInfo() {
       `Suggested for this machine: ${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper} ` +
       `(${info.cpu_count} cores detected) — more scales training speed less on CPU past that.`;
     updateEstimate();
+
+    // Only offer the toggle when ~/.kaggle/kaggle.json exists server-side
+    // (see TrainingManager.system_info()'s kaggle_available) — otherwise
+    // every Kaggle job would just fail immediately with a credentials error.
+    trainBackendRow.hidden = !info.kaggle_available;
+    if (!info.kaggle_available && trainBackend === 'kaggle') {
+      trainBackend = 'local';
+      trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.backend === 'local'));
+      trainBase.disabled = false;
+      updateCommandPreview();
+    }
   }).catch((e) => {
     systemSummary.textContent = 'system info unavailable';
     console.warn('system_info unavailable:', e.message);
@@ -1113,6 +1124,9 @@ document.addEventListener('click', (e) => {
 
 const btnNewPolicy = $('#btn-new-policy');
 const createPolicyForm = $('#create-policy-form');
+const trainBackendRow = $('#train-backend-row');
+const trainBackendTabs = $('#train-backend');
+const trainBackendHint = $('#train-backend-hint');
 const trainName = $('#train-name');
 const trainBase = $('#train-base');
 const trainTask = $('#train-task');
@@ -1223,6 +1237,7 @@ function showTrainError(msg) {
 // unbounded "lowest" has a degenerate solution: lying on the ground).
 let targetMode = 'absolute';
 let extremeDir = 'lowest';
+let trainBackend = 'local'; // 'local' | 'kaggle' — see #train-backend's click handler below
 let targetReference = null; // {value: number|null, label: string} | null
 let targetRange = null;     // [min, max] | null
 
@@ -1314,6 +1329,23 @@ trainExtremeDirTabs.querySelectorAll('button').forEach((btn) => {
     extremeDir = btn.dataset.dir;
     trainExtremeDirTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
     renderExtremeNote();
+    updateCommandPreview();
+  });
+});
+
+// Clone-from isn't supported on Kaggle yet (the base checkpoint only exists
+// on this machine — see TrainingManager.start()'s backend='kaggle' check),
+// so picking Kaggle disables that field instead of letting the job fail
+// server-side after a push already happened.
+trainBackendTabs.querySelectorAll('button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    trainBackend = btn.dataset.backend;
+    trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+    trainBackendHint.textContent = trainBackend === 'kaggle'
+      ? 'Runs on a free Kaggle GPU kernel instead of this machine’s CPU — much faster, but Clone-from isn’t available yet and there’s no live iteration count while it runs.'
+      : '';
+    trainBase.disabled = trainBackend === 'kaggle';
+    if (trainBackend === 'kaggle') trainBase.value = '';
     updateCommandPreview();
   });
 });
@@ -1608,6 +1640,7 @@ function composeTrainingParams() {
     name, task, iterations: Number.isFinite(iterations) ? iterations : null,
     minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
     height, push, pushVel, pushInterval, pushDir, entropyCoef, rewardScales,
+    backend: trainBackend,
   };
 }
 
@@ -1618,8 +1651,8 @@ function updateCommandPreview() {
     `--task ${p.task || '<task>'}`,
     `--name ${p.name || '<policy name>'}`,
     `--num_envs ${Number.isFinite(p.numEnvs) ? p.numEnvs : '<num_envs>'}`,
-    '--headless --cpu',
-    '--result_path <assigned by the server>',
+    p.backend === 'kaggle' ? '--headless' : '--headless --cpu',
+    p.backend === 'kaggle' ? '# runs on a Kaggle GPU kernel, not this machine' : '--result_path <assigned by the server>',
   ];
   if (p.iterations !== null) parts.push(`--max_iterations ${p.iterations}`);
   if (p.minutes !== null) parts.push(`--max_minutes ${p.minutes}`);
@@ -1706,6 +1739,7 @@ createPolicyForm.addEventListener('submit', (e) => {
     push_robots: p.push === null ? null : p.push === 'on',
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
+    backend: p.backend,
   }).then(() => {
     saveTrainFormConfig(); // snapshot BEFORE reset() clears every field below
     createPolicyForm.reset();
@@ -1716,6 +1750,9 @@ createPolicyForm.addEventListener('submit', (e) => {
     trainHeightAbsolute.hidden = false;
     trainHeightRelative.hidden = true;
     trainHeightExtreme.hidden = true;
+    trainBackend = 'local';
+    trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.backend === 'local'));
+    trainBase.disabled = false;
   }).catch((e) => {
     showTrainError(e.message);
   }).finally(() => {
@@ -1733,7 +1770,15 @@ function renderTrainingJobs(jobs) {
   // TIME_BUDGET_CHUNK_ITERS chunk (web_train.py's write_progress(), a few
   // times a minute at most, not 10Hz), so re-rendering when it changes is
   // what actually shows live progress instead of a static "training…".
-  const key = jobs.map((j) => `${j.id}:${j.status}:${j.error || ''}:${j.iterations_done ?? ''}`).join('|');
+  //
+  // A Kaggle job has no iterations_done signal at all while running (see
+  // kaggle_backend.py's module docstring — no live progress, just queued/
+  // running/complete) — without something else in the key, its card would
+  // freeze at whatever elapsed_s happened to be on the FIRST render and
+  // never move again, which is exactly what happened here. A coarse 5s
+  // elapsed bucket gives it a heartbeat without going back to 10Hz.
+  const key = jobs.map((j) => `${j.id}:${j.status}:${j.error || ''}:${j.iterations_done ?? ''}:` +
+    `${j.kaggle_kernel_slug || ''}:${j.status === 'running' ? Math.floor(j.elapsed_s / 5) : ''}`).join('|');
   if (key === renderedTrainingJobsKey) return;
   const justFinished = renderedTrainingJobsKey !== null &&
     jobs.some((j) => j.status === 'done' && !renderedTrainingJobsKey.includes(`${j.id}:done`));
@@ -1772,7 +1817,25 @@ function renderTrainingJobs(jobs) {
     } else {
       statusEl.textContent = `${job.status} (${job.elapsed_s}s)`;
     }
-    head.appendChild(name);
+    const nameGroup = document.createElement('span');
+    nameGroup.className = 'job-name-group';
+    nameGroup.appendChild(name);
+    if (job.backend === 'kaggle') {
+      const badge = document.createElement('span');
+      badge.className = 'job-backend-badge';
+      if (job.kaggle_kernel_slug) {
+        const link = document.createElement('a');
+        link.href = `https://www.kaggle.com/code/${job.kaggle_kernel_slug}`;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = '☁️ Kaggle';
+        badge.appendChild(link);
+      } else {
+        badge.textContent = '☁️ Kaggle';
+      }
+      nameGroup.appendChild(badge);
+    }
+    head.appendChild(nameGroup);
     head.appendChild(statusEl);
     row.appendChild(head);
     const cmd = document.createElement('div');

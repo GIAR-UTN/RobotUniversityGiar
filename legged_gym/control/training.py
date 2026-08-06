@@ -32,6 +32,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from legged_gym.control import kaggle_backend
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAIN_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_train.py"
 JOBS_DIR = REPO_ROOT / "logs" / "_web_training"
@@ -186,6 +188,10 @@ class TrainingJob:
     policy_path: Optional[str] = None
     train_checkpoint_path: Optional[str] = None  # rsl_rl's raw model_N.pt for this run,
                                                   # if web_train.py found one — see poll()
+    backend: str = "local"  # "local" | "kaggle" — see kaggle_backend.py's module docstring
+                             # for why a Kaggle job's poll() branch never touches the network
+    kaggle_kernel_slug: Optional[str] = None  # "<username>/<slug>" once push succeeds —
+                                               # the UI's "view on Kaggle" link, kaggle jobs only
 
     def to_dict(self) -> dict:
         return {
@@ -206,6 +212,8 @@ class TrainingJob:
             "base_policy": self.base_policy,
             "entropy_coef": self.entropy_coef,
             "reward_scale_overrides": self.reward_scale_overrides,
+            "backend": self.backend,
+            "kaggle_kernel_slug": self.kaggle_kernel_slug,
         }
 
 
@@ -215,6 +223,11 @@ class TrainingManager:
         self.jobs: Dict[str, TrainingJob] = {}
         self._procs: Dict[str, subprocess.Popen] = {}
         self._log_files: Dict[str, "object"] = {}
+        # Kaggle jobs have no local subprocess to poll — this is their
+        # analog of _procs, one background thread per job (see
+        # kaggle_backend.KaggleRunner's module docstring for why it's a
+        # thread and not a call made straight from start()/poll()).
+        self._kaggle_runners: Dict[str, kaggle_backend.KaggleRunner] = {}
         # name -> {"task": str, "checkpoint": Optional[str]} — every policy
         # currently known to be clonable from, seeded at boot from the
         # --policy specs and extended as new jobs complete. checkpoint is
@@ -250,6 +263,11 @@ class TrainingManager:
             "ram_gb": round(_total_ram_bytes() / (1024 ** 3), 1) if _total_ram_bytes() else None,
             "cuda_available": cuda_available,
             "mps_available": mps_available,
+            # Whether the Create Policy panel should even offer "Run on Kaggle" —
+            # true once ~/.kaggle/kaggle.json exists (see kaggle_backend.py). Not a
+            # guarantee start(backend="kaggle") will succeed (e.g. GPU quota could
+            # still be exhausted), just enough to know the option is worth showing.
+            "kaggle_available": kaggle_backend.kaggle_credentials_available(),
             "simulator": os.environ.get("SIMULATOR", "unknown"),
             "genesis_backend": os.environ.get("GENESIS_BACKEND", "cpu"),
             # Not a measurement — a starting-point heuristic (envs run
@@ -740,7 +758,10 @@ class TrainingManager:
                push_interval_s: Optional[float] = None,
                push_dir: Optional[str] = None,
                entropy_coef: Optional[float] = None,
-               reward_scale_overrides: Optional[Dict[str, float]] = None) -> str:
+               reward_scale_overrides: Optional[Dict[str, float]] = None,
+               backend: str = "local") -> str:
+        if backend not in ("local", "kaggle"):
+            raise ValueError(f"unknown backend '{backend}' — must be 'local' or 'kaggle'")
         policy_name = (policy_name or "").strip()
         if not policy_name:
             raise ValueError("policy_name is required")
@@ -786,53 +807,96 @@ class TrainingManager:
                     f"base policy '{base_policy}' has no local training checkpoint to fine-tune from "
                     f"(only an exported/deployable .pt — e.g. an externally-sourced policy with no "
                     f"training history on this machine)")
+        if backend == "kaggle":
+            if from_checkpoint:
+                raise ValueError(
+                    "Clone-from isn't supported for Kaggle jobs yet — the base checkpoint only "
+                    "exists on this machine and the Kaggle kernel has no way to reach it "
+                    "(see the plan's 'fuera de alcance' note; needs uploading it as a Kaggle "
+                    "Dataset first). Train from scratch, or use the local backend to fine-tune.")
+            if not kaggle_backend.kaggle_credentials_available():
+                raise ValueError(
+                    "no Kaggle credentials found at ~/.kaggle/kaggle.json — the Kaggle backend "
+                    "isn't set up on this machine")
 
         job_id = uuid.uuid4().hex[:8]
         result_path = JOBS_DIR / f"{job_id}.result.json"
         progress_path = JOBS_DIR / f"{job_id}.progress.json"
         log_path = JOBS_DIR / f"{job_id}.log"
 
-        argv = [
-            self.python_exe, "-u", str(TRAIN_SCRIPT),
+        # The flags shared by both backends — exactly what a human would type
+        # to web_train.py, minus --headless/--cpu/--result_path/--progress_path,
+        # which differ per backend (a Kaggle kernel always has a GPU and its
+        # own filesystem layout — see kaggle_backend._build_kernel_script).
+        train_flags: List[str] = [
             "--task", task,
             "--name", policy_name,
             "--num_envs", str(num_envs),
+        ]
+        if max_iterations is not None:
+            train_flags += ["--max_iterations", str(max_iterations)]
+        if max_minutes is not None:
+            train_flags += ["--max_minutes", str(max_minutes)]
+        if from_checkpoint:
+            train_flags += ["--from_checkpoint", from_checkpoint]
+        if cmd_vx:
+            train_flags += ["--cmd_vx_range", str(cmd_vx[0]), str(cmd_vx[1])]
+        if cmd_vy:
+            train_flags += ["--cmd_vy_range", str(cmd_vy[0]), str(cmd_vy[1])]
+        if cmd_yaw:
+            train_flags += ["--cmd_yaw_range", str(cmd_yaw[0]), str(cmd_yaw[1])]
+        if base_height_target is not None:
+            train_flags += ["--base_height_target", str(base_height_target)]
+        if push_robots is not None:
+            train_flags += ["--push_robots", "on" if push_robots else "off"]
+        if max_push_vel_xy is not None:
+            train_flags += ["--max_push_vel_xy", str(max_push_vel_xy)]
+        if push_interval_s is not None:
+            train_flags += ["--push_interval_s", str(push_interval_s)]
+        if push_dir is not None:
+            train_flags += ["--push_dir", push_dir]
+        if entropy_coef is not None:
+            train_flags += ["--entropy_coef", str(entropy_coef)]
+        if reward_scale_overrides:
+            for name, value in sorted(reward_scale_overrides.items()):
+                train_flags += ["--reward_scale", name, str(value)]
+
+        job = TrainingJob(
+            id=job_id, policy_name=policy_name, task=task, command="",
+            log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
+            started_at=time.time(),
+            max_iterations=max_iterations, max_minutes=max_minutes, num_envs=num_envs,
+            base_policy=base_policy, entropy_coef=entropy_coef,
+            reward_scale_overrides=dict(reward_scale_overrides) if reward_scale_overrides else None,
+            backend=backend,
+        )
+
+        if backend == "kaggle":
+            # Exactly what the kernel runs, modulo the interpreter path —
+            # same "show the real command" spirit as the local preview below.
+            job.command = "python legged_gym/scripts/web_train.py --headless " + " ".join(train_flags)
+            runner = kaggle_backend.KaggleRunner(
+                job_id=job_id, train_flags=train_flags,
+                result_path=result_path, log_path=log_path,
+            )
+            # kaggle_kernel_slug stays None until poll() sees runner.kernel_ref
+            # populated (set inside the background thread once its push succeeds).
+            self._kaggle_runners[job_id] = runner
+            self.jobs[job_id] = job
+            runner.start()
+            return job_id
+
+        argv = [
+            self.python_exe, "-u", str(TRAIN_SCRIPT),
             "--headless", "--cpu",
             "--result_path", str(result_path),
             "--progress_path", str(progress_path),
-        ]
-        if max_iterations is not None:
-            argv += ["--max_iterations", str(max_iterations)]
-        if max_minutes is not None:
-            argv += ["--max_minutes", str(max_minutes)]
-        if from_checkpoint:
-            argv += ["--from_checkpoint", from_checkpoint]
-        if cmd_vx:
-            argv += ["--cmd_vx_range", str(cmd_vx[0]), str(cmd_vx[1])]
-        if cmd_vy:
-            argv += ["--cmd_vy_range", str(cmd_vy[0]), str(cmd_vy[1])]
-        if cmd_yaw:
-            argv += ["--cmd_yaw_range", str(cmd_yaw[0]), str(cmd_yaw[1])]
-        if base_height_target is not None:
-            argv += ["--base_height_target", str(base_height_target)]
-        if push_robots is not None:
-            argv += ["--push_robots", "on" if push_robots else "off"]
-        if max_push_vel_xy is not None:
-            argv += ["--max_push_vel_xy", str(max_push_vel_xy)]
-        if push_interval_s is not None:
-            argv += ["--push_interval_s", str(push_interval_s)]
-        if push_dir is not None:
-            argv += ["--push_dir", push_dir]
-        if entropy_coef is not None:
-            argv += ["--entropy_coef", str(entropy_coef)]
-        if reward_scale_overrides:
-            for name, value in sorted(reward_scale_overrides.items()):
-                argv += ["--reward_scale", name, str(value)]
+        ] + train_flags
 
         # Exactly what a human would type, modulo the interpreter path and
         # `-u` — this string is what the web UI already showed as a preview
         # before Start was clicked; nothing here should surprise it.
-        display_command = "python " + " ".join(argv[2:])
+        job.command = "python " + " ".join(argv[2:])
 
         log_f = open(log_path, "w")
         # Pin PYTHONPATH to THIS repo checkout explicitly rather than trusting
@@ -847,14 +911,6 @@ class TrainingManager:
         env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
         proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=log_f, stderr=subprocess.STDOUT, env=env)
 
-        job = TrainingJob(
-            id=job_id, policy_name=policy_name, task=task, command=display_command,
-            log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
-            started_at=time.time(),
-            max_iterations=max_iterations, max_minutes=max_minutes, num_envs=num_envs,
-            base_policy=base_policy, entropy_coef=entropy_coef,
-            reward_scale_overrides=dict(reward_scale_overrides) if reward_scale_overrides else None,
-        )
         self.jobs[job_id] = job
         self._procs[job_id] = proc
         self._log_files[job_id] = log_f
@@ -887,11 +943,46 @@ class TrainingManager:
     def poll(self) -> List[TrainingJob]:
         """Returns jobs that just finished (status 'done') on this call —
         the caller (ControlService.poll_finished_training(), see service.py)
-        is responsible for actually loading policy_path and registering it."""
+        is responsible for actually loading policy_path and registering it.
+
+        Called once per sim tick — must stay cheap and non-blocking for
+        BOTH backends. Local jobs: Popen.poll() (an OS-level check, no
+        I/O). Kaggle jobs: Thread.is_alive() — same cheap shape; all the
+        actual Kaggle network calls happen inside that thread, never here
+        (see kaggle_backend.KaggleRunner's module docstring)."""
         newly_done = []
         for job_id, job in self.jobs.items():
             if job.status != "running":
                 continue
+            if job.backend == "kaggle":
+                runner = self._kaggle_runners[job_id]
+                if job.kaggle_kernel_slug is None:
+                    job.kaggle_kernel_slug = runner.kernel_ref  # set once the push completes
+                if runner.is_alive():
+                    continue  # no progress signal mid-run — see kaggle_backend's module docstring
+                job.finished_at = time.time()
+                if runner.error:
+                    job.status = "failed"
+                    job.error = runner.error
+                    continue
+                try:
+                    with open(job.result_path) as f:
+                        result = json.load(f)
+                    job.policy_path = result["policy_path"]
+                    job.train_checkpoint_path = result.get("train_checkpoint_path")
+                    job.iterations_done = result.get("iterations_done")
+                    job.status = "done"
+                    newly_done.append(job)
+                    # Deliberately NOT added to self._history — that history
+                    # feeds estimate()'s local-CPU wall-clock predictions
+                    # (see its own docstring); a Kaggle GPU run's throughput
+                    # is a completely different regime and would corrupt
+                    # those estimates for local jobs.
+                except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
+                    job.status = "failed"
+                    job.error = f"Kaggle job finished but its result file was unreadable: {e}"
+                continue
+
             proc = self._procs[job_id]
             rc = proc.poll()
             if rc is None:

@@ -236,7 +236,8 @@ class ControlService:
                         push_interval_s: Optional[float] = None,
                         push_dir: Optional[str] = None,
                         entropy_coef: Optional[float] = None,
-                        reward_scale_overrides: Optional[dict] = None) -> str:
+                        reward_scale_overrides: Optional[dict] = None,
+                        backend: str = "local") -> str:
         """Launches a new training job; returns its job id. Training runs
         out-of-process (see TrainingManager) — this call returns immediately,
         the job's progress shows up in status()['training_jobs'], and the
@@ -259,7 +260,11 @@ class ControlService:
         'reward_scales' for the full set this task defines and its current
         default for each, and web_train.py's --reward_scale for the
         per-term sign convention (positive rewards more of that term,
-        negative penalizes it)."""
+        negative penalizes it). backend='kaggle' runs this same job on a
+        Kaggle GPU kernel instead of a local CPU subprocess — see
+        TrainingManager.start()/kaggle_backend.py; only available when
+        system_info()['kaggle_available'] is true, and Clone-from
+        (base_policy/from_checkpoint) isn't supported on it yet."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         return self.training.start(
@@ -271,6 +276,7 @@ class ControlService:
             max_push_vel_xy=max_push_vel_xy, push_interval_s=push_interval_s,
             push_dir=push_dir,
             reward_scale_overrides=reward_scale_overrides,
+            backend=backend,
         )
 
     def task_defaults(self, task: str) -> dict:
