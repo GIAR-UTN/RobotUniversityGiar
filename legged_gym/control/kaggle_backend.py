@@ -111,6 +111,16 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
         "env = dict(os.environ)",
         'env["SIMULATOR"] = "genesis"',
         "",
+        # Diagnostic — earlier runs kept showing the SAME "sm_70+" warning
+        # even after the pin above, which strongly suggests the pin isn't
+        # actually taking effect (silently skipped, or something reinstalls
+        # over it) rather than 2.3.1 itself lacking sm_60. Confirming this
+        # from hard evidence (the actual loaded version + compiled arch
+        # list) beats guessing again against a live GPU kernel.
+        "import torch as _torch_check",
+        'print("TORCH VERSION:", _torch_check.__version__)',
+        'print("TORCH CUDA ARCH LIST:", _torch_check.cuda.get_arch_list())',
+        "",
         # A real run (see this module's own docstring) got assigned a Tesla
         # P100 (compute capability sm_60) whose kernels the current torch
         # release no longer ships (dropped in favor of sm_70+) — Genesis's
