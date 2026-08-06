@@ -96,31 +96,40 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
         f'{json.dumps(REPO_URL)}, REPO_DIR], check=True)',
         'subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", '
         'f"{REPO_DIR}[genesis]"], check=True)',
-        # A real run (see kaggle_backend.py's own module docstring / the smoke
-        # test that found this) got assigned a Tesla P100 (compute capability
-        # sm_60) and the torch build genesis-world's own install pulled in
-        # only supports sm_70+ — training silently fell back to CPU with no
-        # error, just a buried warning, making the whole point of running on
-        # Kaggle (GPU speed) quietly not happen. cu118 wheels still cover
-        # sm_60 through modern archs, so force-installing one AFTER genesis's
-        # own install (last write wins) works regardless of which GPU Kaggle
-        # actually hands this kernel — belt-and-suspenders alongside
-        # requesting T4 explicitly via machine_shape below.
-        'subprocess.run([sys.executable, "-m", "pip", "install", "-q", '
-        '"--index-url", "https://download.pytorch.org/whl/cu118", "torch"], check=True)',
         "",
         "env = dict(os.environ)",
         'env["SIMULATOR"] = "genesis"',
         "",
-        # --gpu, not --cpu's absence: web_train.py's --cpu is store_true with
-        # default=True, so simply omitting it (as this used to do) still
-        # left cli.cpu True — sim_device stayed "cpu" the whole time (see
-        # task_registry.py) regardless of Kaggle's GPU/accelerator/torch
-        # build. This was the actual reason an earlier smoke test ran at
-        # local-CPU speed on a $0 Kaggle GPU kernel; --gpu is the real fix,
-        # the machine_shape/cu118-torch changes above are secondary.
+        # A real run (see this module's own docstring) got assigned a Tesla
+        # P100 (compute capability sm_60) whose kernels the current torch
+        # release no longer ships (dropped in favor of sm_70+) — Genesis's
+        # OWN backend (warp/taichi) initialized on it fine, but rsl_rl's
+        # torch.zeros(..., device='cuda') for the obs/action buffers crashed
+        # instantly with `CUDA error: no kernel image is available for
+        # execution on the device`. Which GPU Kaggle actually hands out isn't
+        # something we control (machine_shape requests aren't honored
+        # reliably either), so rather than gamble on a torch build/version
+        # that happens to cover whatever shows up, probe it directly: try a
+        # trivial CUDA tensor op before touching web_train.py at all, and
+        # only pass --gpu if it actually works. Falls back to CPU (same
+        # speed as local, but the job SUCCEEDS) instead of hard-crashing on
+        # an incompatible accelerator.
+        "try:",
+        "    import torch",
+        "    torch.zeros(1, device=\"cuda\")",
+        '    gpu_flag = ["--gpu"]',
+        "except Exception as e:",
+        '    print(f"CUDA unusable on this kernel\'s accelerator ({e!r}) -- training on CPU instead.")',
+        "    gpu_flag = []",
+        "",
+        # --gpu (when gpu_flag says CUDA actually works), not --cpu's
+        # absence: web_train.py's --cpu is store_true with default=True, so
+        # simply omitting it (as this used to do) never meant "use GPU" —
+        # sim_device stayed "cpu" (see task_registry.py) no matter what
+        # accelerator Kaggle assigned. This was the actual reason an earlier
+        # smoke test ran at local-CPU speed on a supposedly-GPU Kaggle kernel.
         'argv = [sys.executable, "-u", "legged_gym/scripts/web_train.py",'
-        ' "--headless", "--gpu", "--result_path", RESULT_PATH] + '
+        ' "--headless", "--result_path", RESULT_PATH] + gpu_flag + '
         f"{json.dumps(train_flags)}",
         "",
         'with open(LOG_PATH, "w") as log_f:',
@@ -211,12 +220,9 @@ class KaggleRunner(threading.Thread):
                 "enable_gpu": True,
                 # Request T4 x2 explicitly rather than leaving the accelerator
                 # to whatever Kaggle has free — a real run got handed a P100
-                # instead (compute capability sm_60, unsupported by the torch
-                # build genesis-world installs by default; see the cu118
-                # pip install above for the other half of this fix). If this
-                # value turns out to be wrong/ignored server-side, the cu118
-                # torch pin above still makes training GPU-usable on whatever
-                # accelerator actually gets assigned.
+                # anyway (this value doesn't seem to be reliably honored by
+                # the API), which is why _build_kernel_script() also probes
+                # CUDA usability at runtime instead of trusting this request.
                 "machine_shape": "GPU_T4X2",
                 "enable_internet": True,
                 "dataset_sources": [],
