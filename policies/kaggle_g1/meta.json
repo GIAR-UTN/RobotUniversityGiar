@@ -1,0 +1,13 @@
+{
+  "task": "g1",
+  "trained_via": "kaggle-imported",
+  "simulator": "isaacgym",
+  "source": {
+    "kernel": "jvillalba007/unitree-rl",
+    "repo": "unitreerobotics/unitree_rl_gym",
+    "rsl_rl_version": "v1.0.2",
+    "raw_checkpoint": "unitree/unitree_rl_gym/logs/g1/Aug02_10-06-04_/model_10000.pt"
+  },
+  "iterations_done": 10000,
+  "note": "Trained on stock unitree_rl_gym (Isaac Gym backend) on Kaggle, not through this repo's control web. Same obs/action space (47/50/12) and ActorCriticRecurrent(LSTM, hidden=64) architecture as this repo's g1 config, so it loads, but it's a sim2sim transfer relative to our Genesis-trained policies (different contact/PD dynamics) -- behavior is not guaranteed to match, verify in sim before trusting it near the real robot."
+}

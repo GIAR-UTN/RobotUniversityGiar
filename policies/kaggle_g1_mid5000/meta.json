@@ -1,0 +1,13 @@
+{
+  "task": "g1",
+  "trained_via": "kaggle-imported",
+  "simulator": "isaacgym",
+  "source": {
+    "kernel": "jvillalba007/unitree-rl",
+    "repo": "unitreerobotics/unitree_rl_gym",
+    "rsl_rl_version": "v1.0.2",
+    "raw_checkpoint": "unitree/unitree_rl_gym/logs/g1/Aug02_10-06-04_/model_5000.pt"
+  },
+  "iterations_done": 5000,
+  "note": "Same run as 'kaggle_g1', halfway checkpoint (iteration 5000/10000) -- kept for comparing against the final one. Sim2sim transfer from Isaac Gym, verify in sim before trusting near the real robot."
+}
