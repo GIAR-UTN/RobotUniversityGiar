@@ -708,16 +708,26 @@ class LeggedRobot(BaseTask):
         
     # ------------ reward functions----------------
     def _reward_lin_vel_z(self) -> Reward:
-        # Penalize z axis base linear velocity
-        return torch.square(self.simulator.base_lin_vel[:, 2])
+        # Penalize z axis base linear velocity away from a target (default 0 —
+        # matches the old always-zero behavior; see rewards.lin_vel_z_target).
+        target = getattr(self.cfg.rewards, "lin_vel_z_target", 0.0)
+        return torch.square(self.simulator.base_lin_vel[:, 2] - target)
 
     def _reward_ang_vel_xy(self) -> Reward:
-        # Penalize xy axes base angular velocity
-        return torch.sum(torch.square(self.simulator.base_ang_vel[:, :2]), dim=1)
+        # Penalize xy-plane base angular velocity magnitude away from a target
+        # (default 0 — at 0 this is exactly the old sum-of-squares; see
+        # rewards.ang_vel_xy_target).
+        target = getattr(self.cfg.rewards, "ang_vel_xy_target", 0.0)
+        mag = torch.norm(self.simulator.base_ang_vel[:, :2], dim=1)
+        return torch.square(mag - target)
 
     def _reward_orientation(self) -> Reward:
-        # Penalize non flat base orientation
-        return torch.sum(torch.square(self.simulator.projected_gravity[:, :2]), dim=1)
+        # Penalize base tilt magnitude away from a target (default 0 = flat/
+        # upright — at 0 this is exactly the old sum-of-squares; see
+        # rewards.orientation_tilt_target).
+        target = getattr(self.cfg.rewards, "orientation_tilt_target", 0.0)
+        mag = torch.norm(self.simulator.projected_gravity[:, :2], dim=1)
+        return torch.square(mag - target)
 
     def _reward_base_height(self) -> Reward:
         # Penalize base height away from target

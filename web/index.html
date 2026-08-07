@@ -760,7 +760,8 @@
             <p class="field-group-note">Command envelope, Target variable, Push disturbances and Exploration noise below are the guided fields — each is one specific, explained knob. Reward weights (advanced), at the bottom, is the raw fallback: every term this task's reward defines, unexplained unless a term has a note. Prefer the guided fields; drop to the raw grid only for what they don't cover yet.</p>
 
             <div class="field-row">
-              <label>Command envelope — measurement targets (m/s, m/s, rad/s)</label>
+              <label>Command envelope — velocity command range (m/s, m/s, rad/s)</label>
+              <p class="field-hint">Not a fixed target like the Target variable below — during training the robot is given a fresh random command from this range every few seconds (like a moving joystick input), and the reward is for matching whatever was commanded at that moment. Widening the range trains a policy that handles more commands; narrowing it trains a more specialized one.</p>
               <p class="field-hint">Linear X range</p>
               <div class="range-pair">
                 <input type="number" id="train-vx-lo" step="0.1" placeholder="lo">
@@ -784,6 +785,7 @@
 
             <div class="field-row">
               <label for="train-var-select">Target variable</label>
+              <p class="field-hint">Unlike Command envelope above, this is one fixed value the policy is trained to converge to and hold — not a range it samples from.</p>
               <select id="train-var-select"></select>
               <p class="field-hint" id="train-var-note"></p>
 

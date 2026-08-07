@@ -398,7 +398,7 @@ class TrainingManager:
     # config's own physical bound instead of a user-typed number.
     VARIABLE_REGISTRY = {
         "base_height": {
-            "label": "Pelvis height",
+            "label": "Base height",
             "unit": "m",
             "source": "sim_ground_truth",
             "flag": "base_height_target",
@@ -406,6 +406,37 @@ class TrainingManager:
             "range_attr": "base_height_target_range",
             "note": "Not measured by any real sensor — see RobotState.base_height's docstring. "
                     "Fine as a training target since training only ever runs in sim.",
+        },
+        "lin_vel_z": {
+            "label": "Vertical velocity",
+            "unit": "m/s",
+            "source": "sim_ground_truth",
+            "flag": "lin_vel_z_target",
+            "config_attr": "lin_vel_z_target",
+            "range_attr": "lin_vel_z_target_range",
+            "note": "Not measured by any real sensor (no IMU measures velocity, only acceleration) — "
+                    "see RobotState.base_lin_vel's docstring. Fine as a training target since training "
+                    "only ever runs in sim. Defaults to 0 — no vertical bobbing.",
+        },
+        "ang_vel_xy": {
+            "label": "Roll/pitch rate",
+            "unit": "rad/s",
+            "source": "sensor",
+            "flag": "ang_vel_xy_target",
+            "config_attr": "ang_vel_xy_target",
+            "range_attr": "ang_vel_xy_target_range",
+            "note": "Real IMU gyroscope signal — same one Live Telemetry's 'Angular velocity' shows. "
+                    "Defaults to 0 — no roll/pitch wobble.",
+        },
+        "orientation_tilt": {
+            "label": "Body tilt",
+            "unit": "g",
+            "source": "sensor",
+            "flag": "orientation_tilt_target",
+            "config_attr": "orientation_tilt_target",
+            "range_attr": "orientation_tilt_target_range",
+            "note": "Real IMU signal (gravity vector in the body frame) — same one Live Telemetry's "
+                    "'Orientation' shows. Defaults to 0 — perfectly upright.",
         },
     }
 
@@ -734,7 +765,9 @@ class TrainingManager:
                 # info already carries "simulator" (see register_source()) —
                 # surfaced here so Clone-from can flag an isaacgym/genesis
                 # sim2sim mismatch instead of silently fine-tuning across engines.
-                {"name": name, "base_height_target": self._task_base_height(info["task"]), **info}
+                # Per-variable reference values come from task_defaults(info["task"])
+                # instead of being duplicated here — see app.js's refreshTargetReference().
+                {"name": name, **info}
                 for name, info in sorted(self.policy_sources.items())
             ],
             # Task-independent half of VARIABLE_REGISTRY (label/unit/source/
@@ -748,31 +781,24 @@ class TrainingManager:
             },
         }
 
-    def _task_base_height(self, task: str) -> Optional[float]:
-        from legged_gym.utils import task_registry
-        try:
-            env_cfg, _ = task_registry.get_cfgs(name=task)
-        except Exception:  # noqa: BLE001 - a broken/unregistered cfg shouldn't break the catalog
-            return None
-        return getattr(env_cfg.rewards, "base_height_target", None)
-
     def task_defaults(self, task: str) -> dict:
         """Reference values the Create Policy panel reads off a task's own
         config — WITHOUT running the sim — so 'relative' target fields (e.g.
-        raise/lower the pelvis by N cm) have something concrete to add a
+        raise/lower the base height by N cm) have something concrete to add a
         delta to. This is the task's config default, not necessarily the
         exact value a specific checkpoint was actually trained with (a prior
         job may have overridden it) — the best available reference short of
         loading and stepping that checkpoint.
 
-        'variables' is the generic form of the same idea — one entry per
+        'variables' is the generic form of this — one entry per
         VARIABLE_REGISTRY key, each carrying a reference (for Relative mode)
-        and a physical range (for Extreme mode's lowest/highest bounds).
-        The task-independent half of the registry (label/unit/source/flag/
-        note) comes from catalog() instead — fetched once, not on every
-        task change. 'base_height_target' at the top level is kept for
-        backward compat with the panel's existing pelvis-specific code
-        path; it's exactly variables['base_height']['reference']."""
+        and a physical range (for Extreme mode's lowest/highest bounds). Also
+        used, with the base policy's OWN task, to resolve a clone-from
+        reference (see app.js's refreshTargetReference()) — every registered
+        variable gets the same treatment, base_height included, no special
+        case. The task-independent half of the registry (label/unit/source/
+        flag/note) comes from catalog() instead — fetched once, not on every
+        task change."""
         from legged_gym.utils import task_registry
         try:
             env_cfg, _ = task_registry.get_cfgs(name=task)
@@ -805,7 +831,6 @@ class TrainingManager:
             }
 
         return {
-            "base_height_target": self._task_base_height(task),
             "variables": variables,
             "reward_scales": reward_scales,
             "reward_scale_notes": {
@@ -822,6 +847,9 @@ class TrainingManager:
                cmd_vy: Optional[Sequence[float]] = None,
                cmd_yaw: Optional[Sequence[float]] = None,
                base_height_target: Optional[float] = None,
+               lin_vel_z_target: Optional[float] = None,
+               ang_vel_xy_target: Optional[float] = None,
+               orientation_tilt_target: Optional[float] = None,
                push_robots: Optional[bool] = None,
                max_push_vel_xy: Optional[float] = None,
                push_interval_s: Optional[float] = None,
@@ -924,6 +952,12 @@ class TrainingManager:
             train_flags += ["--cmd_yaw_range", str(cmd_yaw[0]), str(cmd_yaw[1])]
         if base_height_target is not None:
             train_flags += ["--base_height_target", str(base_height_target)]
+        if lin_vel_z_target is not None:
+            train_flags += ["--lin_vel_z_target", str(lin_vel_z_target)]
+        if ang_vel_xy_target is not None:
+            train_flags += ["--ang_vel_xy_target", str(ang_vel_xy_target)]
+        if orientation_tilt_target is not None:
+            train_flags += ["--orientation_tilt_target", str(orientation_tilt_target)]
         if push_robots is not None:
             train_flags += ["--push_robots", "on" if push_robots else "off"]
         if max_push_vel_xy is not None:

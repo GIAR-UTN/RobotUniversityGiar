@@ -168,7 +168,7 @@ class ControlService:
         return {
             "base_height": {
                 "value": scalar(state.base_height), "unit": "m", "source": "sim_ground_truth",
-                "label": "Pelvis height",
+                "label": "Base height",
                 "note": "Not measured by any real sensor — the simulator's own base z position. "
                         "Fine as a training-time target (training only ever runs in sim); would need "
                         "a different signal (e.g. leg kinematics) to ever inform a real-robot policy.",
@@ -233,6 +233,9 @@ class ControlService:
                         cmd_vx: Optional[list] = None, cmd_vy: Optional[list] = None,
                         cmd_yaw: Optional[list] = None,
                         base_height_target: Optional[float] = None,
+                        lin_vel_z_target: Optional[float] = None,
+                        ang_vel_xy_target: Optional[float] = None,
+                        orientation_tilt_target: Optional[float] = None,
                         push_robots: Optional[bool] = None,
                         max_push_vel_xy: Optional[float] = None,
                         push_interval_s: Optional[float] = None,
@@ -249,10 +252,11 @@ class ControlService:
 
         Time budget is either or both of max_iterations/max_minutes —
         whichever is hit first stops training (see web_train.py's chunked
-        learn() loop). base_height_target/push_robots/max_push_vel_xy/
-        push_interval_s are the "stability target" knobs — override the
-        task's own reward/domain-rand defaults, e.g. to hold a fine-tuning
-        base's crouched height instead of the task's standing height.
+        learn() loop). base_height_target/lin_vel_z_target/ang_vel_xy_target/
+        orientation_tilt_target/push_robots/max_push_vel_xy/push_interval_s
+        are the "stability target" knobs — override the task's own
+        reward/domain-rand defaults, e.g. to hold a fine-tuning base's
+        crouched height instead of the task's standing height.
         entropy_coef overrides PPO's exploration-noise bonus weight — watch
         for a run whose action noise std climbs instead of shrinks (visible
         live via web_train.py's log); that's this knob set too high for how
@@ -273,7 +277,10 @@ class ControlService:
             policy_name=policy_name, task=task, num_envs=num_envs,
             max_iterations=max_iterations, max_minutes=max_minutes,
             base_policy=base_policy, cmd_vx=cmd_vx, cmd_vy=cmd_vy, cmd_yaw=cmd_yaw,
-            base_height_target=base_height_target, push_robots=push_robots,
+            base_height_target=base_height_target,
+            lin_vel_z_target=lin_vel_z_target, ang_vel_xy_target=ang_vel_xy_target,
+            orientation_tilt_target=orientation_tilt_target,
+            push_robots=push_robots,
             entropy_coef=entropy_coef,
             max_push_vel_xy=max_push_vel_xy, push_interval_s=push_interval_s,
             push_dir=push_dir,

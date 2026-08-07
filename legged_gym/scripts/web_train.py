@@ -20,13 +20,15 @@ Three "target" concepts the UI exposes map directly onto flags here:
   - measurement target: --cmd_*_range overrides the velocity command
     envelope (env_cfg.commands.ranges) the policy is trained across — a
     measured quantity (m/s, rad/s), not a reward-shaping knob.
-  - stability target: --base_height_target/--push_robots/--max_push_vel_xy/
-    --push_interval_s/--push_dir override env_cfg.rewards.base_height_target
-    and env_cfg.domain_rand.* directly — for training a policy to hold a
-    SPECIFIC pelvis height (e.g. matching a crouch checkpoint's height,
-    rather than the task's own default) under push disturbances, optionally
-    biased from one direction (--push_dir) instead of every direction at
-    once — see Simulator.sample_push_vel_xy() for the angle convention.
+  - stability target: --base_height_target/--lin_vel_z_target/
+    --ang_vel_xy_target/--orientation_tilt_target/--push_robots/
+    --max_push_vel_xy/--push_interval_s/--push_dir override
+    env_cfg.rewards.<term>_target and env_cfg.domain_rand.* directly — for
+    training a policy to hold a SPECIFIC base height, vertical velocity,
+    wobble, or tilt (e.g. matching a crouch checkpoint's height, rather than
+    the task's own default) under push disturbances, optionally biased from
+    one direction (--push_dir) instead of every direction at once — see
+    Simulator.sample_push_vel_xy() for the angle convention.
 
 Time budget is EITHER or BOTH of --max_iterations and --max_minutes —
 whichever is hit first stops training (see the chunked learn() loop below).
@@ -36,7 +38,7 @@ Usage (as composed by the web UI; also runnable by hand):
     python legged_gym/scripts/web_train.py --task g1 --name my_policy \\
         --max_iterations 500 --max_minutes 30 --num_envs 64 --headless --cpu \\
         --from_checkpoint logs/g1/<run>/model_1800.pt \\
-        --cmd_vx_range -0.5 0.5 --base_height_target 0.5 --push_robots on \\
+        --cmd_vx_range -0.5 0.5 --base_height_target 0.5 --orientation_tilt_target 0 --push_robots on \\
         --reward_scale tracking_lin_vel 0.5 --reward_scale action_rate -0.1 \\
         --result_path /tmp/result.json
 """
@@ -84,7 +86,13 @@ def main():
     parser.add_argument('--cmd_vy_range', type=float, nargs=2, default=None, metavar=('LO', 'HI'))
     parser.add_argument('--cmd_yaw_range', type=float, nargs=2, default=None, metavar=('LO', 'HI'))
     parser.add_argument('--base_height_target', type=float, default=None,
-                         help="pelvis height (m) the height-tracking reward targets — override to match a fine-tuning base's height (e.g. a crouch) instead of the task's own default")
+                         help="base height (m) the height-tracking reward targets — override to match a fine-tuning base's height (e.g. a crouch) instead of the task's own default")
+    parser.add_argument('--lin_vel_z_target', type=float, default=None,
+                         help="vertical base velocity (m/s) the lin_vel_z reward targets — default 0 (no bobbing)")
+    parser.add_argument('--ang_vel_xy_target', type=float, default=None,
+                         help="roll/pitch angular velocity magnitude (rad/s) the ang_vel_xy reward targets — default 0 (no wobble)")
+    parser.add_argument('--orientation_tilt_target', type=float, default=None,
+                         help="body tilt magnitude off upright (gravity-vector xy component) the orientation reward targets — default 0 (upright)")
     parser.add_argument('--push_robots', type=str, default=None, choices=['on', 'off'],
                          help="force random push disturbances on/off during training (default: leave the task's own setting)")
     parser.add_argument('--max_push_vel_xy', type=float, default=None,
@@ -137,6 +145,12 @@ def main():
         env_cfg.commands.ranges.ang_vel_yaw = list(cli.cmd_yaw_range)
     if cli.base_height_target is not None:
         env_cfg.rewards.base_height_target = cli.base_height_target
+    if cli.lin_vel_z_target is not None:
+        env_cfg.rewards.lin_vel_z_target = cli.lin_vel_z_target
+    if cli.ang_vel_xy_target is not None:
+        env_cfg.rewards.ang_vel_xy_target = cli.ang_vel_xy_target
+    if cli.orientation_tilt_target is not None:
+        env_cfg.rewards.orientation_tilt_target = cli.orientation_tilt_target
     if cli.push_robots is not None:
         env_cfg.domain_rand.push_robots = (cli.push_robots == 'on')
     if cli.max_push_vel_xy is not None:

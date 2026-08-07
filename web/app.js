@@ -1424,11 +1424,6 @@ function variableMeta() {
   return trainingCatalog?.variables?.[selectedVariable()] || null;
 }
 
-function findBaseHeightTarget(baseName) {
-  const p = trainingCatalog?.base_policies.find((b) => b.name === baseName);
-  return p ? p.base_height_target : undefined;
-}
-
 function renderVariableChrome() {
   const meta = variableMeta();
   const unit = meta?.unit || '';
@@ -1463,23 +1458,24 @@ function renderExtremeNote() {
 function refreshTargetReference() {
   const base = trainBase.value, task = trainTask.value;
   const varKey = selectedVariable();
-  if (base && varKey === 'base_height') {
-    // Fast path: base_height's reference for a clone-from base is already
-    // in training_catalog's base_policies list, no extra round trip.
-    targetReference = { value: findBaseHeightTarget(base) ?? null, label: `${base}'s task default` };
-    targetRange = null; // extreme mode's clamp is still task-scoped — fall through below for it
-  }
   if (!task && !base) { targetReference = null; targetRange = null; renderTargetReference(); return; }
-  const effectiveTask = task || trainingCatalog?.base_policies.find((b) => b.name === base)?.task;
-  if (!effectiveTask) { renderTargetReference(); return; }
-  call('task_defaults', { task: effectiveTask }).then((d) => {
+  // A clone-from base's reference is always its OWN task's default, not the
+  // (possibly different) currently-selected target task — a "raise/lower"
+  // delta should be relative to what the base was actually trained at.
+  // Same rule for every registered variable, base_height included.
+  const referenceTask = base
+    ? trainingCatalog?.base_policies.find((b) => b.name === base)?.task
+    : task;
+  if (!referenceTask) { renderTargetReference(); return; }
+  call('task_defaults', { task: referenceTask }).then((d) => {
     const v = d.variables?.[varKey];
-    if (!base) {
-      targetReference = { value: v?.reference ?? null, label: `${effectiveTask}'s default` };
-    }
+    targetReference = {
+      value: v?.reference ?? null,
+      label: base ? `${base}'s task default` : `${referenceTask}'s default`,
+    };
     targetRange = v?.range ?? null;
     renderTargetReference();
-  }).catch(() => { if (!base) targetReference = null; targetRange = null; renderTargetReference(); });
+  }).catch(() => { targetReference = null; targetRange = null; renderTargetReference(); });
 }
 
 trainVarSelect.addEventListener('change', () => {
@@ -1942,11 +1938,16 @@ createPolicyForm.addEventListener('submit', (e) => {
 
   showTrainError('');
   btnStartTraining.disabled = true;
+  // Which target-variable flag p.height applies to depends on the "Target
+  // variable" dropdown — e.g. base_height_target, lin_vel_z_target, ... (see
+  // VARIABLE_REGISTRY in training.py; every entry's flag is also its
+  // start_training() kwarg name, kept identical on purpose).
+  const targetFlagKey = variableMeta()?.flag || 'base_height_target';
   call('start_training', {
     policy_name: p.name, task: p.task, num_envs: p.numEnvs,
     max_iterations: p.iterations, max_minutes: p.minutes,
     base_policy: p.base, cmd_vx: p.cmdVx, cmd_vy: p.cmdVy, cmd_yaw: p.cmdYaw,
-    base_height_target: p.height,
+    [targetFlagKey]: p.height,
     push_robots: p.push === null ? null : p.push === 'on',
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
@@ -2324,12 +2325,12 @@ function renderSeriesChart(series) {
 // in the task config, "rewards X" = positive). Falls back to the term name
 // itself in renderRewardTerms() if a term isn't listed here yet.
 const REWARD_TERM_GLOSSARY = {
-  base_height: 'Penalizes the pelvis being above/below a target height off the ground — pulls the robot toward a specific standing/crouching posture.',
+  base_height: 'Penalizes the base being above/below a target height off the ground — pulls the robot toward a specific standing/crouching posture. Target set in "Target variable" above.',
   tracking_lin_vel: 'Rewards matching the commanded forward/strafe velocity (the WASD/arrow-key command) — how well it goes where it’s told.',
   tracking_ang_vel: 'Rewards matching the commanded turn rate (yaw) — how well it turns at the commanded speed.',
-  orientation: 'Penalizes the body tilting away from upright (gravity not pointing straight down in the body frame) — keeps it from leaning or toppling.',
-  lin_vel_z: 'Penalizes vertical (bouncing) velocity of the base — discourages bobbing up and down.',
-  ang_vel_xy: 'Penalizes roll/pitch angular velocity — discourages wobbling side to side or front to back.',
+  orientation: 'Penalizes the body tilting away from a target amount off upright (gravity not pointing straight down in the body frame) — keeps it from leaning or toppling. Target set in "Target variable" above; defaults to upright (0).',
+  lin_vel_z: 'Penalizes vertical (bouncing) velocity of the base away from a target — discourages bobbing up and down. Target set in "Target variable" above; defaults to 0.',
+  ang_vel_xy: 'Penalizes roll/pitch angular velocity away from a target — discourages wobbling side to side or front to back. Target set in "Target variable" above; defaults to 0.',
   contact: 'Rewards feet touching down at the right point in the walking gait cycle — encourages a proper stance/swing rhythm instead of shuffling or dragging.',
   contact_no_vel: 'Penalizes a foot moving while it’s supposed to be planted on the ground — discourages slipping/skidding on stance feet.',
   alive: 'A flat per-step bonus just for still being upright — the direct incentive to survive longer, not fall.',

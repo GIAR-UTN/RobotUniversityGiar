@@ -128,6 +128,32 @@ def _build_kernel_script(train_flags: List[str], branch: str,
         'RESULT_PATH = "/kaggle/working/result.json"',
         'LOG_PATH = "/kaggle/working/train.log"',
         "",
+    ] + ([
+        # Fail fast, BEFORE the multi-minute venv/Isaac Gym bootstrap below,
+        # if the Clone-from base dataset never actually got attached to
+        # THIS kernel session — a real, reproduced Kaggle flake: this
+        # runner already waits for dataset_status()=='ready' before pushing
+        # (see KaggleRunner._run()), but a session can still start with an
+        # empty /kaggle/input/<dataset>/ despite that (confirmed twice: two
+        # separate jobs both bootstrapped for 4+ minutes only to hit
+        # FileNotFoundError deep in torch's checkpoint loader). Poll a short
+        # grace period here in case it's a few-second propagation lag, then
+        # bail with a marker string (BASE_CHECKPOINT_MISSING) KaggleRunner
+        # greps for in this kernel's own captured log to distinguish "retry
+        # with a fresh session" from a real training crash.
+        f'BASE_CHECKPOINT_MOUNT = {json.dumps(base_checkpoint_mount)}',
+        "import time as _time",
+        "_deadline = _time.time() + 45",
+        "while not os.path.isfile(BASE_CHECKPOINT_MOUNT) and _time.time() < _deadline:",
+        "    _time.sleep(3)",
+        "if not os.path.isfile(BASE_CHECKPOINT_MOUNT):",
+        "    _input_dir = os.path.dirname(os.path.dirname(BASE_CHECKPOINT_MOUNT))",
+        "    print('BASE_CHECKPOINT_MISSING:', BASE_CHECKPOINT_MOUNT)",
+        "    print('/kaggle/input contents:', "
+        "os.listdir(_input_dir) if os.path.isdir(_input_dir) else '<no /kaggle/input>')",
+        "    raise SystemExit('BASE_CHECKPOINT_MISSING: ' + BASE_CHECKPOINT_MOUNT)",
+        "",
+    ] if base_checkpoint_mount else []) + [
         # Python 3.8 venv + the exact torch build Isaac Gym Preview 4's own
         # compiled bindings need (also the build proven to still ship sm_60
         # kernels, unlike current torch releases) -- confirmed this exact
@@ -262,6 +288,20 @@ class KaggleRunner(threading.Thread):
         except Exception as e:  # noqa: BLE001 - must never crash this thread silently; report via .error instead
             self.error = str(e)
 
+    def _kernel_log_has_marker(self, api, marker: str) -> bool:
+        """Downloads this kernel's own captured stdout/stderr (works even on
+        an 'error' status — kernels_output doesn't require 'complete') and
+        checks for `marker`. Best-effort: a download failure here means
+        "can't confirm", not "confirmed absent" — returns False either way,
+        which is the safe default (skip the retry, report the plain error)."""
+        try:
+            with tempfile.TemporaryDirectory() as out_dir:
+                api.kernels_output(self.kernel_ref, path=out_dir, force=True, quiet=True)
+                log_path = Path(out_dir) / f"{self.slug}.log"
+                return log_path.is_file() and marker in log_path.read_text(errors="replace")
+        except Exception:  # noqa: BLE001 - best-effort diagnostic, never fatal
+            return False
+
     def _run(self) -> None:
         from kaggle.api.kaggle_api_extended import KaggleApi
 
@@ -327,47 +367,77 @@ class KaggleRunner(threading.Thread):
                     + (f" (last error: {last_status_error})" if last_status_error else ""))
                 return
             base_checkpoint_mount = f"/kaggle/input/{self.dataset_slug}/train_checkpoint.pt"
+            # dataset_status()=='ready' is itself the head of a longer
+            # pipeline (upload -> process -> become the version a BRAND NEW
+            # kernel session actually attaches) — a fixed grace pause here,
+            # on top of the polling above, is cheap insurance against
+            # exactly the failure BASE_CHECKPOINT_MOUNT's own in-kernel
+            # retry (see _build_kernel_script) exists to catch.
+            time.sleep(20)
 
         script = _build_kernel_script(self.train_flags, self.branch, base_checkpoint_mount)
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            (tmp_path / "kernel.py").write_text(script)
-            (tmp_path / "kernel-metadata.json").write_text(json.dumps({
-                "id": self.kernel_ref,
-                "title": self.slug,
-                "code_file": "kernel.py",
-                "language": "python",
-                "kernel_type": "script",
-                "is_private": True,
-                "enable_gpu": True,
-                # Request T4 x2 explicitly rather than leaving the accelerator
-                # to whatever Kaggle has free — a real run got handed a P100
-                # anyway (this value doesn't seem to be reliably honored by
-                # the API), which is why _build_kernel_script() also probes
-                # CUDA usability at runtime instead of trusting this request.
-                "machine_shape": "GPU_T4X2",
-                "enable_internet": True,
-                "dataset_sources": [f"{username}/{self.dataset_slug}"] if self.dataset_slug else [],
-                "competition_sources": [],
-                "kernel_sources": [],
-            }))
-            api.kernels_push(str(tmp_path))
-
+        # A Clone-from base gets one retry (a fresh kernel *session* against
+        # the SAME already-ready dataset) if the specific, diagnosable
+        # mount-miss flake above still slips through — see
+        # _build_kernel_script's BASE_CHECKPOINT_MISSING check. A run with
+        # no base checkpoint has nothing to retry for, so gets exactly one
+        # attempt like before.
+        max_attempts = 2 if base_checkpoint_mount else 1
         status = None
-        deadline = time.time() + MAX_RUNTIME_S
         status_name = None
-        while time.time() < deadline:
-            time.sleep(POLL_INTERVAL_S)
-            status = api.kernels_status(self.kernel_ref)
-            status_name = _status_name(status.status)
-            if status_name in TERMINAL_STATUSES:
-                break
-        else:
-            self.error = f"timed out waiting for Kaggle kernel {self.kernel_ref} after {MAX_RUNTIME_S}s"
-            return
+        mount_missing = False
+        for attempt in range(1, max_attempts + 1):
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                (tmp_path / "kernel.py").write_text(script)
+                (tmp_path / "kernel-metadata.json").write_text(json.dumps({
+                    "id": self.kernel_ref,
+                    "title": self.slug,
+                    "code_file": "kernel.py",
+                    "language": "python",
+                    "kernel_type": "script",
+                    "is_private": True,
+                    "enable_gpu": True,
+                    # Request T4 x2 explicitly rather than leaving the accelerator
+                    # to whatever Kaggle has free — a real run got handed a P100
+                    # anyway (this value doesn't seem to be reliably honored by
+                    # the API), which is why _build_kernel_script() also probes
+                    # CUDA usability at runtime instead of trusting this request.
+                    "machine_shape": "GPU_T4X2",
+                    "enable_internet": True,
+                    "dataset_sources": [f"{username}/{self.dataset_slug}"] if self.dataset_slug else [],
+                    "competition_sources": [],
+                    "kernel_sources": [],
+                }))
+                # Re-pushing the SAME kernel_ref (a retry) creates a new
+                # version/session rather than colliding with the first —
+                # exactly what "try attaching the dataset again" needs.
+                api.kernels_push(str(tmp_path))
 
-        if status_name != "complete":
+            deadline = time.time() + MAX_RUNTIME_S
+            while True:
+                if time.time() >= deadline:
+                    self.error = f"timed out waiting for Kaggle kernel {self.kernel_ref} after {MAX_RUNTIME_S}s"
+                    return
+                time.sleep(POLL_INTERVAL_S)
+                status = api.kernels_status(self.kernel_ref)
+                status_name = _status_name(status.status)
+                if status_name in TERMINAL_STATUSES:
+                    break
+
+            if status_name == "complete":
+                break  # success — fall through to downloading the real result below
+
+            mount_missing = base_checkpoint_mount is not None and self._kernel_log_has_marker(
+                api, "BASE_CHECKPOINT_MISSING")
+            if mount_missing and attempt < max_attempts:
+                continue  # one retry: fresh kernel session, dataset already 'ready'
             self.error = status.failure_message or f"kernel finished with status '{status_name}'"
+            if mount_missing:
+                self.error += (
+                    " — the Clone-from base checkpoint dataset never attached to the kernel "
+                    "session, even after a retry (see BASE_CHECKPOINT_MISSING in its log on "
+                    "kaggle.com); a transient Kaggle-side issue, not this job's training itself")
             return
 
         with tempfile.TemporaryDirectory() as out_dir:
