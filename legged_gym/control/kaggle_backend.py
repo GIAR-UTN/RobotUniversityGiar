@@ -80,7 +80,7 @@ def kaggle_credentials_available() -> bool:
 
 
 def _build_kernel_script(train_flags: List[str], branch: str,
-                          base_checkpoint_mount: Optional[str] = None) -> str:
+                          has_base_checkpoint: bool = False) -> str:
     """The actual Python program Kaggle executes. Bootstraps a Python 3.8
     venv with Isaac Gym installed, clones THIS repo fresh into it, and runs
     the exact same legged_gym/scripts/web_train.py the control web already
@@ -133,27 +133,40 @@ def _build_kernel_script(train_flags: List[str], branch: str,
         # if the Clone-from base dataset never actually got attached to
         # THIS kernel session — a real, reproduced Kaggle flake: this
         # runner already waits for dataset_status()=='ready' before pushing
-        # (see KaggleRunner._run()), but a session can still start with an
-        # empty /kaggle/input/<dataset>/ despite that (confirmed twice: two
-        # separate jobs both bootstrapped for 4+ minutes only to hit
-        # FileNotFoundError deep in torch's checkpoint loader). Poll a short
-        # grace period here in case it's a few-second propagation lag, then
-        # bail with a marker string (BASE_CHECKPOINT_MISSING) KaggleRunner
-        # greps for in this kernel's own captured log to distinguish "retry
-        # with a fresh session" from a real training crash.
-        f'BASE_CHECKPOINT_MOUNT = {json.dumps(base_checkpoint_mount)}',
-        "import time as _time",
+        # (see KaggleRunner._run()), but a session can still start with no
+        # visible checkpoint despite that (confirmed twice: two separate
+        # jobs both bootstrapped for 4+ minutes only to hit FileNotFoundError
+        # deep in torch's checkpoint loader).
+        #
+        # Deliberately NOT a fixed path like /kaggle/input/<slug>/train_checkpoint.pt
+        # — confirmed via a real failed kernel's own log that kernels pushed
+        # via the API get their dataset sources namespaced one level deeper
+        # than that (/kaggle/input/datasets/<owner>/<slug>/...), and that
+        # nesting isn't documented/guaranteed to stay put. Glob for the file
+        # by name instead, at any depth under /kaggle/input — nothing else
+        # Kaggle mounts there would produce a file with this exact name, so
+        # this is robust to whatever nesting Kaggle uses today or changes to
+        # later. Poll a short grace period in case of a few-second
+        # propagation lag, then bail with a marker string
+        # (BASE_CHECKPOINT_MISSING) KaggleRunner greps for in this kernel's
+        # own captured log to distinguish "retry with a fresh session" from
+        # a real training crash.
+        "import glob, time as _time",
         "_deadline = _time.time() + 45",
-        "while not os.path.isfile(BASE_CHECKPOINT_MOUNT) and _time.time() < _deadline:",
-        "    _time.sleep(3)",
-        "if not os.path.isfile(BASE_CHECKPOINT_MOUNT):",
-        "    _input_dir = os.path.dirname(os.path.dirname(BASE_CHECKPOINT_MOUNT))",
-        "    print('BASE_CHECKPOINT_MISSING:', BASE_CHECKPOINT_MOUNT)",
+        "BASE_CHECKPOINT_MOUNT = None",
+        "while BASE_CHECKPOINT_MOUNT is None and _time.time() < _deadline:",
+        "    _matches = glob.glob('/kaggle/input/**/train_checkpoint.pt', recursive=True)",
+        "    if _matches:",
+        "        BASE_CHECKPOINT_MOUNT = _matches[0]",
+        "    else:",
+        "        _time.sleep(3)",
+        "if BASE_CHECKPOINT_MOUNT is None:",
+        "    print('BASE_CHECKPOINT_MISSING: no train_checkpoint.pt found under /kaggle/input')",
         "    print('/kaggle/input contents:', "
-        "os.listdir(_input_dir) if os.path.isdir(_input_dir) else '<no /kaggle/input>')",
-        "    raise SystemExit('BASE_CHECKPOINT_MISSING: ' + BASE_CHECKPOINT_MOUNT)",
+        "os.listdir('/kaggle/input') if os.path.isdir('/kaggle/input') else '<no /kaggle/input>')",
+        "    raise SystemExit('BASE_CHECKPOINT_MISSING: no train_checkpoint.pt found under /kaggle/input')",
         "",
-    ] if base_checkpoint_mount else []) + [
+    ] if has_base_checkpoint else []) + [
         # Python 3.8 venv + the exact torch build Isaac Gym Preview 4's own
         # compiled bindings need (also the build proven to still ship sm_60
         # kernels, unlike current torch releases) -- confirmed this exact
@@ -201,15 +214,16 @@ def _build_kernel_script(train_flags: List[str], branch: str,
         "",
         # web_train.py's --headless already defaults to True; passed
         # explicitly anyway to match what a human would type, same as the
-        # local-job command preview. base_checkpoint_mount (if a Clone-from
-        # base was picked — see KaggleRunner._run()'s dataset upload) is a
-        # /kaggle/input/<dataset>/train_checkpoint.pt path that only exists
-        # inside THIS kernel, so it's appended here rather than folded into
-        # train_flags upstream (training.py's start() never sees it).
+        # local-job command preview. BASE_CHECKPOINT_MOUNT (if a Clone-from
+        # base was picked — see KaggleRunner._run()'s dataset upload) is
+        # resolved above via glob, only inside THIS kernel, so it's appended
+        # here rather than folded into train_flags upstream (training.py's
+        # start() never sees it).
         'argv = [VENV_PY, "-u", "legged_gym/scripts/web_train.py",'
         ' "--headless", "--result_path", RESULT_PATH] + gpu_flag + '
         f"{json.dumps(train_flags)}"
-        + (f" + {json.dumps(['--from_checkpoint', base_checkpoint_mount])}" if base_checkpoint_mount else ""),
+        + (' + (["--from_checkpoint", BASE_CHECKPOINT_MOUNT] if BASE_CHECKPOINT_MOUNT else [])'
+           if has_base_checkpoint else ""),
         "",
         'with open(LOG_PATH, "w") as log_f:',
         "    rc = subprocess.run(argv, cwd=REPO_DIR, env=env, stdout=log_f, "
@@ -310,7 +324,7 @@ class KaggleRunner(threading.Thread):
         username = api.config_values.get("username")
         self.kernel_ref = f"{username}/{self.slug}"
 
-        base_checkpoint_mount = None
+        has_base_checkpoint = False
         if self.base_checkpoint_path is not None:
             dataset_ref = f"{username}/{self.dataset_slug}"
             with tempfile.TemporaryDirectory() as ds_tmp:
@@ -366,7 +380,7 @@ class KaggleRunner(threading.Thread):
                     f"would just fail looking for it"
                     + (f" (last error: {last_status_error})" if last_status_error else ""))
                 return
-            base_checkpoint_mount = f"/kaggle/input/{self.dataset_slug}/train_checkpoint.pt"
+            has_base_checkpoint = True
             # dataset_status()=='ready' is itself the head of a longer
             # pipeline (upload -> process -> become the version a BRAND NEW
             # kernel session actually attaches) — a fixed grace pause here,
@@ -375,14 +389,14 @@ class KaggleRunner(threading.Thread):
             # retry (see _build_kernel_script) exists to catch.
             time.sleep(20)
 
-        script = _build_kernel_script(self.train_flags, self.branch, base_checkpoint_mount)
+        script = _build_kernel_script(self.train_flags, self.branch, has_base_checkpoint)
         # A Clone-from base gets one retry (a fresh kernel *session* against
         # the SAME already-ready dataset) if the specific, diagnosable
         # mount-miss flake above still slips through — see
         # _build_kernel_script's BASE_CHECKPOINT_MISSING check. A run with
         # no base checkpoint has nothing to retry for, so gets exactly one
         # attempt like before.
-        max_attempts = 2 if base_checkpoint_mount else 1
+        max_attempts = 2 if has_base_checkpoint else 1
         status = None
         status_name = None
         mount_missing = False
@@ -428,7 +442,7 @@ class KaggleRunner(threading.Thread):
             if status_name == "complete":
                 break  # success — fall through to downloading the real result below
 
-            mount_missing = base_checkpoint_mount is not None and self._kernel_log_has_marker(
+            mount_missing = has_base_checkpoint and self._kernel_log_has_marker(
                 api, "BASE_CHECKPOINT_MISSING")
             if mount_missing and attempt < max_attempts:
                 continue  # one retry: fresh kernel session, dataset already 'ready'

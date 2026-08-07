@@ -54,16 +54,21 @@ from legged_gym.control.kaggle_backend import KaggleRunner, _build_kernel_script
 
 class TestBuildKernelScript(unittest.TestCase):
     def test_no_base_checkpoint_omits_the_mount_check_entirely(self):
-        script = _build_kernel_script(["--task", "g1"], "main", None)
+        script = _build_kernel_script(["--task", "g1"], "main", False)
         ast.parse(script)  # must still be valid, runnable Python
         self.assertNotIn("BASE_CHECKPOINT_MISSING", script)
 
     def test_base_checkpoint_adds_a_fail_fast_mount_check(self):
-        mount = "/kaggle/input/legged-gym-ex-abc123-base/train_checkpoint.pt"
-        script = _build_kernel_script(["--task", "g1"], "main", mount)
+        script = _build_kernel_script(["--task", "g1"], "main", True)
         ast.parse(script)
         self.assertIn("BASE_CHECKPOINT_MISSING", script)
-        self.assertIn(mount, script)
+        # Must glob for the checkpoint by name rather than assume a fixed
+        # nesting depth under /kaggle/input — the whole point of this fix
+        # (see HANDOFF_kaggle_clone_from_mount_bug.md): a real failed kernel
+        # showed Kaggle nests API-pushed dataset sources one level deeper
+        # (/kaggle/input/datasets/<owner>/<slug>/...) than the flat
+        # /kaggle/input/<slug>/... path this code used to hardcode.
+        self.assertIn("glob.glob('/kaggle/input/**/train_checkpoint.pt', recursive=True)", script)
         # The check must run before the multi-minute venv/Isaac Gym
         # bootstrap (the whole point is failing fast, not after wasting
         # GPU-minutes) — assert its ordering relative to a bootstrap
