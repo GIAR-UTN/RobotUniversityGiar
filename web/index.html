@@ -443,26 +443,57 @@
     border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
   }
   #create-policy-form[hidden]{display:none;}
-  #training-jobs{display:flex; flex-direction:column; gap:.35rem; margin-top:.6rem;}
+  #policy-training-jobs{display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem;}
   .job-row{
-    border:1px solid var(--line); border-radius:6px; padding:.4rem .5rem; font-size:.76rem;
+    border:1px solid var(--line); border-radius:6px; padding:.45rem .55rem .5rem; font-size:.76rem;
+    background:var(--bg-raised);
   }
   .job-row .job-head{display:flex; justify-content:space-between; align-items:center; gap:.4rem;}
-  .job-row .job-name-group{display:flex; align-items:center; gap:.35rem;}
-  .job-row .job-name{font-weight:600;}
+  .job-row .job-name-group{display:flex; align-items:center; gap:.35rem; min-width:0;}
+  .job-row .job-name{font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .job-row .job-backend-badge{
-    font-size:.62rem; text-transform:uppercase; letter-spacing:.03em;
+    font-size:.62rem; text-transform:uppercase; letter-spacing:.03em; flex:none;
     color:var(--accent2); border:1px solid var(--accent2); border-radius:4px; padding:.05rem .3rem;
   }
   .job-row .job-backend-badge a{color:inherit; text-decoration:none;}
-  .job-row .job-status{font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted);}
+  .job-row .job-status{font-size:.68rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); flex:none;}
   .job-row.running .job-status{color:var(--accent2);}
   .job-row.failed .job-status{color:var(--danger);}
+
+  .job-progress-track{
+    margin-top:.4rem; height:6px; border-radius:3px; background:var(--line); overflow:hidden; position:relative;
+  }
+  .job-progress-fill{
+    height:100%; border-radius:3px; background:var(--accent2); width:0%;
+    transition:width .4s ease;
+  }
+  .job-row.failed .job-progress-fill{background:var(--danger);}
+  .job-progress-track.indeterminate .job-progress-fill{
+    position:absolute; width:35% !important; animation:job-progress-sweep 1.4s ease-in-out infinite;
+  }
+  @keyframes job-progress-sweep{
+    0%{left:-35%;} 100%{left:100%;}
+  }
+  .job-progress-meta{
+    margin-top:.3rem; display:flex; flex-wrap:wrap; gap:.15rem .6rem;
+    font-size:.68rem; color:var(--muted);
+  }
+  .job-progress-meta strong{color:var(--ink-soft); font-weight:600;}
+
+  .job-cmd-row{
+    margin-top:.35rem; display:flex; align-items:flex-start; gap:.35rem;
+  }
   .job-row .job-cmd{
-    margin-top:.25rem; font:10px/1.3 ui-monospace,monospace; color:var(--muted);
+    flex:1; min-width:0; font:10px/1.3 ui-monospace,monospace; color:var(--muted);
     white-space:pre-wrap; word-break:break-word;
   }
-  .job-row .job-error{margin-top:.25rem; color:var(--danger); font-size:.7rem;}
+  .job-copy-btn{
+    flex:none; font:inherit; font-size:.65rem; line-height:1; padding:.25rem .4rem; border-radius:5px;
+    border:1px solid var(--line); background:none; color:var(--ink-soft); cursor:pointer;
+  }
+  .job-copy-btn:hover{border-color:var(--accent2); color:var(--accent2);}
+  .job-copy-btn.copied{border-color:var(--accent2); color:var(--accent2);}
+  .job-row .job-error{margin-top:.3rem; color:var(--danger); font-size:.7rem;}
 
   footer{padding:.35rem 1rem; font-size:.72rem; color:var(--muted); border-top:1px solid var(--line);}
 </style>
@@ -672,6 +703,7 @@
       </div>
       <div class="section-body">
         <div id="policy-list"></div>
+        <div id="policy-training-jobs"></div>
       </div>
     </section>
 
@@ -880,8 +912,8 @@
           <code id="train-cmd-preview">python legged_gym/scripts/web_train.py &hellip;</code>
           <p id="train-error"></p>
           <button type="submit" id="btn-start-training">Start training</button>
+          <p class="field-hint">A run in progress shows in the Policies list — with live progress, ETA, and its exact command.</p>
         </form>
-        <div id="training-jobs"></div>
       </div>
     </section>
   </div>

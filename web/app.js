@@ -1285,7 +1285,7 @@ const trainCmdPreview = $('#train-cmd-preview');
 const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
 const btnStartTraining = $('#btn-start-training');
-const trainingJobsEl = $('#training-jobs');
+const trainingJobsEl = $('#policy-training-jobs');
 
 let envsFieldTouched = false; // stop overwriting the field with the suggested
                                // default once the user has typed their own value
@@ -1934,6 +1934,59 @@ createPolicyForm.addEventListener('submit', (e) => {
   });
 });
 
+// job.max_iterations/max_minutes are the SAME budget the "Estimated time: …"
+// line under the form already quoted before this run started (see
+// updateEstimate()) — this just re-derives "how much is left" from the
+// live iterations_done/elapsed_s the job reports, so the card can show
+// progress without asking the server for a fresh estimate every tick.
+function jobProgress(job) {
+  const budgetS = job.max_minutes ? job.max_minutes * 60 : null;
+  const hasIterBudget = job.max_iterations && job.iterations_done != null;
+  let pct = null;
+  if (hasIterBudget) {
+    pct = job.iterations_done / job.max_iterations;
+  } else if (budgetS) {
+    pct = job.elapsed_s / budgetS;
+  }
+  if (pct != null) pct = Math.max(0, Math.min(1, pct));
+
+  let etaText = null;
+  if (hasIterBudget && job.iterations_done > 0) {
+    // per-iteration rate observed so far this run — steadier than a
+    // client-side average across past runs (what updateEstimate() uses
+    // pre-start) since it reflects THIS machine's current load.
+    const ratePerIter = job.elapsed_s / job.iterations_done;
+    let remainingS = ratePerIter * (job.max_iterations - job.iterations_done);
+    if (budgetS) remainingS = Math.min(remainingS, Math.max(0, budgetS - job.elapsed_s));
+    etaText = remainingS <= 0 ? 'finishing up…' : `~${formatDuration(remainingS)} left`;
+  } else if (budgetS) {
+    const remainingS = Math.max(0, budgetS - job.elapsed_s);
+    etaText = remainingS <= 0 ? 'finishing up…' : `~${formatDuration(remainingS)} left (time-boxed)`;
+  } else if (hasIterBudget) {
+    etaText = 'estimating…'; // iterations_done is 0 — no rate yet
+  }
+  // Kaggle jobs have no live iterations_done at all while running (see
+  // kaggle_backend.py's module docstring), so with no minutes budget
+  // either there's nothing to base a % or ETA on — indeterminate bar.
+  return { pct, etaText };
+}
+
+function requestedBudgetText(job) {
+  const parts = [];
+  if (job.max_iterations) parts.push(`${job.max_iterations} iterations`);
+  if (job.max_minutes) parts.push(`${job.max_minutes} min cap`);
+  return parts.length ? parts.join(' / ') : '–';
+}
+
+function copyToClipboard(text, btn) {
+  navigator.clipboard.writeText(text).then(() => {
+    const original = btn.textContent;
+    btn.textContent = 'Copied ✓';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = original; btn.classList.remove('copied'); }, 1400);
+  }).catch(() => { btn.textContent = 'Copy failed'; });
+}
+
 function renderTrainingJobs(jobs) {
   // Dedupe on everything except elapsed_s's raw per-tick ticking — elapsed_s
   // pushes every status update while a job runs (~10Hz), and rebuilding
@@ -1972,27 +2025,14 @@ function renderTrainingJobs(jobs) {
   for (const job of visibleJobs) {
     const row = document.createElement('div');
     row.className = `job-row ${job.status}`;
+
     const head = document.createElement('div');
     head.className = 'job-head';
+    const nameGroup = document.createElement('span');
+    nameGroup.className = 'job-name-group';
     const name = document.createElement('span');
     name.className = 'job-name';
     name.textContent = job.policy_name;
-    const statusEl = document.createElement('span');
-    statusEl.className = 'job-status';
-    if (job.status === 'running') {
-      // iterations_done is a live snapshot (updated every
-      // TIME_BUDGET_CHUNK_ITERS iterations — see web_train.py's
-      // write_progress()/TrainingManager._refresh_progress()), null until
-      // the first chunk completes.
-      const cap = job.max_iterations ? `/${job.max_iterations}` : '';
-      statusEl.textContent = job.iterations_done != null
-        ? `training… (${job.iterations_done}${cap} iterations, ${job.elapsed_s}s)`
-        : `training… (${job.elapsed_s}s)`;
-    } else {
-      statusEl.textContent = `${job.status} (${job.elapsed_s}s)`;
-    }
-    const nameGroup = document.createElement('span');
-    nameGroup.className = 'job-name-group';
     nameGroup.appendChild(name);
     if (job.backend === 'kaggle') {
       const badge = document.createElement('span');
@@ -2010,12 +2050,70 @@ function renderTrainingJobs(jobs) {
       nameGroup.appendChild(badge);
     }
     head.appendChild(nameGroup);
+    const statusEl = document.createElement('span');
+    statusEl.className = 'job-status';
+    statusEl.textContent = job.status === 'running' ? 'training…' : job.status;
     head.appendChild(statusEl);
     row.appendChild(head);
-    const cmd = document.createElement('div');
+
+    if (job.status === 'running') {
+      const { pct, etaText } = jobProgress(job);
+      const track = document.createElement('div');
+      track.className = 'job-progress-track' + (pct == null ? ' indeterminate' : '');
+      const fill = document.createElement('div');
+      fill.className = 'job-progress-fill';
+      if (pct != null) fill.style.width = `${(pct * 100).toFixed(1)}%`;
+      track.appendChild(fill);
+      row.appendChild(track);
+
+      const meta = document.createElement('div');
+      meta.className = 'job-progress-meta';
+      // iterations_done is a live snapshot (updated every
+      // TIME_BUDGET_CHUNK_ITERS iterations — see web_train.py's
+      // write_progress()/TrainingManager._refresh_progress()), null until
+      // the first chunk completes.
+      const doneSpan = document.createElement('span');
+      doneSpan.innerHTML = job.iterations_done != null
+        ? `<strong>${job.iterations_done}</strong>${job.max_iterations ? `/${job.max_iterations}` : ''} iterations`
+        : (job.backend === 'kaggle' ? 'no live iteration count (Kaggle)' : 'starting…');
+      meta.appendChild(doneSpan);
+      const elapsedSpan = document.createElement('span');
+      elapsedSpan.textContent = `${formatDuration(job.elapsed_s)} elapsed`;
+      meta.appendChild(elapsedSpan);
+      const budgetSpan = document.createElement('span');
+      budgetSpan.textContent = `requested: ${requestedBudgetText(job)}`;
+      meta.appendChild(budgetSpan);
+      if (etaText) {
+        const etaSpan = document.createElement('span');
+        etaSpan.innerHTML = `<strong>${etaText}</strong>`;
+        meta.appendChild(etaSpan);
+      }
+      row.appendChild(meta);
+    } else {
+      const statusMeta = document.createElement('div');
+      statusMeta.className = 'job-progress-meta';
+      statusMeta.textContent = `after ${formatDuration(job.elapsed_s)}`;
+      row.appendChild(statusMeta);
+    }
+
+    // Exactly the command this job is running (or ran) — see TrainingJob.
+    // command's own docstring: "exactly what the UI previewed, minus the
+    // interpreter path" — so copy/paste here reproduces this run locally.
+    const cmdRow = document.createElement('div');
+    cmdRow.className = 'job-cmd-row';
+    const cmd = document.createElement('code');
     cmd.className = 'job-cmd';
     cmd.textContent = job.command;
-    row.appendChild(cmd);
+    cmdRow.appendChild(cmd);
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'job-copy-btn';
+    copyBtn.textContent = 'Copy';
+    copyBtn.title = 'Copy the exact command';
+    copyBtn.onclick = () => copyToClipboard(job.command, copyBtn);
+    cmdRow.appendChild(copyBtn);
+    row.appendChild(cmdRow);
+
     if (job.error) {
       const err = document.createElement('div');
       err.className = 'job-error';
