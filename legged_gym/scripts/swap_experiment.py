@@ -144,7 +144,9 @@ def main():
     # working across a restart, not just the checkpoint itself.
     for name, path in policy_paths.items():
         train_checkpoint = discovered.get(name, {}).get("train_checkpoint")
-        training.register_source(name, task=args.task, checkpoint=path, train_checkpoint=train_checkpoint)
+        simulator = discovered.get(name, {}).get("simulator", "genesis")
+        training.register_source(name, task=args.task, checkpoint=path,
+                                  train_checkpoint=train_checkpoint, simulator=simulator)
     service = ControlService(adapter, supervisor, safety, selector=None, training=training)
 
     hidden_size_for_new_policies = hidden_size  # matches G1RoughCfgPPO.policy.rnn_hidden_size (see above)

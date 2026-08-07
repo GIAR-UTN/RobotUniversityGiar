@@ -496,7 +496,8 @@ class TrainingManager:
         return os.path.join(log_dir, candidates[-1])
 
     def register_source(self, name: str, task: str, checkpoint: Optional[str],
-                         train_checkpoint: Optional[str] = None) -> None:
+                         train_checkpoint: Optional[str] = None,
+                         simulator: str = "genesis") -> None:
         """`train_checkpoint` is the raw rsl_rl checkpoint to resume PPO
         from (see finalize_policy()'s docstring for how a fresh training
         job gets one). Pass None (the --policy CLI path, via
@@ -504,10 +505,20 @@ class TrainingManager:
         directory layout — the only option for a checkpoint that was never
         produced by this UI in the first place (e.g. an externally-sourced
         one with no raw training history at all, which correctly stays
-        un-fine-tunable either way)."""
+        un-fine-tunable either way).
+
+        `simulator` ("genesis" | "isaacgym") is which Simulator backend
+        actually trained this policy — see TrainingJob.simulator's own
+        docstring for why this matters: a policy fine-tuned across
+        simulators (e.g. cloning an isaacgym-trained base into a local
+        Genesis run, or vice versa) is a sim2sim transfer, not a guaranteed-
+        compatible continuation. Surfaced in catalog() so the Create Policy
+        panel can flag a mismatch instead of silently fine-tuning across
+        engines."""
         self.policy_sources[name] = {
             "task": task, "checkpoint": checkpoint,
             "train_checkpoint": train_checkpoint or self._train_checkpoint_from_export(checkpoint),
+            "simulator": simulator,
         }
 
     def finalize_policy(self, name: str, task: str, checkpoint: str,
@@ -583,6 +594,7 @@ class TrainingManager:
         self.register_source(
             name, task=task, checkpoint=str(dest_checkpoint),
             train_checkpoint=str(dest_train_checkpoint) if dest_train_checkpoint else None,
+            simulator=meta["simulator"],
         )
         return str(dest_checkpoint)
 
@@ -628,6 +640,7 @@ class TrainingManager:
                 "task": task,
                 "checkpoint": str(checkpoint),
                 "train_checkpoint": str(train_checkpoint) if train_checkpoint.is_file() else None,
+                "simulator": meta.get("simulator", "genesis"),
             }
         return found
 
@@ -718,6 +731,9 @@ class TrainingManager:
             "tasks": tasks,
             "task_notes": {t: self.TASK_NOTES[t] for t in tasks if t in self.TASK_NOTES},
             "base_policies": [
+                # info already carries "simulator" (see register_source()) —
+                # surfaced here so Clone-from can flag an isaacgym/genesis
+                # sim2sim mismatch instead of silently fine-tuning across engines.
                 {"name": name, "base_height_target": self._task_base_height(info["task"]), **info}
                 for name, info in sorted(self.policy_sources.items())
             ],
@@ -861,16 +877,19 @@ class TrainingManager:
                     f"(only an exported/deployable .pt — e.g. an externally-sourced policy with no "
                     f"training history on this machine)")
         if backend == "kaggle":
-            if from_checkpoint:
-                raise ValueError(
-                    "Clone-from isn't supported for Kaggle jobs yet — the base checkpoint only "
-                    "exists on this machine and the Kaggle kernel has no way to reach it "
-                    "(see the plan's 'fuera de alcance' note; needs uploading it as a Kaggle "
-                    "Dataset first). Train from scratch, or use the local backend to fine-tune.")
             if not kaggle_backend.kaggle_credentials_available():
                 raise ValueError(
                     "no Kaggle credentials found at ~/.kaggle/kaggle.json — the Kaggle backend "
                     "isn't set up on this machine")
+            # Cloning a Genesis-trained base into an isaacgym (Kaggle) run —
+            # or vice versa, locally — is mechanically fine (torch doesn't
+            # care where the weights came from) but a real sim2sim transfer:
+            # the two engines' contact/PD dynamics differ (see
+            # TrainingJob.simulator's docstring / HANDOFF_kaggle_cloud_gpu.md
+            # open question #4). Deliberately not blocked here — the Create
+            # Policy panel flags the mismatch instead (see catalog()'s
+            # per-base "simulator" field), so an informed choice still goes
+            # through.
 
         job_id = uuid.uuid4().hex[:8]
         result_path = JOBS_DIR / f"{job_id}.result.json"
@@ -890,7 +909,12 @@ class TrainingManager:
             train_flags += ["--max_iterations", str(max_iterations)]
         if max_minutes is not None:
             train_flags += ["--max_minutes", str(max_minutes)]
-        if from_checkpoint:
+        if from_checkpoint and backend == "local":
+            # Kaggle jobs can't take this local absolute path directly — the
+            # kernel has no access to this machine's filesystem. KaggleRunner
+            # uploads the same file as a private Kaggle Dataset and adds its
+            # own --from_checkpoint pointing at the /kaggle/input/ mount
+            # (see the backend=="kaggle" branch below).
             train_flags += ["--from_checkpoint", from_checkpoint]
         if cmd_vx:
             train_flags += ["--cmd_vx_range", str(cmd_vx[0]), str(cmd_vx[1])]
@@ -926,12 +950,18 @@ class TrainingManager:
         )
 
         if backend == "kaggle":
-            # Exactly what the kernel runs, modulo the interpreter path —
-            # same "show the real command" spirit as the local preview below.
-            job.command = "python legged_gym/scripts/web_train.py --headless " + " ".join(train_flags)
+            # Exactly what the kernel runs, modulo the interpreter path and
+            # the base checkpoint's real mount point (not known until
+            # KaggleRunner picks its dataset slug) — same "show the real
+            # command" spirit as the local preview below.
+            display_flags = list(train_flags)
+            if from_checkpoint:
+                display_flags += ["--from_checkpoint", "<uploaded base checkpoint, see kernel log>"]
+            job.command = "python legged_gym/scripts/web_train.py --headless " + " ".join(display_flags)
             runner = kaggle_backend.KaggleRunner(
                 job_id=job_id, train_flags=train_flags,
                 result_path=result_path, log_path=log_path,
+                base_checkpoint_path=Path(from_checkpoint) if from_checkpoint else None,
             )
             # kaggle_kernel_slug stays None until poll() sees runner.kernel_ref
             # populated (set inside the background thread once its push succeeds).

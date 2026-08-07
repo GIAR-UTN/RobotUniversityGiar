@@ -1232,9 +1232,7 @@ function refreshSystemInfo() {
     // every Kaggle job would just fail immediately with a credentials error.
     trainBackendRow.hidden = !info.kaggle_available;
     if (!info.kaggle_available && trainBackend === 'kaggle') {
-      trainBackend = 'local';
-      trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.backend === 'local'));
-      trainBase.disabled = false;
+      setTrainBackend('local');
       updateCommandPreview();
     }
   }).catch((e) => {
@@ -1257,6 +1255,7 @@ const trainBackendTabs = $('#train-backend');
 const trainBackendHint = $('#train-backend-hint');
 const trainName = $('#train-name');
 const trainBase = $('#train-base');
+const trainBaseSimWarning = $('#train-base-sim-warning');
 const trainTask = $('#train-task');
 const trainIters = $('#train-iters');
 const trainMinutes = $('#train-minutes');
@@ -1378,6 +1377,45 @@ let trainBackend = 'local'; // 'local' | 'kaggle' — see #train-backend's click
 let targetReference = null; // {value: number|null, label: string} | null
 let targetRange = null;     // [min, max] | null
 
+// Shared by the tab click handler, restoreTrainFormConfig() (remembering the
+// last-used backend across panel opens — see TRAIN_FORM_STORAGE_KEY), and
+// refreshSystemInfo()'s kaggle_available correction, so all three apply the
+// exact same backend-switch side effects instead of three copies drifting
+// apart.
+function setTrainBackend(value) {
+  trainBackend = value;
+  trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.backend === trainBackend));
+  trainBackendHint.textContent = trainBackend === 'kaggle'
+    ? 'Runs on a free Kaggle GPU kernel instead of this machine’s CPU — much faster, and there’s no live iteration count while it runs. Clone-from uploads the base checkpoint to Kaggle automatically (as a private Dataset) before the kernel starts.'
+    : '';
+  refreshCloneFromMismatchWarning();
+}
+
+// Kaggle jobs train under Isaac Gym, local jobs under Genesis (see
+// TrainingJob.simulator's docstring in training.py) — different contact/PD
+// dynamics, so fine-tuning a base trained under ONE engine on the OTHER is a
+// real sim2sim transfer, not a guaranteed-compatible continuation. Not
+// blocked server-side (see TrainingManager.start()'s own comment) — flagged
+// here instead, so an informed choice still goes through.
+function targetSimulator() {
+  return trainBackend === 'kaggle' ? 'isaacgym' : 'genesis';
+}
+
+function refreshCloneFromMismatchWarning() {
+  const base = trainingCatalog?.base_policies?.find((p) => p.name === trainBase.value);
+  const baseSimulator = base?.simulator || 'genesis';
+  const target = targetSimulator();
+  if (base && baseSimulator !== target) {
+    trainBaseSimWarning.textContent =
+      `'${base.name}' was trained under ${baseSimulator === 'isaacgym' ? 'Isaac Gym' : 'Genesis'}, but this run ` +
+      `will train under ${target === 'isaacgym' ? 'Isaac Gym (Kaggle)' : 'Genesis (this machine)'} — different ` +
+      `contact/PD dynamics, so this fine-tune is a real sim2sim transfer, not a guaranteed-compatible continuation.`;
+    trainBaseSimWarning.hidden = false;
+  } else {
+    trainBaseSimWarning.hidden = true;
+  }
+}
+
 function selectedVariable() {
   return trainVarSelect.value;
 }
@@ -1470,19 +1508,9 @@ trainExtremeDirTabs.querySelectorAll('button').forEach((btn) => {
   });
 });
 
-// Clone-from isn't supported on Kaggle yet (the base checkpoint only exists
-// on this machine — see TrainingManager.start()'s backend='kaggle' check),
-// so picking Kaggle disables that field instead of letting the job fail
-// server-side after a push already happened.
 trainBackendTabs.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
-    trainBackend = btn.dataset.backend;
-    trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-    trainBackendHint.textContent = trainBackend === 'kaggle'
-      ? 'Runs on a free Kaggle GPU kernel instead of this machine’s CPU — much faster, but Clone-from isn’t available yet and there’s no live iteration count while it runs.'
-      : '';
-    trainBase.disabled = trainBackend === 'kaggle';
-    if (trainBackend === 'kaggle') trainBase.value = '';
+    setTrainBackend(btn.dataset.backend);
     updateCommandPreview();
     updateEnvsHint(); // different backend = different suggested range, see updateEnvsHint()
     updateEstimate(); // different backend = different history bucket, see estimate()
@@ -1574,20 +1602,37 @@ function rewardScaleOverrides() {
 // Default is "<base>_<n>", n incrementing past whatever's already taken —
 // e.g. cloning from "stable_step_two" suggests "stable_step_two_2", cloning
 // from "stable_step_3" suggests "stable_step_4" (a trailing number gets
-// incremented in place instead of appended again). Shown as the Name
-// field's placeholder, never written into the field itself — typing an
-// explicit name always wins (composeTrainingParams() only falls back to
-// this when the field is left blank), same as every other "leave blank for
-// a computed default" field in this form.
+// incremented in place instead of appended again). Actually WRITTEN into
+// the field (not just shown as a placeholder) as long as the user hasn't
+// touched it yet — see nameFieldTouched below — specifically so reusing an
+// existing policy's name by accident (silently overwriting its checkpoint —
+// see finalize_policy()'s plain shutil.copyfile) takes a deliberate edit,
+// not just forgetting to type a name. Typing anything yourself always wins
+// from then on (composeTrainingParams() only falls back to the suggestion
+// if the field is left blank).
 const DEFAULT_NAME_PLACEHOLDER = 'e.g. cautious_v2';
+
+// Mirrors envsFieldTouched's pattern: once the user edits the Name field by
+// hand, auto-naming stops overwriting it — reset whenever the panel opens
+// fresh (see btnNewPolicy's click handler).
+let nameFieldTouched = false;
+trainName.addEventListener('input', () => { nameFieldTouched = true; });
 
 function suggestedPolicyName() {
   const base = trainBase.value;
-  if (!base) return null;
   const known = new Set([
     ...(trainingCatalog?.base_policies || []).map((p) => p.name),
     ...(latestStatus?.policies || []),
   ]);
+  if (!base) {
+    // Nothing to fine-tune from, but still avoid handing back a name that's
+    // already taken — increment DEFAULT_NAME_PLACEHOLDER's own stem rather
+    // than leaving a from-scratch run to collide with an existing policy.
+    if (!known.has('new_policy')) return null; // keep the friendlier placeholder text when there's no collision risk
+    let n = 2;
+    while (known.has(`new_policy_${n}`)) n += 1;
+    return `new_policy_${n}`;
+  }
   const m = base.match(/^(.*?)(\d+)$/);
   const prefix = m ? m[1] : `${base}_`;
   let n = m ? parseInt(m[2], 10) + 1 : 2;
@@ -1597,7 +1642,9 @@ function suggestedPolicyName() {
 }
 
 function refreshNamePlaceholder() {
-  trainName.placeholder = suggestedPolicyName() || DEFAULT_NAME_PLACEHOLDER;
+  const suggestion = suggestedPolicyName();
+  trainName.placeholder = suggestion || DEFAULT_NAME_PLACEHOLDER;
+  if (!nameFieldTouched && suggestion) trainName.value = suggestion;
   updateCommandPreview(); // the preview's --name should track the same fallback
 }
 
@@ -1615,7 +1662,7 @@ function snapshotTrainFormConfig() {
     if (el.value.trim() !== '') rewardScales[el.dataset.term] = el.value;
   });
   return {
-    task: trainTask.value, base: trainBase.value,
+    task: trainTask.value, base: trainBase.value, backend: trainBackend,
     numEnvs: trainEnvs.value, iters: trainIters.value, minutes: trainMinutes.value,
     vxLo: trainVxLo.value, vxHi: trainVxHi.value,
     vyLo: trainVyLo.value, vyHi: trainVyHi.value,
@@ -1629,8 +1676,8 @@ function snapshotTrainFormConfig() {
   };
 }
 
-function saveTrainFormConfig() {
-  try { localStorage.setItem(TRAIN_FORM_STORAGE_KEY, JSON.stringify(snapshotTrainFormConfig())); } catch { /* best-effort */ }
+function saveTrainFormConfig(overrides = {}) {
+  try { localStorage.setItem(TRAIN_FORM_STORAGE_KEY, JSON.stringify({ ...snapshotTrainFormConfig(), ...overrides })); } catch { /* best-effort */ }
 }
 
 function loadTrainFormConfig() {
@@ -1650,7 +1697,14 @@ function restoreTrainFormConfig() {
   if (!cfg) return;
 
   if (cfg.task && trainingCatalog?.tasks?.includes(cfg.task)) trainTask.value = cfg.task;
-  if (cfg.base && trainingCatalog?.base_policies?.some((p) => p.name === cfg.base)) trainBase.value = cfg.base;
+  // Only restore 'kaggle' if the toggle is actually offered right now (see
+  // refreshSystemInfo()'s kaggle_available check) — otherwise the row is
+  // hidden and there'd be no visible control to switch back off it.
+  if (cfg.backend === 'kaggle' && !trainBackendRow.hidden) setTrainBackend('kaggle');
+  else setTrainBackend('local');
+  if (cfg.base && trainingCatalog?.base_policies?.some((p) => p.name === cfg.base)) {
+    trainBase.value = cfg.base;
+  }
   trainEnvs.value = cfg.numEnvs || '';
   trainIters.value = cfg.iters || '';
   trainMinutes.value = cfg.minutes || '';
@@ -1677,6 +1731,9 @@ function restoreTrainFormConfig() {
   renderVariableChrome();
   refreshTargetReference();
   refreshNamePlaceholder();
+  refreshCloneFromMismatchWarning();
+  updateEnvsHint(); // backend-dependent hint text — see setTrainBackend() above
+  updateEstimate();
   // Reward-scale inputs don't exist until this resolves (they're rebuilt
   // from the restored task/base) — write the saved overrides in once they
   // do, rather than racing renderRewardScaleFields()'s own DOM rebuild.
@@ -1735,6 +1792,7 @@ function refreshTrainingCatalog() {
     if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
     refreshRewardScaleFields();
     refreshNamePlaceholder();
+    refreshCloneFromMismatchWarning();
     updateCommandPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
@@ -1798,7 +1856,9 @@ function updateCommandPreview() {
   if (p.iterations === null && p.minutes === null) parts.push('--max_iterations <or> --max_minutes <required>');
   if (p.base) {
     const source = trainingCatalog?.base_policies.find((b) => b.name === p.base);
-    parts.push(`--from_checkpoint ${source?.train_checkpoint || '<' + p.base + "'s training checkpoint>"}`);
+    parts.push(p.backend === 'kaggle'
+      ? `--from_checkpoint /kaggle/input/<uploaded from '${p.base}'>/train_checkpoint.pt`
+      : `--from_checkpoint ${source?.train_checkpoint || '<' + p.base + "'s training checkpoint>"}`);
   }
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
@@ -1825,11 +1885,13 @@ btnNewPolicy.addEventListener('click', () => {
   btnNewPolicy.textContent = opening ? 'Cancel' : '+ New policy…';
   if (opening) {
     showTrainError('');
+    nameFieldTouched = false; // fresh open = re-suggest a name, see suggestedPolicyName()
     restoreTrainFormConfig(); // last-used config, if any — see its own docstring
     refreshNamePlaceholder();
     updateCommandPreview();
     updateEstimate();
     trainName.focus();
+    trainName.select(); // pre-filled with a suggested name — select it so typing overwrites cleanly
   }
 });
 
@@ -1845,6 +1907,7 @@ btnNewPolicy.addEventListener('click', () => {
     if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
     refreshRewardScaleFields();
     refreshNamePlaceholder(); // the auto-name suggestion tracks "Clone from"
+    refreshCloneFromMismatchWarning();
   });
 });
 [trainIters, trainMinutes, trainEnvs].forEach((el) => {
@@ -1856,6 +1919,15 @@ createPolicyForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const p = composeTrainingParams();
   if (!p.name) return showTrainError('Policy name is required.');
+  // finalize_policy() writes into policies/<name>/ with a plain
+  // shutil.copyfile — reusing an existing policy's name silently overwrites
+  // its checkpoint.pt/train_checkpoint.pt/meta.json the moment this job
+  // finishes, with no undo. Block it outright rather than warn-and-allow —
+  // this exact mistake already cost a real run once.
+  if ((latestStatus?.policies || []).includes(p.name)) {
+    return showTrainError(
+      `'${p.name}' already exists — training with this name would overwrite its checkpoint when this run finishes. Pick a different name (e.g. '${p.name}_2').`);
+  }
   if (!p.task) return showTrainError('Pick a task.');
   if (p.iterations === null && p.minutes === null) return showTrainError('Set a time budget — iterations, minutes, or both.');
   if (p.iterations !== null && p.iterations <= 0) return showTrainError('Iterations must be positive.');
@@ -1880,7 +1952,12 @@ createPolicyForm.addEventListener('submit', (e) => {
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
     backend: p.backend,
   }).then(() => {
-    saveTrainFormConfig(); // snapshot BEFORE reset() clears every field below
+    // snapshot BEFORE reset() clears every field below. base: p.name (not
+    // trainBase.value, the run's OWN clone-from source) so the next "New
+    // policy" panel defaults to cloning from what THIS run just produced —
+    // curriculum-style training chains forward step-to-step without having
+    // to reselect the base you just finished each time.
+    saveTrainFormConfig({ base: p.name });
     createPolicyForm.reset();
     createPolicyForm.hidden = true;
     btnNewPolicy.textContent = '+ New policy…';
@@ -1889,9 +1966,7 @@ createPolicyForm.addEventListener('submit', (e) => {
     trainHeightAbsolute.hidden = false;
     trainHeightRelative.hidden = true;
     trainHeightExtreme.hidden = true;
-    trainBackend = 'local';
-    trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.backend === 'local'));
-    trainBase.disabled = false;
+    setTrainBackend('local');
   }).catch((e) => {
     showTrainError(e.message);
   }).finally(() => {

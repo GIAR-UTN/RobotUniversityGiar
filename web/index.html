@@ -387,6 +387,7 @@
   .range-pair input{width:0; flex:1;}
   .range-pair span{color:var(--muted); font-size:.75rem;}
   .field-hint{font-size:.68rem; color:var(--muted); margin:0;}
+  .field-warning{color:var(--danger);}
 
   /* ---- Reward weights grid (Create Policy, advanced) ---- */
   .reward-scale-grid{display:grid; grid-template-columns:1fr 1fr; gap:.35rem .5rem; margin-top:.2rem;}
@@ -723,15 +724,16 @@
               <p class="field-hint" id="train-backend-hint"></p>
             </div>
             <div class="field-row">
-              <label for="train-name">Policy name</label>
-              <input type="text" id="train-name" placeholder="e.g. cautious_v2" autocomplete="off">
-            </div>
-            <div class="field-row">
               <label for="train-base">Clone from</label>
               <select id="train-base">
                 <option value="">— from scratch —</option>
               </select>
-              <p class="field-hint">Fine-tunes the chosen policy's weights instead of starting from random init. The targets below default to matching this base once picked.</p>
+              <p class="field-hint">Fine-tunes the chosen policy's weights instead of starting from random init. The targets below default to matching this base once picked — and picking one suggests a Policy name below, so pick this first.</p>
+              <p class="field-hint field-warning" id="train-base-sim-warning" hidden></p>
+            </div>
+            <div class="field-row">
+              <label for="train-name">Policy name</label>
+              <input type="text" id="train-name" placeholder="e.g. cautious_v2" autocomplete="off">
             </div>
             <div class="field-row">
               <label for="train-task">Task</label>

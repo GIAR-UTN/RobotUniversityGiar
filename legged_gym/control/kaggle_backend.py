@@ -42,6 +42,10 @@ POLL_INTERVAL_S = 15  # how often this thread (never the sim thread) checks kern
 # Kaggle's own GPU session cap is ~12h; bail well before that so a stuck/orphaned
 # kernel can't wedge this thread (and the "job never finishes" UI state) forever.
 MAX_RUNTIME_S = 6 * 3600
+# How long a freshly-uploaded Clone-from base dataset gets to reach
+# dataset_status() == "ready" before giving up — see the dataset_create_new()
+# call site in KaggleRunner._run() for why this is polled, not slept.
+DATASET_READY_TIMEOUT_S = 120
 
 TERMINAL_STATUSES = {"complete", "error", "cancel_acknowledged"}
 
@@ -75,7 +79,8 @@ def kaggle_credentials_available() -> bool:
     return (Path.home() / ".kaggle" / "kaggle.json").is_file()
 
 
-def _build_kernel_script(train_flags: List[str], branch: str) -> str:
+def _build_kernel_script(train_flags: List[str], branch: str,
+                          base_checkpoint_mount: Optional[str] = None) -> str:
     """The actual Python program Kaggle executes. Bootstraps a Python 3.8
     venv with Isaac Gym installed, clones THIS repo fresh into it, and runs
     the exact same legged_gym/scripts/web_train.py the control web already
@@ -170,10 +175,15 @@ def _build_kernel_script(train_flags: List[str], branch: str) -> str:
         "",
         # web_train.py's --headless already defaults to True; passed
         # explicitly anyway to match what a human would type, same as the
-        # local-job command preview.
+        # local-job command preview. base_checkpoint_mount (if a Clone-from
+        # base was picked — see KaggleRunner._run()'s dataset upload) is a
+        # /kaggle/input/<dataset>/train_checkpoint.pt path that only exists
+        # inside THIS kernel, so it's appended here rather than folded into
+        # train_flags upstream (training.py's start() never sees it).
         'argv = [VENV_PY, "-u", "legged_gym/scripts/web_train.py",'
         ' "--headless", "--result_path", RESULT_PATH] + gpu_flag + '
-        f"{json.dumps(train_flags)}",
+        f"{json.dumps(train_flags)}"
+        + (f" + {json.dumps(['--from_checkpoint', base_checkpoint_mount])}" if base_checkpoint_mount else ""),
         "",
         'with open(LOG_PATH, "w") as log_f:',
         "    rc = subprocess.run(argv, cwd=REPO_DIR, env=env, stdout=log_f, "
@@ -222,7 +232,8 @@ class KaggleRunner(threading.Thread):
     poll()'s Kaggle branch checks that once this thread is no longer alive."""
 
     def __init__(self, job_id: str, train_flags: List[str],
-                 result_path: Path, log_path: Path, branch: str = DEFAULT_BRANCH):
+                 result_path: Path, log_path: Path, branch: str = DEFAULT_BRANCH,
+                 base_checkpoint_path: Optional[Path] = None):
         super().__init__(daemon=True, name=f"kaggle-train-{job_id}")
         self.job_id = job_id
         # Kaggle kernel slugs must be lowercase alphanumeric + hyphens.
@@ -231,6 +242,16 @@ class KaggleRunner(threading.Thread):
         self.result_path = result_path
         self.log_path = log_path
         self.branch = branch
+        # Clone-from base's LOCAL train_checkpoint.pt (see
+        # TrainingManager.start()'s backend=="kaggle" branch) — this thread
+        # uploads it as a private Kaggle Dataset before pushing the kernel,
+        # since the kernel has no access to this machine's filesystem. None
+        # means "train from scratch", same as the local backend.
+        self.base_checkpoint_path = base_checkpoint_path
+        # Only set once base_checkpoint_path is actually uploaded — a
+        # distinct dataset per job (not reused across jobs) so two
+        # concurrent Kaggle jobs cloning different bases can never collide.
+        self.dataset_slug = f"{self.slug}-base" if base_checkpoint_path else None
         # "<username>/<slug>" once push succeeds — the UI's "view on Kaggle" link.
         self.kernel_ref: Optional[str] = None
         self.error: Optional[str] = None
@@ -249,7 +270,65 @@ class KaggleRunner(threading.Thread):
         username = api.config_values.get("username")
         self.kernel_ref = f"{username}/{self.slug}"
 
-        script = _build_kernel_script(self.train_flags, self.branch)
+        base_checkpoint_mount = None
+        if self.base_checkpoint_path is not None:
+            dataset_ref = f"{username}/{self.dataset_slug}"
+            with tempfile.TemporaryDirectory() as ds_tmp:
+                ds_path = Path(ds_tmp)
+                # dataset_create_new uploads every file in this directory —
+                # keep it to exactly the one checkpoint, named the same
+                # thing finalize_policy() always calls it locally, so the
+                # kernel-side path below doesn't need to know the base
+                # policy's own name.
+                shutil.copyfile(self.base_checkpoint_path, ds_path / "train_checkpoint.pt")
+                (ds_path / "dataset-metadata.json").write_text(json.dumps({
+                    "title": self.dataset_slug,
+                    "id": dataset_ref,
+                    "licenses": [{"name": "CC0-1.0"}],
+                }))
+                api.dataset_create_new(str(ds_path), dir_mode="zip", quiet=True, convert_to_csv=False)
+            # dataset_create_new() returns as soon as the upload finishes,
+            # but Kaggle's own indexing lags behind that — confirmed the hard
+            # way: a real job pushed the kernel 10s after upload and it ran
+            # to completion (env bootstrap alone took ~4 minutes) only to
+            # find /kaggle/input/<slug>/ empty, because the dataset hadn't
+            # finished indexing when the kernel session actually mounted its
+            # sources (kernels_push itself doesn't validate dataset_sources,
+            # so the push succeeds either way — the failure only shows up
+            # once web_train.py can't find the checkpoint file, ~4-5 minutes
+            # and a wasted GPU-quota kernel run later). Poll dataset_status()
+            # for "ready" instead of guessing a fixed delay.
+            #
+            # dataset_status() itself is flaky RIGHT after dataset_create_new()
+            # returns — confirmed live: a real poll got "403 Client Error:
+            # Forbidden" on its very first call, seconds after the upload
+            # finished (the dataset's ACL/ownership hadn't propagated yet),
+            # even though the exact same call against the exact same dataset
+            # succeeded and returned "ready" moments later when retried by
+            # hand. So a transient error here is expected noise, not a real
+            # failure — only running out the deadline with no successful
+            # "ready" is treated as one.
+            deadline = time.time() + DATASET_READY_TIMEOUT_S
+            ready = False
+            last_status_error = None
+            while time.time() < deadline:
+                try:
+                    if api.dataset_status(dataset_ref) == "ready":
+                        ready = True
+                        break
+                except Exception as e:  # noqa: BLE001 - transient (403/network) right after upload, see above
+                    last_status_error = str(e)
+                time.sleep(3)
+            if not ready:
+                self.error = (
+                    f"Kaggle dataset {dataset_ref} (the uploaded base checkpoint) never reached "
+                    f"'ready' status within {DATASET_READY_TIMEOUT_S}s — not pushing a kernel that "
+                    f"would just fail looking for it"
+                    + (f" (last error: {last_status_error})" if last_status_error else ""))
+                return
+            base_checkpoint_mount = f"/kaggle/input/{self.dataset_slug}/train_checkpoint.pt"
+
+        script = _build_kernel_script(self.train_flags, self.branch, base_checkpoint_mount)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             (tmp_path / "kernel.py").write_text(script)
@@ -268,7 +347,7 @@ class KaggleRunner(threading.Thread):
                 # CUDA usability at runtime instead of trusting this request.
                 "machine_shape": "GPU_T4X2",
                 "enable_internet": True,
-                "dataset_sources": [],
+                "dataset_sources": [f"{username}/{self.dataset_slug}"] if self.dataset_slug else [],
                 "competition_sources": [],
                 "kernel_sources": [],
             }))
