@@ -5,7 +5,7 @@ training.py) — pure data/signature checks, no physics backend or
 task_registry needed (same package-stub trick as test_training_estimate.py).
 
 These encode the invariant the "Target variable" UI mechanism depends on
-end to end (see app.js's composeTrainingParams()/refreshTargetReference()):
+end to end (see app.js's composeTrainingParams()/refreshTargetReferences()):
 every VARIABLE_REGISTRY entry's "flag" must be the EXACT kwarg name
 TrainingManager.start() and ControlService.start_training() both accept —
 that's what lets the frontend send `{[meta.flag]: value}` generically
@@ -42,7 +42,7 @@ from legged_gym.control.training import TrainingManager
 from legged_gym.control.service import ControlService
 
 EXPECTED_KEYS = {"base_height", "lin_vel_z", "ang_vel_xy", "orientation_tilt"}
-REQUIRED_META_FIELDS = {"label", "unit", "source", "flag", "config_attr", "range_attr", "note"}
+REQUIRED_META_FIELDS = {"label", "unit", "source", "flag", "config_attr", "note"}
 VALID_SOURCES = {"sim_ground_truth", "sensor"}
 
 

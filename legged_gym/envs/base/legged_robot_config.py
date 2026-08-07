@@ -162,34 +162,15 @@ class LeggedRobotCfg(BaseConfig):
         soft_dof_vel_limit: float = 1.0
         soft_torque_limit: float = 1.0
         base_height_target: float = 1.0
-        # Physical bounds for "extreme" (push-to-the-limit) target modes —
-        # see TrainingManager.VARIABLE_REGISTRY / the Create Policy panel's
-        # "lowest"/"highest" mode. NOT derived from URDF joint limits —
-        # conservative defaults chosen to bracket values already proven to
-        # train successfully in this repo: 0.6m (a full crouch) is
-        # G1CrouchCfg's own base_height_target (see HANDOFF_control_web.md),
-        # so the low end sits a bit below that; the high end sits a bit
-        # above this class's own standing default (0.78m, set in
-        # G1RoughCfg). "Lowest"/"highest" resolve to these bounds rather
-        # than an unconstrained optimum specifically so the reward being
-        # optimized never asks for "lie on the floor" — retune if you add a
-        # new embodiment with different proportions.
-        base_height_target_range: Tuple[float, float] = (0.45, 0.85)
         # Same "target variable" mechanism as base_height_target above, for
         # the three other Live Telemetry quantities that used to be
         # hardcoded to an implicit zero in their reward (see
         # _reward_lin_vel_z/_reward_ang_vel_xy/_reward_orientation in
         # legged_robot.py) — 0.0 here reproduces that old always-zero
-        # behavior exactly. Ranges are conservative "won't destabilize the
-        # robot" bounds for "lowest"/"highest" target mode, same spirit as
-        # base_height_target_range's comment above, not derived from any
-        # hard physical limit.
+        # behavior exactly.
         lin_vel_z_target: float = 0.0
-        lin_vel_z_target_range: Tuple[float, float] = (-0.5, 0.5)
         ang_vel_xy_target: float = 0.0
-        ang_vel_xy_target_range: Tuple[float, float] = (0.0, 2.0)
         orientation_tilt_target: float = 0.0
-        orientation_tilt_target_range: Tuple[float, float] = (0.0, 0.5)
         foot_clearance_target: float = 0.04 # desired foot clearance above ground [m]
         foot_height_offset: float = 0.0     # height of the foot coordinate origin above ground [m]
         foot_clearance_tracking_sigma: float = 0.01

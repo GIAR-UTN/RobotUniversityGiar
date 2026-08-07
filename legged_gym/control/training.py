@@ -387,15 +387,16 @@ class TrainingManager:
 
     # ---- catalog the web UI's form renders from ----
 
-    # Every variable the Create Policy panel's target selector can offer, in
-    # one place — add an entry here (plus a matching cfg.rewards field pair:
-    # a scalar target the existing tracking reward already reads, and a
-    # `<field>_range` physical clamp) and it shows up in the UI's variable
-    # dropdown with no other backend change. 'flag' is the exact web_train.py
-    # CLI arg the resolved number is sent as — Absolute/Relative/Extreme
-    # modes all funnel through the SAME flag (see app.js's resolveTarget()),
-    # so "extreme" never needs a new reward term: it just resolves to the
-    # config's own physical bound instead of a user-typed number.
+    # Every variable the Create Policy panel's 4 always-visible target
+    # fields can offer, in one place — add an entry here (plus a matching
+    # cfg.rewards scalar target field the existing tracking reward already
+    # reads) and it shows up as a 5th field-row IF a matching block is also
+    # added to web/index.html (unlike the old single-dropdown design, the
+    # UI doesn't grow a field automatically from a registry entry alone —
+    # see the plan's "Explicitly NOT in scope" note). 'flag' is the exact
+    # web_train.py CLI arg the resolved number is sent as — both the
+    # Absolute and '% change' fields funnel through the SAME flag (see
+    # app.js's resolveTarget()).
     VARIABLE_REGISTRY = {
         "base_height": {
             "label": "Base height",
@@ -403,7 +404,6 @@ class TrainingManager:
             "source": "sim_ground_truth",
             "flag": "base_height_target",
             "config_attr": "base_height_target",
-            "range_attr": "base_height_target_range",
             "note": "Not measured by any real sensor — see RobotState.base_height's docstring. "
                     "Fine as a training target since training only ever runs in sim.",
         },
@@ -413,7 +413,6 @@ class TrainingManager:
             "source": "sim_ground_truth",
             "flag": "lin_vel_z_target",
             "config_attr": "lin_vel_z_target",
-            "range_attr": "lin_vel_z_target_range",
             "note": "Not measured by any real sensor (no IMU measures velocity, only acceleration) — "
                     "see RobotState.base_lin_vel's docstring. Fine as a training target since training "
                     "only ever runs in sim. Defaults to 0 — no vertical bobbing.",
@@ -424,7 +423,6 @@ class TrainingManager:
             "source": "sensor",
             "flag": "ang_vel_xy_target",
             "config_attr": "ang_vel_xy_target",
-            "range_attr": "ang_vel_xy_target_range",
             "note": "Real IMU gyroscope signal — same one Live Telemetry's 'Angular velocity' shows. "
                     "Defaults to 0 — no roll/pitch wobble.",
         },
@@ -434,7 +432,6 @@ class TrainingManager:
             "source": "sensor",
             "flag": "orientation_tilt_target",
             "config_attr": "orientation_tilt_target",
-            "range_attr": "orientation_tilt_target_range",
             "note": "Real IMU signal (gravity vector in the body frame) — same one Live Telemetry's "
                     "'Orientation' shows. Defaults to 0 — perfectly upright.",
         },
@@ -766,39 +763,38 @@ class TrainingManager:
                 # surfaced here so Clone-from can flag an isaacgym/genesis
                 # sim2sim mismatch instead of silently fine-tuning across engines.
                 # Per-variable reference values come from task_defaults(info["task"])
-                # instead of being duplicated here — see app.js's refreshTargetReference().
+                # instead of being duplicated here — see app.js's refreshTargetReferences().
                 {"name": name, **info}
                 for name, info in sorted(self.policy_sources.items())
             ],
             # Task-independent half of VARIABLE_REGISTRY (label/unit/source/
-            # flag/note) — populates the target variable dropdown once per
-            # connection. The task-dependent half (reference/range, which
-            # differ per task/clone-from base) comes from task_defaults()
+            # flag/note) — populates the 4 always-visible target fields once
+            # per connection. The task-dependent half (reference, which
+            # differs per task/clone-from base) comes from task_defaults()
             # instead, called again on every task/base change.
             "variables": {
-                key: {k: v for k, v in meta.items() if k not in ("config_attr", "range_attr")}
+                key: {k: v for k, v in meta.items() if k != "config_attr"}
                 for key, meta in self.VARIABLE_REGISTRY.items()
             },
         }
 
     def task_defaults(self, task: str) -> dict:
         """Reference values the Create Policy panel reads off a task's own
-        config — WITHOUT running the sim — so 'relative' target fields (e.g.
-        raise/lower the base height by N cm) have something concrete to add a
-        delta to. This is the task's config default, not necessarily the
-        exact value a specific checkpoint was actually trained with (a prior
-        job may have overridden it) — the best available reference short of
-        loading and stepping that checkpoint.
+        config — WITHOUT running the sim — so the '% change' fields (e.g.
+        raise/lower the base height by some percent) have something concrete
+        to apply that percent to. This is the task's config default, not
+        necessarily the exact value a specific checkpoint was actually
+        trained with (a prior job may have overridden it) — the best
+        available reference short of loading and stepping that checkpoint.
 
         'variables' is the generic form of this — one entry per
-        VARIABLE_REGISTRY key, each carrying a reference (for Relative mode)
-        and a physical range (for Extreme mode's lowest/highest bounds). Also
-        used, with the base policy's OWN task, to resolve a clone-from
-        reference (see app.js's refreshTargetReference()) — every registered
-        variable gets the same treatment, base_height included, no special
-        case. The task-independent half of the registry (label/unit/source/
-        flag/note) comes from catalog() instead — fetched once, not on every
-        task change."""
+        VARIABLE_REGISTRY key, each carrying a reference. Also used, with the
+        base policy's OWN task, to resolve a clone-from reference (see
+        app.js's refreshTargetReferences()) — every registered variable gets
+        the same treatment, base_height included, no special case. The
+        task-independent half of the registry (label/unit/source/flag/note)
+        comes from catalog() instead — fetched once, not on every task
+        change."""
         from legged_gym.utils import task_registry
         try:
             env_cfg, _ = task_registry.get_cfgs(name=task)
@@ -808,11 +804,7 @@ class TrainingManager:
         variables = {}
         for key, meta in self.VARIABLE_REGISTRY.items():
             reference = getattr(env_cfg.rewards, meta["config_attr"], None) if env_cfg is not None else None
-            value_range = getattr(env_cfg.rewards, meta["range_attr"], None) if env_cfg is not None else None
-            variables[key] = {
-                "reference": reference,
-                "range": list(value_range) if value_range is not None else None,
-            }
+            variables[key] = {"reference": reference}
 
         # Every reward-term weight this task's own config defines, name ->
         # current default — read straight off <Cfg>.rewards.scales rather

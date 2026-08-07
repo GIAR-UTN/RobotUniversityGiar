@@ -784,42 +784,63 @@
             </div>
 
             <div class="field-row">
-              <label for="train-var-select">Target variable</label>
-              <p class="field-hint">Unlike Command envelope above, this is one fixed value the policy is trained to converge to and hold — not a range it samples from.</p>
-              <select id="train-var-select"></select>
-              <p class="field-hint" id="train-var-note"></p>
+              <p class="field-hint">Target variables — unlike Command envelope above, each is one fixed value the policy is trained to converge to and hold, not a range it samples from. Every field below is optional and independent: fill in as many or as few as you want. Leave BOTH fields of a variable blank to keep the task's own default for it (shown as "Reference" — not necessarily 0; e.g. base height's task default is a standing height, not the ground).</p>
+            </div>
 
-              <div class="mode-tabs" id="train-height-mode">
-                <button type="button" data-mode="absolute" class="active">Absolute</button>
-                <button type="button" data-mode="relative">Raise / lower</button>
-                <button type="button" data-mode="extreme">Lowest / highest</button>
+            <div class="field-row target-var-row">
+              <div class="section-head" style="margin-bottom:.25rem;">
+                <label style="flex:1;">Base height</label>
+                <button type="button" class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+                <div class="help-popover" role="dialog" hidden><p id="target-note-base_height"></p></div>
               </div>
+              <p class="field-hint" id="target-ref-base_height">Reference: &ndash;</p>
+              <div class="range-pair">
+                <input type="number" id="target-abs-base_height" step="0.01" placeholder="absolute (m)">
+                <input type="number" id="target-pct-base_height" step="1" placeholder="% change, e.g. -15">
+              </div>
+              <p class="field-hint" id="target-warn-base_height" hidden></p>
+            </div>
 
-              <div class="subfield" id="train-height-absolute">
-                <p class="field-hint" id="train-height-absolute-hint">Value the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing height.</p>
-                <input type="number" id="train-height" step="0.01" placeholder="leave blank for the task's default">
+            <div class="field-row target-var-row">
+              <div class="section-head" style="margin-bottom:.25rem;">
+                <label style="flex:1;">Vertical velocity</label>
+                <button type="button" class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+                <div class="help-popover" role="dialog" hidden><p id="target-note-lin_vel_z"></p></div>
               </div>
+              <p class="field-hint" id="target-ref-lin_vel_z">Reference: &ndash;</p>
+              <div class="range-pair">
+                <input type="number" id="target-abs-lin_vel_z" step="0.01" placeholder="absolute (m/s)">
+                <input type="number" id="target-pct-lin_vel_z" step="1" placeholder="% change, e.g. -15">
+              </div>
+              <p class="field-hint" id="target-warn-lin_vel_z" hidden></p>
+            </div>
 
-              <div class="subfield" id="train-height-relative" hidden>
-                <p class="field-hint" id="train-height-reference">Reference: &ndash;</p>
-                <div class="range-pair">
-                  <select id="train-height-dir">
-                    <option value="raise">Raise by</option>
-                    <option value="lower">Lower by</option>
-                  </select>
-                  <input type="number" id="train-height-delta" step="0.01" min="0" placeholder="m">
-                </div>
-                <p class="field-hint">Resolved against the reference above at submit time — the exact same flag as Absolute, just composed for you.</p>
+            <div class="field-row target-var-row">
+              <div class="section-head" style="margin-bottom:.25rem;">
+                <label style="flex:1;">Roll/pitch rate</label>
+                <button type="button" class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+                <div class="help-popover" role="dialog" hidden><p id="target-note-ang_vel_xy"></p></div>
               </div>
+              <p class="field-hint" id="target-ref-ang_vel_xy">Reference: &ndash;</p>
+              <div class="range-pair">
+                <input type="number" id="target-abs-ang_vel_xy" step="0.01" placeholder="absolute (rad/s)">
+                <input type="number" id="target-pct-ang_vel_xy" step="1" placeholder="% change, e.g. -15">
+              </div>
+              <p class="field-hint" id="target-warn-ang_vel_xy" hidden></p>
+            </div>
 
-              <div class="subfield" id="train-height-extreme" hidden>
-                <div class="mode-tabs" id="train-extreme-dir">
-                  <button type="button" data-dir="lowest" class="active">Lowest</button>
-                  <button type="button" data-dir="highest">Highest</button>
-                </div>
-                <p class="field-hint" id="train-extreme-note">Resolves to &ndash;</p>
-                <p class="field-hint">Pushes toward this variable's configured physical limit — not an unconstrained optimum (an unbounded "as low as possible" has a trivial, degenerate solution: lying on the ground). Stability-related reward weights (orientation, termination, balance) stay at full strength — there's no "acceptable stability loss" budget yet, so this is always the 0%-sacrifice behavior.</p>
+            <div class="field-row target-var-row">
+              <div class="section-head" style="margin-bottom:.25rem;">
+                <label style="flex:1;">Body tilt</label>
+                <button type="button" class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+                <div class="help-popover" role="dialog" hidden><p id="target-note-orientation_tilt"></p></div>
               </div>
+              <p class="field-hint" id="target-ref-orientation_tilt">Reference: &ndash;</p>
+              <div class="range-pair">
+                <input type="number" id="target-abs-orientation_tilt" step="0.01" placeholder="absolute (g)">
+                <input type="number" id="target-pct-orientation_tilt" step="1" placeholder="% change, e.g. -15">
+              </div>
+              <p class="field-hint" id="target-warn-orientation_tilt" hidden></p>
             </div>
 
             <div class="field-row">

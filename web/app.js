@@ -1264,19 +1264,17 @@ const trainEnvsHint = $('#train-envs-hint');
 const trainVxLo = $('#train-vx-lo'), trainVxHi = $('#train-vx-hi');
 const trainVyLo = $('#train-vy-lo'), trainVyHi = $('#train-vy-hi');
 const trainYawLo = $('#train-yaw-lo'), trainYawHi = $('#train-yaw-hi');
-const trainVarSelect = $('#train-var-select');
-const trainVarNote = $('#train-var-note');
-const trainHeight = $('#train-height');
-const trainHeightAbsoluteHint = $('#train-height-absolute-hint');
-const trainHeightModeTabs = $('#train-height-mode');
-const trainHeightAbsolute = $('#train-height-absolute');
-const trainHeightRelative = $('#train-height-relative');
-const trainHeightReference = $('#train-height-reference');
-const trainHeightDir = $('#train-height-dir');
-const trainHeightDelta = $('#train-height-delta');
-const trainHeightExtreme = $('#train-height-extreme');
-const trainExtremeDirTabs = $('#train-extreme-dir');
-const trainExtremeNote = $('#train-extreme-note');
+// The 4 always-visible target-variable fields (see TARGET_VAR_KEYS below) —
+// one {abs, pct, ref, note, warn} element set per registered variable, keyed
+// the same way trainingCatalog.variables/task_defaults().variables are.
+const TARGET_VAR_KEYS = ['base_height', 'lin_vel_z', 'ang_vel_xy', 'orientation_tilt'];
+const targetVarEls = Object.fromEntries(TARGET_VAR_KEYS.map((key) => [key, {
+  abs: $(`#target-abs-${key}`),
+  pct: $(`#target-pct-${key}`),
+  ref: $(`#target-ref-${key}`),
+  note: $(`#target-note-${key}`),
+  warn: $(`#target-warn-${key}`),
+}]));
 const trainPush = $('#train-push');
 const trainPushVel = $('#train-push-vel');
 const trainPushInterval = $('#train-push-interval');
@@ -1360,19 +1358,13 @@ function showTrainError(msg) {
   trainError.classList.toggle('show', !!msg);
 }
 
-// ---- target variable: absolute value, relative to a reference, or an ----
-// ---- extreme (lowest/highest) push against a physical bound         ----
-// One variable at a time, chosen from #train-var-select — populated from
-// TrainingManager.VARIABLE_REGISTRY (legged_gym/control/training.py) via
-// training_catalog()'s 'variables' (task-independent: label/unit/source/
-// flag/note) and task_defaults()'s 'variables' (task-dependent: reference/
-// range, refetched on every task/clone-from change). Absolute/Relative
-// resolve the same way they always did; Extreme resolves to the variable's
-// configured physical bound (range[0]/range[1]) rather than an
-// unconstrained optimum — see the panel's own copy for why (a truly
-// unbounded "lowest" has a degenerate solution: lying on the ground).
-let targetMode = 'absolute';
-let extremeDir = 'lowest';
+// ---- target variables: 4 always-visible fields, each independently ----
+// ---- optional (Absolute value, or a signed % change off a reference) ----
+// Populated from TrainingManager.VARIABLE_REGISTRY (legged_gym/control/
+// training.py) via training_catalog()'s 'variables' (task-independent:
+// label/unit/source/flag/note) and task_defaults()'s 'variables'
+// (task-dependent: reference, refetched on every task/clone-from change).
+// See resolveTarget()/refreshTargetReferences() below.
 let trainBackend = 'local'; // 'local' | 'kaggle' — see #train-backend's click handler below
 let targetReference = null; // {value: number|null, label: string} | null
 let targetRange = null;     // [min, max] | null
@@ -1416,93 +1408,88 @@ function refreshCloneFromMismatchWarning() {
   }
 }
 
-function selectedVariable() {
-  return trainVarSelect.value;
-}
-
-function variableMeta() {
-  return trainingCatalog?.variables?.[selectedVariable()] || null;
-}
+// targetReferences[key] = {value: number|null, label: string} | null — one
+// per variable, all 4 resolved together off a single task_defaults() call
+// (it already returns every registered variable's reference at once).
+let targetReferences = {};
 
 function renderVariableChrome() {
-  const meta = variableMeta();
-  const unit = meta?.unit || '';
-  const label = meta?.label || 'value';
-  trainVarNote.textContent = meta
-    ? `${meta.source === 'sensor' ? 'Real sensor' : 'Simulator ground truth'} — ${meta.note || ''}`
-    : '';
-  trainHeightAbsoluteHint.textContent =
-    `${label} (${unit}) the reward tracks — e.g. set this to match a crouch base you're cloning from, so training doesn't pull it back up to the task's standing value.`;
+  for (const key of TARGET_VAR_KEYS) {
+    const meta = trainingCatalog?.variables?.[key];
+    const els = targetVarEls[key];
+    if (meta) {
+      els.note.textContent = `${meta.source === 'sensor' ? 'Real sensor' : 'Simulator ground truth'} — ${meta.note || ''}`;
+    }
+  }
 }
 
-function renderTargetReference() {
-  const unit = variableMeta()?.unit || '';
-  trainHeightReference.textContent = (!targetReference || targetReference.value == null)
-    ? 'Reference: – (pick a task or clone-from base first)'
-    : `Reference: ${targetReference.value.toFixed(3)} ${unit} (${targetReference.label})`;
-  renderExtremeNote();
+function renderTargetReferences() {
+  for (const key of TARGET_VAR_KEYS) {
+    const els = targetVarEls[key];
+    const unit = trainingCatalog?.variables?.[key]?.unit || '';
+    const ref = targetReferences[key];
+    if (!ref || ref.value == null) {
+      els.ref.textContent = 'Reference: – (pick a task or clone-from base first)';
+      els.warn.hidden = true;
+      continue;
+    }
+    els.ref.textContent = `Reference: ${ref.value.toFixed(3)} ${unit} (${ref.label})`;
+    // A 0 reference makes '% change' a no-op (any percent of 0 is still 0)
+    // — the 3 non-height variables default to exactly 0 unless a clone-from
+    // base already set a nonzero target, so this is a real footgun worth
+    // flagging inline rather than letting someone type "+20%" and get
+    // silently nothing.
+    els.warn.hidden = ref.value !== 0;
+    els.warn.textContent = 'Reference is 0 — % change has no effect here; use Absolute instead.';
+  }
   updateCommandPreview();
 }
 
-function renderExtremeNote() {
-  const unit = variableMeta()?.unit || '';
-  const label = variableMeta()?.label || 'value';
-  if (!targetRange) {
-    trainExtremeNote.textContent = 'Resolves to – (pick a task or clone-from base first)';
-    return;
-  }
-  const bound = extremeDir === 'lowest' ? targetRange[0] : targetRange[1];
-  trainExtremeNote.textContent = `Resolves to ${bound.toFixed(3)} ${unit} — this task's configured ${extremeDir} bound for ${label.toLowerCase()}.`;
-}
-
-function refreshTargetReference() {
+function refreshTargetReferences() {
   const base = trainBase.value, task = trainTask.value;
-  const varKey = selectedVariable();
-  if (!task && !base) { targetReference = null; targetRange = null; renderTargetReference(); return; }
+  if (!task && !base) { targetReferences = {}; renderTargetReferences(); return; }
   // A clone-from base's reference is always its OWN task's default, not the
-  // (possibly different) currently-selected target task — a "raise/lower"
+  // (possibly different) currently-selected target task — a '% change'
   // delta should be relative to what the base was actually trained at.
   // Same rule for every registered variable, base_height included.
   const referenceTask = base
     ? trainingCatalog?.base_policies.find((b) => b.name === base)?.task
     : task;
-  if (!referenceTask) { renderTargetReference(); return; }
+  if (!referenceTask) { renderTargetReferences(); return; }
   call('task_defaults', { task: referenceTask }).then((d) => {
-    const v = d.variables?.[varKey];
-    targetReference = {
-      value: v?.reference ?? null,
-      label: base ? `${base}'s task default` : `${referenceTask}'s default`,
-    };
-    targetRange = v?.range ?? null;
-    renderTargetReference();
-  }).catch(() => { targetReference = null; targetRange = null; renderTargetReference(); });
+    targetReferences = {};
+    for (const key of TARGET_VAR_KEYS) {
+      const v = d.variables?.[key];
+      targetReferences[key] = {
+        value: v?.reference ?? null,
+        label: base ? `${base}'s task default` : `${referenceTask}'s default`,
+      };
+    }
+    renderTargetReferences();
+  }).catch(() => { targetReferences = {}; renderTargetReferences(); });
 }
 
-trainVarSelect.addEventListener('change', () => {
-  renderVariableChrome();
-  refreshTargetReference();
-});
+// Resolves one variable's target from its Absolute/% change pair:
+//   both blank -> null (unset, task default)
+//   abs filled, pct blank -> the absolute number
+//   pct filled, abs blank -> reference * (1 + pct/100), or undefined if no
+//     reference has resolved yet (submit-time validation error)
+//   both filled -> NaN (sentinel: ambiguous, submit-time validation error)
+function resolveTarget(key) {
+  const els = targetVarEls[key];
+  const absRaw = els.abs.value.trim();
+  const pctRaw = els.pct.value.trim();
+  if (absRaw !== '' && pctRaw !== '') return NaN;
+  if (absRaw !== '') return parseFloat(absRaw);
+  if (pctRaw === '') return null;
+  const ref = targetReferences[key];
+  if (!ref || ref.value == null) return undefined;
+  return ref.value * (1 + parseFloat(pctRaw) / 100);
+}
 
-trainHeightModeTabs.querySelectorAll('button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    targetMode = btn.dataset.mode;
-    trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-    trainHeightAbsolute.hidden = targetMode !== 'absolute';
-    trainHeightRelative.hidden = targetMode !== 'relative';
-    trainHeightExtreme.hidden = targetMode !== 'extreme';
-    if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
-    updateCommandPreview();
-  });
-});
-
-trainExtremeDirTabs.querySelectorAll('button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    extremeDir = btn.dataset.dir;
-    trainExtremeDirTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-    renderExtremeNote();
-    updateCommandPreview();
-  });
-});
+function resolveAllTargets() {
+  return Object.fromEntries(TARGET_VAR_KEYS.map((key) => [key, resolveTarget(key)]));
+}
 
 trainBackendTabs.querySelectorAll('button').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -1512,22 +1499,6 @@ trainBackendTabs.querySelectorAll('button').forEach((btn) => {
     updateEstimate(); // different backend = different history bucket, see estimate()
   });
 });
-
-function resolveHeight() {
-  if (targetMode === 'absolute') {
-    const raw = trainHeight.value.trim();
-    return raw === '' ? null : parseFloat(raw);
-  }
-  if (targetMode === 'extreme') {
-    if (!targetRange) return undefined; // can't resolve yet — validation error
-    return extremeDir === 'lowest' ? targetRange[0] : targetRange[1];
-  }
-  const deltaRaw = trainHeightDelta.value.trim();
-  if (deltaRaw === '') return null; // no delta entered — leave the target unset (task default)
-  if (!targetReference || targetReference.value == null) return undefined; // can't resolve yet — validation error
-  const sign = trainHeightDir.value === 'lower' ? -1 : 1;
-  return targetReference.value + sign * parseFloat(deltaRaw);
-}
 
 // ---- reward weights (advanced) — every <Cfg>.rewards.scales term the ----
 // chosen task actually defines, one optional override field each. This is
@@ -1663,9 +1634,9 @@ function snapshotTrainFormConfig() {
     vxLo: trainVxLo.value, vxHi: trainVxHi.value,
     vyLo: trainVyLo.value, vyHi: trainVyHi.value,
     yawLo: trainYawLo.value, yawHi: trainYawHi.value,
-    varKey: trainVarSelect.value, targetMode,
-    height: trainHeight.value, heightDir: trainHeightDir.value, heightDelta: trainHeightDelta.value,
-    extremeDir,
+    targets: Object.fromEntries(TARGET_VAR_KEYS.map((key) => [key, {
+      abs: targetVarEls[key].abs.value, pct: targetVarEls[key].pct.value,
+    }])),
     push: trainPush.value, pushVel: trainPushVel.value, pushInterval: trainPushInterval.value, pushDir: trainPushDir.value,
     entropyCoef: trainEntropyCoef.value,
     rewardScales,
@@ -1707,17 +1678,10 @@ function restoreTrainFormConfig() {
   trainVxLo.value = cfg.vxLo || ''; trainVxHi.value = cfg.vxHi || '';
   trainVyLo.value = cfg.vyLo || ''; trainVyHi.value = cfg.vyHi || '';
   trainYawLo.value = cfg.yawLo || ''; trainYawHi.value = cfg.yawHi || '';
-  if (cfg.varKey && trainingCatalog?.variables?.[cfg.varKey]) trainVarSelect.value = cfg.varKey;
-  targetMode = cfg.targetMode || 'absolute';
-  trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === targetMode));
-  trainHeightAbsolute.hidden = targetMode !== 'absolute';
-  trainHeightRelative.hidden = targetMode !== 'relative';
-  trainHeightExtreme.hidden = targetMode !== 'extreme';
-  trainHeight.value = cfg.height || '';
-  trainHeightDir.value = cfg.heightDir || 'raise';
-  trainHeightDelta.value = cfg.heightDelta || '';
-  extremeDir = cfg.extremeDir || 'lowest';
-  trainExtremeDirTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.dir === extremeDir));
+  for (const key of TARGET_VAR_KEYS) {
+    targetVarEls[key].abs.value = cfg.targets?.[key]?.abs || '';
+    targetVarEls[key].pct.value = cfg.targets?.[key]?.pct || '';
+  }
   trainPush.value = cfg.push || '';
   trainPushVel.value = cfg.pushVel || '';
   trainPushInterval.value = cfg.pushInterval || '';
@@ -1725,7 +1689,7 @@ function restoreTrainFormConfig() {
   trainEntropyCoef.value = cfg.entropyCoef || '';
 
   renderVariableChrome();
-  refreshTargetReference();
+  refreshTargetReferences();
   refreshNamePlaceholder();
   refreshCloneFromMismatchWarning();
   updateEnvsHint(); // backend-dependent hint text — see setTrainBackend() above
@@ -1775,17 +1739,8 @@ function refreshTrainingCatalog() {
     }
     if (catalog.base_policies.some((p) => p.name === prevBase)) trainBase.value = prevBase;
 
-    const prevVar = trainVarSelect.value;
-    trainVarSelect.innerHTML = '';
-    for (const [key, meta] of Object.entries(catalog.variables || {})) {
-      const opt = document.createElement('option');
-      opt.value = key; opt.textContent = meta.label;
-      trainVarSelect.appendChild(opt);
-    }
-    if (catalog.variables?.[prevVar]) trainVarSelect.value = prevVar;
     renderVariableChrome();
-
-    if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
+    refreshTargetReferences();
     refreshRewardScaleFields();
     refreshNamePlaceholder();
     refreshCloneFromMismatchWarning();
@@ -1819,7 +1774,7 @@ function composeTrainingParams() {
   const cmdVx = rangePair(trainVxLo, trainVxHi);
   const cmdVy = rangePair(trainVyLo, trainVyHi);
   const cmdYaw = rangePair(trainYawLo, trainYawHi);
-  const height = resolveHeight();
+  const targets = resolveAllTargets();
   const push = trainPush.value || null; // '' -> null -> "leave task default"
   const pushVelRaw = trainPushVel.value.trim();
   const pushVel = pushVelRaw === '' ? null : parseFloat(pushVelRaw);
@@ -1832,7 +1787,7 @@ function composeTrainingParams() {
   return {
     name, task, iterations: Number.isFinite(iterations) ? iterations : null,
     minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
-    height, push, pushVel, pushInterval, pushDir, entropyCoef, rewardScales,
+    targets, push, pushVel, pushInterval, pushDir, entropyCoef, rewardScales,
     backend: trainBackend,
   };
 }
@@ -1859,9 +1814,13 @@ function updateCommandPreview() {
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
   if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);
-  const targetFlag = variableMeta()?.flag || 'base_height_target';
-  if (p.height === undefined) parts.push(`--${targetFlag} <no reference yet — pick a task or clone-from base>`);
-  else if (p.height !== null) parts.push(`--${targetFlag} ${p.height.toFixed(3)}`);
+  for (const key of TARGET_VAR_KEYS) {
+    const flag = trainingCatalog?.variables?.[key]?.flag || `${key}_target`;
+    const value = p.targets[key];
+    if (Number.isNaN(value)) parts.push(`--${flag} <ambiguous — both Absolute and % change are set>`);
+    else if (value === undefined) parts.push(`--${flag} <no reference yet — pick a task or clone-from base>`);
+    else if (value !== null) parts.push(`--${flag} ${value.toFixed(3)}`);
+  }
   if (p.push) parts.push(`--push_robots ${p.push}`);
   if (p.pushVel !== null) parts.push(`--max_push_vel_xy ${p.pushVel}`);
   if (p.pushInterval !== null) parts.push(`--push_interval_s ${p.pushInterval}`);
@@ -1891,16 +1850,17 @@ btnNewPolicy.addEventListener('click', () => {
   }
 });
 
+const targetVarInputs = TARGET_VAR_KEYS.flatMap((key) => [targetVarEls[key].abs, targetVarEls[key].pct]);
 [trainName, trainBase, trainTask, trainIters, trainMinutes, trainEnvs,
  trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi,
- trainHeight, trainHeightDir, trainHeightDelta, trainPush, trainPushVel, trainPushInterval, trainPushDir,
+ ...targetVarInputs, trainPush, trainPushVel, trainPushInterval, trainPushDir,
  trainEntropyCoef].forEach((el) => {
   el.addEventListener('input', updateCommandPreview);
   el.addEventListener('change', updateCommandPreview);
 });
 [trainBase, trainTask].forEach((el) => {
   el.addEventListener('change', () => {
-    if (targetMode === 'relative' || targetMode === 'extreme') refreshTargetReference();
+    refreshTargetReferences();
     refreshRewardScaleFields();
     refreshNamePlaceholder(); // the auto-name suggestion tracks "Clone from"
     refreshCloneFromMismatchWarning();
@@ -1932,22 +1892,26 @@ createPolicyForm.addEventListener('submit', (e) => {
   if (p.cmdVx === undefined || p.cmdVy === undefined || p.cmdYaw === undefined) {
     return showTrainError('Fill in both ends of a command range, or leave the whole pair blank.');
   }
-  if (p.height === undefined) {
-    return showTrainError('No reference height to raise/lower from yet — pick a task or a clone-from base.');
+  for (const key of TARGET_VAR_KEYS) {
+    const label = trainingCatalog?.variables?.[key]?.label || key;
+    if (Number.isNaN(p.targets[key])) {
+      return showTrainError(`Set either Absolute or % change for ${label}, not both.`);
+    }
+    if (p.targets[key] === undefined) {
+      return showTrainError(`No reference for ${label} yet — pick a task or a clone-from base.`);
+    }
   }
 
   showTrainError('');
   btnStartTraining.disabled = true;
-  // Which target-variable flag p.height applies to depends on the "Target
-  // variable" dropdown — e.g. base_height_target, lin_vel_z_target, ... (see
-  // VARIABLE_REGISTRY in training.py; every entry's flag is also its
-  // start_training() kwarg name, kept identical on purpose).
-  const targetFlagKey = variableMeta()?.flag || 'base_height_target';
   call('start_training', {
     policy_name: p.name, task: p.task, num_envs: p.numEnvs,
     max_iterations: p.iterations, max_minutes: p.minutes,
     base_policy: p.base, cmd_vx: p.cmdVx, cmd_vy: p.cmdVy, cmd_yaw: p.cmdYaw,
-    [targetFlagKey]: p.height,
+    base_height_target: p.targets.base_height,
+    lin_vel_z_target: p.targets.lin_vel_z,
+    ang_vel_xy_target: p.targets.ang_vel_xy,
+    orientation_tilt_target: p.targets.orientation_tilt,
     push_robots: p.push === null ? null : p.push === 'on',
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
@@ -1962,11 +1926,6 @@ createPolicyForm.addEventListener('submit', (e) => {
     createPolicyForm.reset();
     createPolicyForm.hidden = true;
     btnNewPolicy.textContent = '+ New policy…';
-    targetMode = 'absolute';
-    trainHeightModeTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.mode === 'absolute'));
-    trainHeightAbsolute.hidden = false;
-    trainHeightRelative.hidden = true;
-    trainHeightExtreme.hidden = true;
     setTrainBackend('local');
   }).catch((e) => {
     showTrainError(e.message);
