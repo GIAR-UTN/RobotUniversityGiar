@@ -1538,9 +1538,19 @@ function renderRewardScaleFields(scales, notes = {}) {
     const wrap = document.createElement('div');
     wrap.className = 'reward-scale-field';
     const label = document.createElement('label');
-    label.textContent = notes[term] ? `${term} ⓘ` : term;
+    label.textContent = term;
     label.htmlFor = `train-reward-${term}`;
-    if (notes[term]) label.title = notes[term];
+    // Same didactic hover/focus tooltip used for the "final reward terms"
+    // readout (REWARD_TERM_GLOSSARY, renderRewardTerms()) — falls back to
+    // the backend's REWARD_SCALE_NOTES for weight-only terms the glossary
+    // doesn't cover (e.g. crouch_depth), so every field gets an
+    // explanation rather than just the ones with a backend note.
+    const tip = REWARD_TERM_GLOSSARY[term] || notes[term];
+    if (tip) {
+      label.classList.add('info-term-name');
+      label.tabIndex = 0;
+      label.setAttribute('data-tip', tip);
+    }
     const input = document.createElement('input');
     input.type = 'number';
     input.step = 'any';
