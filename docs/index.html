@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>How a Unitree Robot Learns to Walk</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='16' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='42' y='8' width='6' height='14' rx='3' fill='%2316202b'/%3E%3Crect x='10' y='18' width='44' height='34' rx='10' fill='%2316202b'/%3E%3Ccircle cx='24' cy='34' r='5' fill='%23d9531a'/%3E%3Ccircle cx='40' cy='34' r='5' fill='%23d9531a'/%3E%3Crect x='26' y='44' width='12' height='4' rx='2' fill='%23d9531a'/%3E%3C/svg%3E">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -403,6 +404,7 @@
       <li><a href="#sims">Simulators: what runs where, and why</a></li>
       <li><a href="#control-arch">Switching policies live</a></li>
       <li><a href="#team">Working as a team</a></li>
+      <li><a href="#training">Training a stable policy</a></li>
       <div class="grp">Reference</div>
       <li><a href="#glossary">Glossary</a></li>
       <li><a href="#credits">Credits &amp; license</a></li>
@@ -1070,8 +1072,150 @@ def step(self, obs):
         </div>
       </section>
 
+      <section id="training">
+        <div class="num">§14 — this fork</div>
+        <h2>Training a stable policy</h2>
+        <p class="lead-q">The reward curve climbed, crashed, climbed again, crashed again. Is the entropy too high?</p>
+        <p>Usually no — and this section exists because that question comes up naturally the first time anyone stares at a real training curve. Two <em>completely different</em> problems both look like "the curve is going up and down," and telling them apart is the single most useful diagnostic skill for anyone using the Create Policy panel (<a href="#control-arch">§12</a>). Everything below is grounded in two things: this fork's own training history (real logs, real numbers, no hypotheticals) and what the wider legged-locomotion RL community — ETH Zürich's <code>legged_gym</code>, Unitree's own <code>unitree_rl_gym</code>, and a few research papers — has already learned the hard way, cited as we go.</p>
+
+        <h3>The three vitals, every run</h3>
+        <p>The Create Policy panel's result tiles (<abbr class="term" title="Episode length, mean reward, and action noise std — the three numbers the result card of any finished or in-progress training job shows, pulled straight from rsl_rl's own per-iteration log lines.">EPISODE LENGTH / MEAN REWARD / ACTION NOISE STD</abbr>) are the same three numbers rsl_rl prints every iteration. Read them in this order — noise std tells you whether the other two are trustworthy at all:</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Vital</th><th>What it is</th><th>What "good" looks like</th></tr>
+            <tr><td class="k">Action noise std</td><td>How wide the policy's action distribution still is (<a href="#rl">§5</a>'s <code>self.std</code>) — how much it's still "exploring" vs. committing to one behavior.</td><td>Trends <strong>down</strong> over the run, or stays flat once it's already low. Should never climb for more than a few iterations in a row.</td></tr>
+            <tr><td class="k">Mean episode length</td><td>How many of the episode's 1000 possible steps (20s at 50Hz) the robot survives on average before falling/timing out.</td><td>Rising over the run. This is the metric that most directly answers "is it actually more stable," not just "is the reward number bigger."</td></tr>
+            <tr><td class="k">Mean reward</td><td>The per-step score PPO is optimizing, averaged per episode.</td><td>Rising — but read it <em>together</em> with episode length. A run can raise mean reward while episode length stays flat, if the reward per surviving step went up without the robot surviving any longer (see <code>HANDOFF_stability_curriculum.md</code>'s open problem §6 — exactly this happened once in this fork's own history).</td></tr>
+          </table>
+        </div>
+
+        <h3>Two patterns that both look "erratic" — but aren't the same problem</h3>
+        <p>Side by side, from two real runs in this fork's own logs:</p>
+
+        <div class="plate">
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px;">
+            <div>
+              <div class="diagram-label" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--accent); margin-bottom:6px;">Pattern A — entropy runaway</div>
+              <svg viewBox="0 0 320 106" width="100%" role="img" aria-label="Action noise std climbing monotonically from 0.80 to 2.83 across a training run, never decreasing">
+                <polyline points="8.0,90.5 65.8,78.1 173.3,56.8 312.0,14.4" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+                <circle cx="8.0" cy="90.5" r="3" fill="var(--accent)"/><circle cx="65.8" cy="78.1" r="3" fill="var(--accent)"/>
+                <circle cx="173.3" cy="56.8" r="3" fill="var(--accent)"/><circle cx="312.0" cy="14.4" r="3" fill="var(--accent)"/>
+                <text x="8" y="102" font-size="9" fill="var(--muted)">iter 0</text>
+                <text x="280" y="102" font-size="9" fill="var(--muted)">iter 3679</text>
+              </svg>
+              <div class="cap">Action noise std, 4 checkpoints of one real run: 0.80 → ~1.13 → 1.70 → 2.83. Climbs the <strong>entire</strong> run, never once dips. Source: <code>HANDOFF_stability_curriculum.md</code> §1 (this fork's own <code>crouch</code> job, <code>logs/_web_training/f3d2d365.log</code>).</div>
+            </div>
+            <div>
+              <div class="diagram-label" style="font-size:11px; letter-spacing:0.08em; text-transform:uppercase; color:var(--accent2); margin-bottom:6px;">Pattern B — policy collapse &amp; recovery</div>
+              <svg viewBox="0 0 320 106" width="100%" role="img" aria-label="Mean reward climbing then crashing abruptly three times over 80 iterations, a sawtooth pattern">
+                <polyline points="8.0,98.0 11.8,94.6 15.7,92.7 19.5,87.0 23.4,84.9 27.2,88.0 31.1,83.3 34.9,74.3 38.8,74.9 42.6,64.4 46.5,66.0 50.3,61.5 54.2,53.1 58.0,51.6 61.9,41.8 65.7,26.5 69.6,21.7 73.4,16.8 77.3,27.1 81.1,16.5 85.0,12.0 88.8,49.3 92.7,29.2 96.5,37.6 100.4,86.9 104.2,90.7 108.1,83.8 111.9,79.7 115.7,92.2 119.6,85.4 123.4,79.3 127.3,81.7 131.1,66.1 135.0,68.8 138.8,72.2 142.7,62.4 146.5,65.4 150.4,57.3 154.2,53.5 158.1,37.5 161.9,23.0 165.8,8.0 169.6,35.6 173.5,23.6 177.3,26.2 181.2,87.7 185.0,90.5 188.9,87.5 192.7,92.9 196.6,90.0 200.4,86.4 204.3,90.5 208.1,90.5 211.9,86.0 215.8,80.1 219.6,82.5 223.5,84.5 227.3,82.8 231.2,81.2 235.0,79.6 238.9,72.6 242.7,66.6 246.6,53.5 250.4,30.1 254.3,41.1 258.1,47.3 262.0,89.7 265.8,88.8 269.7,90.1 273.5,90.4 277.4,87.7 281.2,88.9 285.1,90.8 288.9,90.0 292.8,89.3 296.6,85.1 300.5,81.8 304.3,82.6 308.2,80.7 312.0,77.5" fill="none" stroke="var(--accent2)" stroke-width="2"/>
+                <text x="8" y="102" font-size="9" fill="var(--muted)">iter 890</text>
+                <text x="278" y="102" font-size="9" fill="var(--muted)">iter 969</text>
+              </svg>
+              <div class="cap">Mean reward, 80 real consecutive iterations: 3 climb-then-crash cycles (peaks 40.9 → 42.8 → 32.5; valleys ~6 → ~3 → ~5 — not improving). Source: <code>stable_home_made_4</code>, <code>logs/_web_training/c4b21ddb.log</code>.</div>
+            </div>
+          </div>
+          <div class="cap" style="margin-top:14px;">The tell: in Pattern A, <strong>noise std itself</strong> is the broken curve — it only goes up. In Pattern B, noise std for that exact same run stayed flat the whole time (0.17 → 0.16, see below) — the sawtooth is in <strong>reward and episode length</strong> instead, and each crash is sudden while each recovery is gradual. Different symptom shape, different cause.</div>
+          <svg viewBox="0 0 320 46" width="100%" role="img" aria-label="Action noise std for the same 80 iterations as Pattern B, staying flat between 0.16 and 0.17 the whole time" style="margin-top:10px;">
+            <polyline points="8.0,16.0 11.8,32.0 15.7,32.0 19.5,32.0 23.4,16.0 27.2,16.0 31.1,16.0 34.9,16.0 38.8,16.0 42.6,16.0 46.5,16.0 50.3,16.0 54.2,16.0 58.0,16.0 61.9,16.0 65.7,16.0 69.6,16.0 73.4,16.0 77.3,16.0 81.1,16.0 85.0,16.0 88.8,16.0 92.7,16.0 96.5,16.0 100.4,16.0 104.2,16.0 108.1,16.0 111.9,16.0 115.7,16.0 119.6,16.0 123.4,16.0 127.3,16.0 131.1,16.0 135.0,16.0 138.8,16.0 142.7,16.0 146.5,16.0 150.4,16.0 154.2,16.0 158.1,16.0 161.9,16.0 165.8,16.0 169.6,16.0 173.5,16.0 177.3,16.0 181.2,16.0 185.0,16.0 188.9,16.0 192.7,16.0 196.6,16.0 200.4,16.0 204.3,16.0 208.1,16.0 211.9,16.0 215.8,16.0 219.6,16.0 223.5,16.0 227.3,16.0 231.2,16.0 235.0,32.0 238.9,32.0 242.7,32.0 246.6,32.0 250.4,32.0 254.3,32.0 258.1,32.0 262.0,16.0 265.8,16.0 269.7,16.0 273.5,16.0 277.4,16.0 281.2,16.0 285.1,16.0 288.9,16.0 292.8,16.0 296.6,16.0 300.5,32.0 304.3,32.0 308.2,32.0 312.0,32.0" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+            <text x="8" y="6" font-size="9" fill="var(--muted)">0.17</text>
+            <text x="8" y="44" font-size="9" fill="var(--muted)">0.16</text>
+          </svg>
+        </div>
+
+        <div class="aside">
+          <div class="label">Pattern A — entropy runaway</div>
+          The entropy bonus in PPO's loss (<code>− entropy_coef × entropy</code>, <a href="#rl">§5</a>) has no ceiling and no decay anywhere in this codebase. With a weak reward gradient, that bonus can out-compete the actual task reward and keep pushing <code>self.std</code> up instead of letting it shrink — the policy gets <em>more</em> random the longer it trains, not less. <strong>Fix:</strong> lower <code>--entropy_coef</code> (this fork's default risk case used the task default <code>0.01</code>; dropping to <code>0.002</code>–<code>0.001</code> stopped the runaway in later curriculum steps).
+        </div>
+        <div class="aside">
+          <div class="label">Pattern B — policy collapse &amp; recovery</div>
+          PPO's own trust-region safety net (<code>clip_param</code> + the adaptive learning-rate schedule reacting to <abbr class="term" title="Kullback-Leibler divergence — how much the policy's behavior shifted in one update.">KL divergence</abbr>, both from <a href="#rl">§5</a>) only reacts <em>after</em> a bad update already landed — it can't undo one already taken. Feed the policy a batch of experience from a situation it wasn't ready for (too wide a velocity command it's never handled, a push it can't yet recover from) often enough, and it periodically gets bounced into a worse region of behavior, then has to relearn its way back out — climb, crash, climb, crash. <strong>Fix:</strong> narrow whatever knob just got widened, not the entropy coefficient — see "one lesson at a time" below.
+        </div>
+
+        <h3>Diagnose your own run</h3>
+        <div class="tabwrap">
+          <table>
+            <tr><th>What you see</th><th>Likely cause</th><th>What to change</th></tr>
+            <tr><td>Noise std climbs steadily, never dips, for the whole run</td><td>Entropy runaway (Pattern A)</td><td>Lower <code>--entropy_coef</code></td></tr>
+            <tr><td>Noise std is flat/falling; reward &amp; episode length climb-then-crash repeatedly</td><td>Policy collapse &amp; recovery (Pattern B) — usually a knob was widened too far for one fine-tuning step</td><td>Narrow the command range, push severity, or target you just changed; re-run from the same checkpoint</td></tr>
+            <tr><td>Reward climbs steadily but episode length stays flat</td><td>The policy found a way to score well <em>without</em> surviving longer — a per-step reward term is dominating over the survival incentive</td><td>Check the per-term reward breakdown in the log; consider raising <code>--reward_scale alive &lt;value&gt;</code> relative to the others</td></tr>
+            <tr><td>Everything looks fine in the numbers, but the robot looks wrong live</td><td>The reward-curve summary doesn't capture everything — a real past mistake in this fork (<a href="#team">§13</a>)</td><td><code>play.py --viewer=viser</code> and actually watch it before trusting a checkpoint</td></tr>
+          </table>
+        </div>
+
+        <h3>How much is a lot? — sourced numbers for G1</h3>
+        <p>"Widen the command range" and "turn on push disturbances" are directions, not destinations — here's what the same robot family actually uses, with sources, so a value on the Create Policy panel means something before you type it in.</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Knob</th><th>Unitree's own G1 default</th><th>Generic <code>legged_gym</code> default (ANYmal-derived)</th><th>Notes</th></tr>
+            <tr><td class="k"><code>--cmd_vx_range</code></td><td>-1 → 1 m/s</td><td>-1 → 1 m/s</td><td>G1's own config doesn't override the base class here — it inherits the generic range. A run in this fork used <code>-2 2</code>, <strong>double</strong> Unitree's own default — a deliberate stretch, not "normal."</td></tr>
+            <tr><td class="k"><code>--cmd_vy_range</code></td><td>-1 → 1 m/s</td><td>-1 → 1 m/s</td><td>—</td></tr>
+            <tr><td class="k"><code>--cmd_yaw_range</code></td><td>-1 → 1 rad/s</td><td>-1 → 1 rad/s</td><td>—</td></tr>
+            <tr><td class="k"><code>--push_interval_s</code></td><td>5 s</td><td>15 s</td><td>Unitree pushes G1 <strong>3× more often</strong> than the generic quadruped default — a biped needs more disturbance practice, not less, to learn genuine balance recovery.</td></tr>
+            <tr><td class="k"><code>--max_push_vel_xy</code></td><td>1.5 m/s</td><td>1.0 m/s</td><td>Also higher than the generic default, for the same reason.</td></tr>
+            <tr><td class="k"><code>--base_height_target</code></td><td>0.78 m</td><td>task-specific</td><td>A run in this fork fine-tuned at <code>0.75</code> — 3cm lower than Unitree's own standing default. Not wrong, but if the base checkpoint already stands at 0.78, that's one more thing changing at once (see below).</td></tr>
+          </table>
+        </div>
+        <div class="cap" style="margin:-4px 0 20px;">Source for the Unitree column: <a href="https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py" target="_blank" rel="noopener"><code>g1_config.py</code>, unitreerobotics/unitree_rl_gym</a>. Source for the generic column: <a href="https://github.com/leggedrobotics/legged_gym/blob/master/legged_gym/envs/base/legged_robot_config.py" target="_blank" rel="noopener"><code>legged_robot_config.py</code>, leggedrobotics/legged_gym</a> (ETH Zürich Robotic Systems Lab — the original ANYmal-quadruped framework this whole family forked from, see <a href="#credits">§16</a>).</div>
+
+        <h3>One lesson at a time</h3>
+        <p>The <code>stable_home_made_3</code>/<code>stable_home_made_4</code> run above changed <strong>three</strong> things at once relative to its base checkpoint: doubled the vx command range past Unitree's own default, turned pushes on, and moved the height target 3cm off the checkpoint's own standing height. Any one of those alone is a reasonable next step; all three together is a hard, unfamiliar situation dropped on the policy in one go — and Pattern B above is what that looks like in the logs.</p>
+        <p>This mirrors what the wider community already does, not just a house rule: <a href="https://arxiv.org/pdf/2109.11978" target="_blank" rel="noopener">Rudin, Hoeller, Reist &amp; Hutter, "Learning to Walk in Minutes" (CoRL 2022)</a> — the paper behind this whole <code>legged_gym</code> lineage — trains with a curriculum that only raises difficulty once the policy has demonstrated it can handle the current level, rather than presenting the hardest case from step one. Concretely, for the Create Policy panel, that means:</p>
+        <ul>
+          <li>Change <strong>one</strong> of {command envelope, push disturbances, target variable} per fine-tuning step, not several.</li>
+          <li>Widen a range gradually (e.g. <code>-1 1</code> → <code>-1.5 1.5</code> → <code>-2 2</code> across separate runs), not in one jump — same principle as terrain-difficulty curricula in the source paper above.</li>
+          <li>Don't turn on <code>--push_robots</code> until the policy is already stable without it (rising episode length, flat-or-falling noise std) — confirmed as the right order in this fork's own <code>HANDOFF_stability_curriculum.md</code> §5 plan, even though Unitree's own G1 config trains with pushes on from iteration zero (§ above) — the two aren't contradictory: Unitree is training from scratch with a full 10,000-iteration budget where early instability has time to resolve itself; a short fine-tuning step from an already-stable checkpoint has much less room to recover from a fresh disturbance introduced at the same moment as other changes.</li>
+          <li>Domain randomization itself is worth keeping, though — <a href="https://arxiv.org/abs/2107.04034" target="_blank" rel="noopener">Kumar, Fu, Pathak &amp; Malik, "RMA: Rapid Motor Adaptation" (RSS 2021)</a> found it measurably improves real-robot robustness (varied friction, mass, pushes) compared to a policy trained without it — the "one knob at a time" advice is about sequencing changes during fine-tuning, not about avoiding randomization altogether.</li>
+        </ul>
+
+        <details class="code-box">
+          <summary><span>Example — the aggressive version vs. a curriculum-respecting version</span> <span class="file">web_train.py</span></summary>
+          <pre><code># What was actually run — 3 knobs moved at once from stable_home_made_2:
+python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_3 \
+  --from_checkpoint &lt;stable_home_made_2 checkpoint&gt; \
+  --cmd_vx_range -2 2 --cmd_vy_range -1 1 --cmd_yaw_range -1 1 \
+  --base_height_target 0.750 --push_robots on --max_minutes 20
+
+# A curriculum-respecting next step from the SAME checkpoint — only the
+# command range moves, and only halfway to the eventual target:
+python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2b \
+  --from_checkpoint &lt;stable_home_made_2 checkpoint&gt; \
+  --cmd_vx_range -1.5 1.5 --cmd_vy_range -1 1 --cmd_yaw_range -1 1 \
+  --push_robots off --max_minutes 20
+# then, only once THAT one's episode length is rising and noise std is flat/falling:
+python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2c \
+  --from_checkpoint &lt;stable_home_made_2b checkpoint&gt; \
+  --cmd_vx_range -2 2 --push_robots on --max_push_vel_xy 1.0 --max_minutes 20</code></pre>
+        </details>
+
+        <h3>Reward weights, if the guided fields don't cover it</h3>
+        <p>The Create Policy panel's guided fields (command envelope, target variable, push disturbances, exploration noise) cover the knobs most fine-tuning steps need. The "Reward weights (advanced)" grid underneath is the raw fallback — every <code>--reward_scale &lt;name&gt; &lt;value&gt;</code> this task's reward function defines, unexplained unless a term has its own note. These are the community's own starting points, not something to invent from scratch:</p>
+        <div class="tabwrap">
+          <table>
+            <tr><th>Term</th><th>Default scale</th><th>What it rewards/penalizes</th></tr>
+            <tr><td class="k">tracking_lin_vel</td><td>1.0</td><td>Matching the commanded forward/lateral speed — usually the single largest positive term.</td></tr>
+            <tr><td class="k">tracking_ang_vel</td><td>0.5</td><td>Matching the commanded yaw rate.</td></tr>
+            <tr><td class="k">lin_vel_z</td><td>-2.0</td><td>Penalizes vertical bobbing — a large negative weight because bobbing is easy for PPO to fall into and hard to un-learn once rewarded.</td></tr>
+            <tr><td class="k">ang_vel_xy</td><td>-0.05</td><td>Penalizes roll/pitch wobble.</td></tr>
+            <tr><td class="k">action_rate</td><td>-0.01</td><td>Penalizes large tick-to-tick action changes — the main lever against visible jitter/tremor. Raise the magnitude (e.g. <code>-0.02</code>) first if a policy looks "twitchy."</td></tr>
+            <tr><td class="k">torques</td><td>-0.00001</td><td>Penalizes actuator effort — tiny weight, mostly a tie-breaker among similarly-rewarded gaits.</td></tr>
+            <tr><td class="k">dof_acc</td><td>-2.5e-7</td><td>Penalizes joint jerk — same "tie-breaker, not primary driver" role as torques.</td></tr>
+            <tr><td class="k">collision</td><td>-1.0</td><td>Penalizes non-foot contact with the ground/itself.</td></tr>
+          </table>
+        </div>
+        <div class="cap" style="margin:-4px 0 20px;">Source: <a href="https://github.com/leggedrobotics/legged_gym/blob/master/legged_gym/envs/base/legged_robot_config.py" target="_blank" rel="noopener"><code>legged_robot_config.py</code>, leggedrobotics/legged_gym</a>. A positive scale rewards more of that term, negative penalizes it — magnitude is only meaningful relative to the other terms in the same task, never as an absolute number.</div>
+
+        <h3>Anti-patterns worth naming</h3>
+        <ul>
+          <li><strong>Reading "curve goes up and down" as one thing.</strong> It's at least two, with opposite fixes (above) — check noise std first, always, before touching <code>--entropy_coef</code>.</li>
+          <li><strong>Raising push severity before the policy is stable without pushes.</strong> Confirmed the hard way in this fork's own history (<code>HANDOFF_stability_curriculum.md</code>).</li>
+          <li><strong>Changing several fine-tuning knobs in the same run and reading the result as one lesson.</strong> When it goes wrong, there's no way to tell which change caused it — see "one lesson at a time" above.</li>
+          <li><strong>Trusting the reward-curve summary alone.</strong> A real past mistake in this fork (<a href="#team">§13</a>): reward curves looked fine while the policy fell roughly once a second. Watch a checkpoint live before committing more training time to it.</li>
+        </ul>
+      </section>
+
       <section id="glossary">
-        <div class="num">§14 — reference</div>
+        <div class="num">§15 — reference</div>
         <h2>Glossary</h2>
         <div class="tabwrap">
           <table>
@@ -1108,12 +1252,15 @@ def step(self, obs):
             <tr><td class="k">Selector</td><td>Proposes autonomous policy switches (a simple tilt-threshold rule today; a learned gating network is the researched next step). <a href="#control-arch">§12</a></td></tr>
             <tr><td class="k">Cross-fade / ramp</td><td>Blending the outgoing and incoming policy's actions linearly over several ticks on a switch, instead of jumping the target instantly. <a href="#control-arch">§12</a></td></tr>
             <tr><td class="k">Lifecycle (INACTIVE/READY/ACTIVE/FAULT)</td><td>The state vocabulary an adapter reports, borrowed on purpose from ROS 2's <code>ros2_control</code> naming. <a href="#control-arch">§12</a></td></tr>
+            <tr><td class="k">Entropy runaway</td><td>Action noise std climbing monotonically the whole run instead of shrinking — the entropy bonus out-competing a weak reward gradient. <a href="#training">§14</a></td></tr>
+            <tr><td class="k">Policy collapse &amp; recovery</td><td>Reward/episode length climbing then crashing abruptly, repeatedly — a too-large policy update knocking the policy into a worse region it has to relearn its way out of. <a href="#training">§14</a></td></tr>
+            <tr><td class="k">Command envelope</td><td>The velocity command range (<code>lin_vel_x/y</code>, <code>ang_vel_yaw</code>) sampled randomly during training — widening it trains a more general policy, narrowing it trains a specialized one. <a href="#training">§14</a></td></tr>
           </table>
         </div>
       </section>
 
       <section id="credits" style="border-bottom:none;">
-        <div class="num">§15 — reference</div>
+        <div class="num">§16 — reference</div>
         <h2>Credits &amp; license</h2>
         <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
       </section>
@@ -1121,7 +1268,7 @@ def step(self, obs):
     </div>
 
     <footer>
-      This page explains both the original <code>unitree_rl_gym</code> repository (§1–§10) and what this specific fork adds on top — running on Genesis instead of Isaac Gym, and a control architecture for switching between trained policies (§11–§13). Every file path and code excerpt above points at a real file in one of those two repos.
+      This page explains both the original <code>unitree_rl_gym</code> repository (§1–§10) and what this specific fork adds on top — running on Genesis instead of Isaac Gym, a control architecture for switching between trained policies, and lessons from this fork's own training runs (§11–§14). Every file path and code excerpt above points at a real file in one of those two repos, or a real log from this fork's own <code>logs/_web_training/</code>.
     </footer>
   </main>
 </div>
