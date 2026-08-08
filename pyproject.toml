@@ -22,6 +22,9 @@ dependencies = [
                 'onnxruntime'
 ]
 
+[project.scripts]
+rugiar = "legged_gym.cli.rugiar:main"
+
 [project.optional-dependencies]
 isaacgym = [
     # torch/torchvision deliberately NOT pinned here: "+cu121" local-version
