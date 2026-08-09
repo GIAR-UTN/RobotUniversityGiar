@@ -6,39 +6,66 @@ allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(
 
 # rugiar — CLI for creating RobotUniversityGiar policies
 
-## ⚠️ Known open problem: no policy this repo's own pipeline produced has been confirmed to actually walk
+## ✅ 2026-08-09 update: this repo's own pipeline CAN produce a walking policy — `walk_gpu_c4`
 
-As of 2026-08-09, **every G1 policy in `./policies/` known to genuinely walk when
-tested (`stable`, `kaggle_g1`, `kaggle_g1_mid5000`) was imported from an EXTERNAL,
-already-fully-converged run of stock `unitree_rl_gym`** (10000/10000 iterations,
-trained outside this repo entirely — see their `meta.json`'s `"trained_via":
-"kaggle-imported"` / `"source"` fields). **Nothing this repo's own training pipeline
-has produced — via the control web historically, or via `rugiar` — has been
-confirmed by direct observation to walk**, including checkpoints whose reward
-curve looked good (`stable_home_made`: reward 14.5, episode_length 578.7 at just
-290 iterations). Pushed a command all the way forward on one of these and it took
-zero steps and didn't even look crouched on a crouch-targeted one — that's the
-symptom that surfaced this.
+The "known open problem" below (no self-trained policy ever confirmed to walk) is
+now **resolved for the base case** (plain `g1` task, velocity command, no
+crouch/push-robustness yet). `walk_gpu_c4` — trained entirely through this repo's
+own `rugiar` CLI, `--backend kaggle`, `num_envs=4096`, chunked via `--from_policy`
+(`walk_gpu_c1` → `c2` → `c3` → `c4`, ~300 iterations/chunk) to **1200 iterations
+total** — was watched directly in the viser viewer under a forward velocity
+command and confirmed to walk. Gait is visibly ugly ("bunny hops," not a clean
+alternating stride), but it is commanded, directed, repeated forward locomotion,
+not a fall or a stand-still — a categorically different result from every prior
+self-trained checkpoint in this repo.
 
-**Leading hypothesis, not yet confirmed by watching a checkpoint in sim:**
-iteration count. Every self-trained checkpoint here stopped at 290-970 iterations;
-the two known-good ones ran the full 10000 (`unitree_rl_gym`'s own documented
-target — see "Scale matters" below). 290 iterations may only be enough to reach a
-"survive without falling" local optimum (scores fine on `alive`/`orientation`/
-`base_height`) without ever learning confident, commanded directed locomotion —
-but this is inference from indirect evidence (`iterations_done` correlating with
-"works"), not a confirmed root cause. **Do not treat "more iterations" as a proven
-fix until a fork-trained checkpoint has actually been watched walking** (`play.py
---viewer=viser`, per the Troubleshooting entry below) — reaching 5000-10000
-iterations from scratch at `num_envs=4096` costs roughly 7-14 hours of GPU compute
-(see "Scale matters"), a large fraction of Kaggle's free ~30h/week quota, so verify
-the hypothesis on a cheaper/shorter run before committing that budget blind again.
+This confirms the "Scale matters" hypothesis below **only partially**: `num_envs`
+being correct (4096, matching the reference) was necessary, but **10000, or even
+5000, iterations was never actually the floor for *some* gait to emerge** — 1200
+was enough here, i.e. ~2-3 chunks' worth of GPU time (~1h), not 7-14h. Don't
+over-read this either: 1200 iterations produced a working-but-ugly gait, not
+confirmed to match the smoothness/robustness of the fully-converged
+`kaggle_g1`/`kaggle_g1_mid5000` reference — more iterations from here likely still
+improve gait quality, but "walking at all" no longer requires the full budget.
+All intermediate chunks (`walk_gpu_c1`..`walk_gpu_c4`) were deliberately kept
+un-deleted this run for lineage/comparison — see their individual `meta.json`.
+
+**Still unconfirmed / next open questions, not yet answered by this data point:**
+does the gait hold up under push perturbation, direction/speed changes, or a
+longer walk (episode_length was measured only via reward-curve numbers, not
+watched end-to-end for endurance)? Does continuing past 1200 iterations
+*smooth out* the bunny-hop, or is that a local optimum this recipe gets stuck in?
+Treat "it walks" as proven; treat "it walks *well*" as still open.
+
+---
+
+## Historical context: the problem as it stood before the above finding
+
+As of 2026-08-09 (superseded above), **every G1 policy in `./policies/` known to
+genuinely walk when tested (`stable`, `kaggle_g1`, `kaggle_g1_mid5000`) was
+imported from an EXTERNAL, already-fully-converged run of stock `unitree_rl_gym`**
+(10000/10000 iterations, trained outside this repo entirely — see their
+`meta.json`'s `"trained_via": "kaggle-imported"` / `"source"` fields). Nothing
+this repo's own training pipeline had produced — via the control web historically,
+or via `rugiar` — had been confirmed by direct observation to walk, including
+checkpoints whose reward curve looked good (`stable_home_made`: reward 14.5,
+episode_length 578.7 at just 290 iterations). Pushed a command all the way forward
+on one of these and it took zero steps and didn't even look crouched on a
+crouch-targeted one — that's the symptom that surfaced this.
+
+The leading hypothesis at the time (iteration count, needing the full 5000-10000)
+turned out to be **directionally right but overstated** — see the update above:
+`num_envs=4096` correctness plus roughly 1200 iterations (chunked) was enough to
+get a real, if ugly, walking gait, well short of the full 10000-iteration budget
+this section originally assumed was necessary.
 
 **If you're picking this up fresh:** don't trust ANY reward-curve/episode_length
 number from this repo's own training as proof of a working gait, no matter how
 good it looks — watch it. This exact warning already existed in the repo's own
 README ("Reward-curve summaries aren't enough to trust a checkpoint — watch it")
-before tonight, and got ignored anyway; don't repeat that.
+before this was first written, and got ignored anyway; don't repeat that. `walk_gpu_c4`
+being confirmed by direct observation, not by its reward number, is the reason it's
+trusted above and `stable_home_made` (reward 14.5 at 290 iterations) still isn't.
 
 ---
 
@@ -113,6 +140,33 @@ iterations you actually give it:
 | `kaggle_g1_mid5000` (external, same run) | Kaggle GPU | 4096 | 5000 (half) | not recorded | **Yes** |
 | `stable_home_made` (this repo's own pipeline, historical) | Kaggle GPU | 4096 | 290 | reward 14.5, episode_length 578 | **No** — looked good on paper, never confirmed by watching it, later reported not to actually step forward |
 | `scratch_walk_base` (this repo, 2026-08-09) | local CPU | 64 | 3000 (10x more than above!) | reward 4.97, episode_length 285 | **No** |
+| `scratch_walk_robust_3` (this repo, 2026-08-09) | local CPU | 64 | 750+ | — | **No** |
+| `walk_gpu_c1` (this repo, 2026-08-09) | Kaggle GPU | 4096 | 300 | reward 14.58, episode_length 576.8 | **No** |
+| `walk_crouch_gpu` (this repo, 2026-08-09, fine-tune of `walk_gpu_c1`) | Kaggle GPU | 4096 | 610 (cumulative) | reward 22.24, episode_length 853.8 | **No** |
+| `walk_gpu_c2` (this repo, 2026-08-09, chunked continuation of `walk_gpu_c1`) | Kaggle GPU | 4096 | 600 (cumulative) | reward 16.78, episode_length 947.5 | not watched independently — onset window not yet narrowed below here |
+| `walk_gpu_c3` (this repo, 2026-08-09, chunked continuation of `walk_gpu_c2`) | Kaggle GPU | 4096 | 900 (cumulative) | reward 8.21, episode_length 510.1 | **Yes** — confirmed by direct viser observation |
+| `walk_gpu_c4` (this repo, 2026-08-09, chunked continuation of `walk_gpu_c3`) | Kaggle GPU | 4096 | **1200** (cumulative, `c1`→`c4`) | reward 24.45, episode_length 984.8 | **Yes, better gait than `c3`** — confirmed by direct viser observation, still an ugly "bunny hop" but genuinely commanded/directed forward locomotion |
+
+**Walking-onset window, narrowed by direct observation: somewhere between 600
+iterations (`walk_gpu_c2`, unwatched) and 900 (`walk_gpu_c3`, confirmed walking)**
+— NOT between 900 and 1200 as first assumed from `c4`'s own reward curve shape.
+Notably `walk_gpu_c3` has a *lower* reward (8.21) and episode_length (510.1) than
+`walk_gpu_c1` (14.58 / 576.8, confirmed NOT walking) — reinforcing yet again that
+these numbers do not rank-order gait quality or even walking-vs-not. `walk_gpu_c2`
+remains unwatched; narrowing the window further (600 vs 900) would need watching
+that specific checkpoint, still free since it's already on disk.
+
+**`walk_crouch_gpu` vs `walk_gpu_c4` is the cleanest proof in this repo that the
+reward/episode_length numbers cannot be used to infer walking, full stop**:
+`walk_crouch_gpu` (610 iterations, reward 22.24, episode_length 853.8) scores
+*close to* `walk_gpu_c4` (1200 iterations, reward 24.45, episode_length 984.8) —
+same order of magnitude, same general shape — yet one walks and the other
+doesn't. Do not use curve plateauing/climbing-speed within a single chunk to
+infer "training could have stopped earlier and gotten the same result" without
+watching the specific earlier checkpoint — `walk_gpu_c1` (576.8 episode_length,
+comparable to `walk_gpu_c3`'s 510.1) already looked like a reasonable curve and
+does NOT walk, so a plateaued-looking metric is not evidence the underlying gait
+had already emerged by that point either.
 
 Two separate lessons live in this table, don't conflate them:
 
@@ -125,25 +179,30 @@ Two separate lessons live in this table, don't conflate them:
    [leggedrobotics/legged_gym](https://github.com/leggedrobotics/legged_gym) and
    [unitreerobotics/unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym),
    the exact upstream this fork descends from).
-2. **Even at the right `num_envs`, 290 iterations is not enough** — see the
-   "Known open problem" banner at the top of this file. The two rows that are
-   *actually confirmed* to walk both ran the FULL 10000-iteration target
-   (`unitree_rl_gym`'s and this repo's own `G1RoughCfgPPO.runner.max_iterations`).
-   A good-looking reward curve at a few hundred iterations is not evidence of a
-   working gait — it wasn't for `stable_home_made`, don't assume it will be for
-   the next one either.
+2. **At the right `num_envs`, 290-310 iterations is not enough, but ~1200 chunked
+   iterations was** — see the "2026-08-09 update" banner at the top of this file.
+   `walk_gpu_c1`→`walk_gpu_c4` (all `num_envs=4096`, chunked to 1200 total) is the
+   first *self-trained* row confirmed to walk by direct observation — well short
+   of the 10000-iteration full target the two external reference rows used. Don't
+   over-correct the other way either: 290-310 iterations at the *same* `num_envs`
+   (`walk_gpu_c1`, `walk_crouch_gpu`) did NOT walk, so somewhere between ~300 and
+   ~1200 iterations (at 4096 envs) is where commanded locomotion starts to emerge
+   for this recipe — this hasn't been narrowed further. A good-looking reward
+   curve alone is still not evidence either way — `walk_gpu_c4` was trusted
+   because it was watched, not because reward 24.45 looked better than the
+   others'.
 
 **Practical rule: `--num_envs 64` (rugiar's local default) is for smoke-testing the
 CLI/flags/reward wiring cheaply on a laptop CPU, never for a policy you actually
 want to be good.** For anything meant to walk/balance for real, use
-`--backend kaggle` with `--num_envs 4096` and budget iterations toward the
-**thousands (5000+), not hundreds** — see "Running a long training job
-unattended" below for how to fit that through this environment's execution-time
-limits, and its GPU-hour cost, which is real: at this repo's own measured
-~5.1s/iteration at `num_envs=4096`, 5000 iterations is **~7 hours** of GPU
-compute and 10000 is **~14 hours** — a large fraction of Kaggle's free ~30h/week
-quota for one policy. Budget accordingly; don't launch a 10000-iteration run
-without accounting for this.
+`--backend kaggle` with `--num_envs 4096`. Budgeting iterations: ~300 is
+confirmed NOT enough, ~1200 (chunked) is confirmed enough for *some* gait to
+emerge (ugly, per `walk_gpu_c4`) — treat 1200-2000 as a realistic first checkpoint
+to watch before deciding whether to push toward the full 5000-10000 for gait
+*quality*, not "walks at all." Iteration cost is real regardless of the target:
+at this repo's own measured ~5.1s/iteration at `num_envs=4096`, 1200 iterations
+is ~1-1.5 hours, 5000 is **~7 hours**, and 10000 is **~14 hours** of GPU compute —
+a meaningful fraction of Kaggle's free ~30h/week quota. Budget accordingly.
 
 ## Configuring the display order (for a downstream control layer)
 
@@ -494,6 +553,31 @@ rugiar train --task g1 --name retrain --from_policy retrain \
   something more iterations at the same tiny scale will fix. Move to
   `--backend kaggle --num_envs 4096` instead of throwing more low-`num_envs`
   iterations at it.
+
+## Measuring actual velocity, not just the tracking-reward proxy
+
+`Mean episode rew_tracking_lin_vel` (and the other `rew_*` lines) measure an
+exponential-similarity reward term — how close actual velocity got to the
+commanded one — not the raw actual velocity. Two checkpoints with near-identical
+`rew_tracking_lin_vel` can have completely different real gaits (see the
+`walk_gpu_c1` vs `walk_gpu_c3` case in "Scale matters" above: `c3` walks with a
+*lower* score than `c1`, which doesn't walk at all).
+
+As of 2026-08-09, `legged_gym/envs/base/legged_robot.py`'s `compute_reward()` /
+`_prepare_reward_function()` also accumulate a **diagnostic-only** term,
+`actual_lin_vel_x` — the real time-averaged forward velocity in m/s
+(`self.simulator.base_lin_vel[:, 0]`, uniform across all three simulator
+backends), reusing the same `episode_sums`/`extras["episode"]` plumbing as every
+other reward term (hence it shows up as `Mean episode rew_actual_lin_vel_x` in
+the log and in a checkpoint's `meta.json` metrics series / the control web's
+chart, automatically, no parser changes needed) — but it is **never added to
+`rew_buf`**, so it has zero effect on training, purely observational.
+
+This is still not a substitute for watching a checkpoint directly — a nonzero
+average forward velocity could come from a fall-and-slide as easily as a real
+gait — but it's a much stronger signal than `rew_tracking_lin_vel` alone, and
+worth checking before spending a `play.py`/viser session on a checkpoint that
+never moved forward at all.
 
 ## Sources
 

@@ -324,6 +324,10 @@ class LeggedRobot(BaseTask):
             ) * self.reward_scales["termination"]
             self.rew_buf += rew
             self.episode_sums["termination"] += rew
+        # diagnostic-only: actual forward velocity, not a reward term (never added to
+        # rew_buf) — dt-scaled to match how reward terms accumulate, so the reset-time
+        # division by max_episode_length_s yields a true time-average in m/s
+        self.episode_sums["actual_lin_vel_x"] += self.simulator.base_lin_vel[:, 0] * self.dt
 
     def compute_observations(self) -> None:
         """Compute observations for all environments.
@@ -660,6 +664,11 @@ class LeggedRobot(BaseTask):
         # reward episode sums
         self.episode_sums = {name: torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
                              for name in self.reward_scales.keys()}
+        # diagnostic-only sums: not reward terms, never scaled into rew_buf, but reuse the
+        # same episode_sums/extras plumbing (and its "rew_" key prefix) to get free logging
+        # in the training printout, meta.json metrics series, and the control web's charts —
+        # see "Measuring actual velocity" in the rugiar skill for why this exists.
+        self.episode_sums["actual_lin_vel_x"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
 
     def _parse_cfg(self, cfg: LeggedRobotCfg) -> None:
         # === SIMULATION TIMING VALIDATION ===
