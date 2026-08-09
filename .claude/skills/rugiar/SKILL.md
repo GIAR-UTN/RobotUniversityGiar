@@ -554,6 +554,75 @@ rugiar train --task g1 --name retrain --from_policy retrain \
   `--backend kaggle --num_envs 4096` instead of throwing more low-`num_envs`
   iterations at it.
 
+## What to actually expect as iteration count grows (don't re-derive this each time)
+
+This section exists so nobody has to re-investigate community references from
+scratch every time a `g1` run looks rough — confirmed 2026-08-09 by comparing
+this repo's `g1_config.py` directly against `unitreerobotics/unitree_rl_gym`'s
+and researching community reports:
+
+- **~300 iterations (`num_envs=4096`): no directed locomotion at all is normal**
+  — confirmed here (`walk_gpu_c1`, `walk_crouch_gpu`). Don't read anything into
+  a checkpoint this young not walking.
+- **~600-900 iterations: walking can start to emerge**, per the confirmed window
+  in "Scale matters" above (`walk_gpu_c2` unwatched, `walk_gpu_c3` at 900
+  confirmed walking).
+- **~900-1500ish iterations: an ugly, "bunny hop"-style gait (repeated hops
+  instead of an alternating stride) is an EXPECTED intermediate stage, not a
+  sign of a broken config or bad reward shaping.** This is a documented pattern
+  in bipedal-locomotion RL literature — a temporary imbalance between
+  tracking reward and air-time/efficiency terms that a well-designed reward
+  (this repo's scales already match the `unitree_rl_gym` reference) typically
+  resolves with more training, not a redesign.
+- **Clean, non-hopping gait: budget toward the full reference target.**
+  `unitree_rl_gym` itself targets 10000 iterations for this exact task; a
+  comparable IsaacLab G1 project (different, larger MLP+curriculum setup) used
+  16000 starting from an already-functional flat-ground gait. Nobody in the
+  community reports a clean gait this early — don't treat "still ugly at
+  1200-2000 iterations" as evidence something needs fixing before continuing
+  the same recipe further via `--from_policy` chunks.
+
+**On `entropy_coef` specifically: this repo's own `g1_config.py` and
+`legged_robot_config.py` already default to `entropy_coef=0.01`, matching the
+`unitree_rl_gym` reference exactly** — passing nothing (or explicitly `0.01`)
+keeps you at the community-standard exploration level. Only `walk_gpu_c1` and
+`walk_crouch_gpu` used a lower value (0.001-0.002, an experiment from before
+this was confirmed) — every chunk since (`walk_gpu_c2` onward) already ran at
+the default 0.01. If a gait plateaus in gait *quality* (not just reward number,
+which plateaus for unrelated reasons per "Measuring actual velocity" below)
+across several chunks, going *above* 0.01 (e.g. 0.02) is a reasonable next
+experiment — but do it as a separate named branch off the last good checkpoint
+(`--name X_hient --from_policy X`), not by overwriting it, since higher entropy
+can just as easily make a gait more erratic ("epilepsia," per a real attempt in
+this repo) as it can help it escape a local optimum — watch it before trusting
+either outcome, same rule as always.
+
+### ✅ 2026-08-09 confirmed: bumping `entropy_coef` above the reference default gave a big gait improvement
+
+`walk_gpu_c4_hient` (`--from_policy walk_gpu_c4 --entropy_coef 0.02`, one 290-iteration
+chunk, `num_envs=4096`) was watched directly and confirmed a **large, qualitative
+improvement** over `walk_gpu_c4` itself — described by direct observation as "casi
+puede correr" (almost able to run), a clear step up from the "bunny hop," though
+still visibly asymmetric left/right. Reward (19.59) and episode_length (973.02)
+were near-identical to `c4`'s (24.45 / 984.8) — **once again the numbers didn't
+predict this jump, only watching it did.**
+
+This confirms `entropy_coef` above the reference 0.01 is a real, effective lever
+for this specific plateau (not just a theoretical "might help, might not" from the
+literature search) — worth treating as the first thing to try when a checkpoint's
+gait quality has stopped visibly improving across chunks, ahead of any reward
+redesign. Don't stop at 0.02 either — it's one point on a curve, not a proven
+ceiling; try progressively higher values from the same last-good checkpoint (each
+as its own separate branch, e.g. `_hient`, `_hient2`, `_hient_x2`) to map out where
+the improvement plateaus or turns into instability ("epilepsia" — erratic,
+non-productive high-frequency motion, the failure mode on the other side of this
+lever). A prior attempt at high entropy on this repo's local Mac/CPU/`num_envs=64`
+setup produced exactly that kind of chaotic behavior — but that attempt confounded
+two variables at once (high entropy AND too-few envs/iterations per "Scale
+matters" above), so it was never a clean test of entropy alone; the correct way to
+test entropy is at the reference `num_envs=4096`, isolating it as the only changed
+variable from a known-good base, exactly as done here.
+
 ## Measuring actual velocity, not just the tracking-reward proxy
 
 `Mean episode rew_tracking_lin_vel` (and the other `rew_*` lines) measure an
