@@ -59,10 +59,22 @@ METHODS = {
 
 
 class ControlServer:
-    def __init__(self, service, host: str = "0.0.0.0", port: int = 9013):
+    def __init__(self, service, host: str = "0.0.0.0", port: int = 9013,
+                 token: Optional[str] = None):
         self.service = service
         self.host = host
         self.port = port
+        # Shared-secret gate on /ws — see _ws_endpoint(). None means "no
+        # auth" (fine on a machine only ever reachable from localhost, e.g.
+        # the sim demo); set this whenever host is non-localhost, which is
+        # exactly the case swap_experiment.py's --real mode targets, so any
+        # client on the robot's network — the web UI included — needs the
+        # token to open a connection at all. There is deliberately no
+        # per-method exception for estop here: the real emergency stop is
+        # the robot's own physical remote/kill switch (RealAdapter.estop()
+        # is reachable over DDS regardless of this server), not this RPC —
+        # see docs/index.html §13.
+        self.token = token
 
         # Sim-thread -> socket-thread handoff of the latest status snapshot.
         self._status_lock = threading.Lock()
@@ -73,7 +85,7 @@ class ControlServer:
 
         # Sim-thread -> socket-thread handoff of the latest camera frame,
         # same pattern as _status_lock/_latest_status above. Holds a single
-        # already-JPEG-encoded frame (see publish_camera_frame()) -- no
+        # already-JPEG-encoded frame (see publish_camera_frame()) — no
         # queue/backlog, a stale in-flight frame is simply overwritten,
         # since a live preview should always show the newest frame, not
         # catch up through old ones.
@@ -90,7 +102,7 @@ class ControlServer:
         # is called) rather than standing up a second server/port.
         self.app = FastAPI()
         self.app.add_api_websocket_route("/ws", self._ws_endpoint)
-        # No token gate here -- same precedent as /config and the web/docs
+        # No token gate here — same precedent as /config and the web/docs
         # StaticFiles mounts swap_experiment.py adds below: --token protects
         # the command surface reachable over /ws, not general content this
         # server serves. See publish_camera_frame()/get_camera_frame() (
@@ -110,10 +122,10 @@ class ControlServer:
             response.headers["Cache-Control"] = "no-store"
             return response
 
-        if host not in ("localhost", "127.0.0.1", "::1"):
+        if host not in ("localhost", "127.0.0.1", "::1") and token is None:
             print(f"[ControlServer] WARNING: binding to non-localhost host "
-                  f"'{host}' with no auth — commands (incl. request_switch, "
-                  f"estop) will be reachable from the network.")
+                  f"'{host}' with no token — commands (incl. request_switch, "
+                  f"estop) will be reachable, unauthenticated, from the network.")
 
     # ---- called from the sim loop thread, once per tick ----
 
@@ -123,11 +135,11 @@ class ControlServer:
 
     def publish_camera_frame(self, jpeg_bytes: bytes) -> None:
         """Sim-thread -> socket-thread handoff of one already-JPEG-encoded
-        camera frame -- see swap_experiment.py's control loop, which calls
+        camera frame — see swap_experiment.py's control loop, which calls
         this every N ticks (RgbCameraCfg.decimation) with whatever
         adapter.get_camera_frame() returned, re-encoded to JPEG. Picked up
         by _mjpeg_stream() below and pushed to every client on /camera.mjpg.
-        A no-op call with nothing new to show is fine -- callers just don't
+        A no-op call with nothing new to show is fine — callers just don't
         call this on ticks with no frame (get_camera_frame() returned None)."""
         with self._camera_lock:
             self._latest_frame_jpeg = jpeg_bytes
@@ -171,6 +183,14 @@ class ControlServer:
     # ---- socket-side (runs on the server's own thread/event loop) ----
 
     async def _ws_endpoint(self, websocket: WebSocket) -> None:
+        if self.token is not None and websocket.query_params.get("token") != self.token:
+            # Reject before accept() — the client never gets a usable
+            # connection, just an HTTP 403 at the handshake. web/app.js
+            # forwards the page's own ?token=... query param here (see
+            # index.html), and any other client (a home-made joystick
+            # bridge, say) must do the same — see docs/index.html §13.
+            await websocket.close(code=4401)
+            return
         await websocket.accept()
         self._clients.add(websocket)
         try:
@@ -200,16 +220,16 @@ class ControlServer:
         )
 
     async def _mjpeg_stream(self):
-        """One multipart/x-mixed-replace stream per connected client --
+        """One multipart/x-mixed-replace stream per connected client —
         plain <img src="/camera.mjpg"> in the web UI is all a client needs;
         no JS, no WebSocket. Polls the shared _latest_frame_jpeg slot (see
-        publish_camera_frame()) rather than pushing on every sim tick -- the
+        publish_camera_frame()) rather than pushing on every sim tick — the
         sim's control rate (~50-200Hz) is far higher than any human needs
         to watch a preview at, and this decouples the stream's own pace
         from however often the sim thread actually captures a frame."""
         last_sent = None
         while True:
-            await asyncio.sleep(0.08)  # ~12Hz -- plenty for a live preview
+            await asyncio.sleep(0.08)  # ~12Hz — plenty for a live preview
             with self._camera_lock:
                 frame = self._latest_frame_jpeg
             if frame is None or frame is last_sent:

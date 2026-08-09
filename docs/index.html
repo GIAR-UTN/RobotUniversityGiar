@@ -403,6 +403,7 @@
       <div class="grp">This fork</div>
       <li><a href="#sims">Simulators: what runs where, and why</a></li>
       <li><a href="#control-arch">Switching policies live</a></li>
+      <li><a href="#control-protocol">Talking to the robot: the control protocol</a></li>
       <li><a href="#team">Working as a team</a></li>
       <li><a href="#training">Training a stable policy</a></li>
       <div class="grp">Reference</div>
@@ -1034,11 +1035,84 @@ def step(self, obs):
           <code>ros2_control</code>'s <code>controller_manager</code> solves almost exactly this problem, and <a href="https://github.com/legubiao/quadruped_ros2_control" target="_blank" rel="noopener">legubiao/quadruped_ros2_control</a> is real prior art doing it for legged robots specifically. For a pure Python/PyTorch/Genesis project built for quick local iteration on a Mac, adopting all of ROS 2 today would add a lot of toolchain cost for the benefit — so this fork borrows the <em>pattern</em> (named, swappable, lifecycle-staged controllers behind an abstract hardware interface) without the dependency, and deliberately names its lifecycle states (<code>INACTIVE</code>/<code>READY</code>/<code>ACTIVE</code>/<code>FAULT</code>) to match <code>ros2_control</code>'s own vocabulary, in case a real bridge is worth building later.
         </div>
 
-        <p>What's genuinely unfinished, honestly stated: <code>deploy_real/real_adapter.py</code> (the real-hardware version of this) is ported carefully against <code>unitree_rl_gym</code>'s own deploy code but is <strong>untested</strong> — this fork was built with no physical G1 and no <code>unitree_sdk2py</code> installed. The physical button-gated safety sequence and the autonomous <code>Selector</code> (today just a tilt-threshold rule; a learned gating network is the active research direction — see RPG and SkillBlender in the README) are both left as the clearly-marked next steps.</p>
+        <p>What's genuinely unfinished, honestly stated: <code>deploy_real/real_adapter.py</code> (the real-hardware version of this) is ported carefully against <code>unitree_rl_gym</code>'s own deploy code — including the physical button-gated safety sequence from the plate above and the observation layout matching <code>G1Robot.compute_observations()</code> exactly — but is still <strong>untested</strong> on an actual robot: this fork was built with no physical G1 and no <code>unitree_sdk2py</code> installed. The autonomous <code>Selector</code> (today just a tilt-threshold rule; a learned gating network is the active research direction — see RPG and SkillBlender in the README) is left as a clearly-marked next step.</p>
+      </section>
+
+      <section id="control-protocol">
+        <div class="num">§13 — this fork</div>
+        <h2>Talking to the robot: the control protocol</h2>
+        <p>Every controller in §12's diagram — the web UI, an autonomous <code>Selector</code>, and (once <code>--real</code> is passed) anyone driving an actual G1 — goes through the exact same door: <code>ControlServer</code> (<code>legged_gym/control/transport.py</code>), a plain WebSocket JSON-RPC-ish endpoint at <code>/ws</code>. There's nothing web-UI-specific about it. Anyone who can open a WebSocket and send JSON — a phone app, a Python script reading a USB gamepad, a microcontroller with WiFi — can drive the robot with it, without touching a line of this repo's code.</p>
+
+        <div class="aside">
+          <div class="label">Sim today, real robot tomorrow — same protocol either way</div>
+          <code>swap_experiment.py --control_port 9013</code> serves this exact protocol against the Genesis simulator. Add <code>--real --net_interface eth0 --robot_config deploy_real/configs/g1.yaml</code> (once run on the robot's onboard computer, with <code>unitree_sdk2py</code> installed) and the SAME server, SAME <code>/ws</code> endpoint, SAME message shapes now drive the physical G1 over DDS instead — see §9's <code>RealAdapter</code>. Nothing on the controller side has to change.
+        </div>
+
+        <h3>Connecting</h3>
+        <p><code>ws://&lt;host&gt;:&lt;control_port&gt;/ws</code>. If the server was started with <code>--token &lt;secret&gt;</code> (strongly recommended for <code>--real</code> — anything on the robot's WiFi/LAN can otherwise reach it), append <code>?token=&lt;secret&gt;</code> to the URL or the connection is rejected before it opens. The web UI does exactly this by forwarding its own page's <code>?token=...</code> query param — share <code>http://&lt;host&gt;:&lt;control_port&gt;/?token=&lt;secret&gt;</code> with anyone who needs either the UI or to build their own client against the same robot.</p>
+
+        <h3>Sending a command</h3>
+        <p>Every outgoing message is a JSON object <code>{"method": "...", "params": {...}, "id": N}</code>, calling one method on <code>ControlService</code> by name. The reply comes back as <code>{"id": N, "result": ...}</code> or <code>{"id": N, "error": "..."}</code>. The method a home-made joystick controller almost always wants:</p>
+
+        <details class="code-box">
+          <summary><span>Drive a walking velocity</span> <span class="file">set_command</span></summary>
+          <pre><code>{"method": "set_command", "params": {"vx": 0.4, "vy": 0.0, "yaw": 0.0}, "id": 1}
+// vx, vy in m/s, yaw in rad/s — clamped server-side to the exact envelope
+// the active policy was trained across (out-of-range values are silently
+// clamped, not rejected). Call this at whatever rate your controller polls
+// (e.g. every gamepad tick) — there's no need to throttle it yourself.</code></pre>
+        </details>
+
+        <p>The rest of the surface — every method <code>ControlServer</code> will dispatch:</p>
+        <table>
+          <thead><tr><th>method</th><th>params</th><th>what it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>status</code></td><td>—</td><td>one-shot snapshot of everything the ~10Hz broadcast (below) already pushes you</td></tr>
+            <tr><td><code>set_command</code></td><td><code>vx, vy, yaw</code></td><td>manual walking velocity — see above</td></tr>
+            <tr><td><code>request_switch</code></td><td><code>name</code></td><td>cross-fade to a different loaded policy (§12)</td></tr>
+            <tr><td><code>pause</code> / <code>resume</code></td><td>—</td><td>hold position / resume the policy loop</td></tr>
+            <tr><td><code>restart</code></td><td>—</td><td>sim: instant reset. Real: NOT instant — re-runs the zero-torque → move-to-default → hold sequence from §9, gated by the physical remote. Grayed out entirely when <code>status().capabilities.restart</code> is <code>false</code>.</td></tr>
+            <tr><td><code>estop</code></td><td>—</td><td>trips <code>SafetyGovernor</code> and calls the adapter's own <code>estop()</code> — a real, immediate zero-torque DDS write on <code>RealAdapter</code>. Always accepted by the token check like any other method here; the true out-of-band safety mechanism on real hardware is the robot's own physical remote/kill switch, not this socket — see §9's "What if it falls?".</td></tr>
+            <tr><td><code>set_random_events</code></td><td><code>push_robots, auto_commands, push_dir</code></td><td>sim-only domain-randomization stressors — no-op/absent on <code>RealAdapter</code></td></tr>
+            <tr><td><code>set_episode_timeout</code></td><td><code>seconds</code></td><td>sim-only timer reset — no-op/absent on <code>RealAdapter</code></td></tr>
+            <tr><td><code>training_catalog</code>, <code>start_training</code>, <code>task_defaults</code>, <code>estimate_training_time</code></td><td>varies</td><td>the "Create Policy" panel's calls — see §15</td></tr>
+            <tr><td><code>delete_policy</code>, <code>rename_policy</code>, <code>policy_info</code>, <code>refresh_local_policies</code></td><td>varies</td><td>managing the switchable policy list</td></tr>
+            <tr><td><code>system_info</code></td><td>—</td><td>host info for the web UI's footer (backend, device, etc.)</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Reading telemetry</h3>
+        <p>You don't have to poll <code>status</code> — once connected, the server pushes <code>{"method": "status", "result": {...}}</code> to every open connection at ~10Hz, unprompted. The shape (trimmed):</p>
+        <details class="code-box">
+          <summary><span>A status push</span> <span class="file">ControlService.status()</span></summary>
+          <pre><code>{
+  "active": "stable", "pending": null, "ramping": false,
+  "paused": false, "safety_tripped": false,
+  "policies": ["stable", "crouch", ...],
+  "backend": "real",                       // "sim" or "real" — see §9
+  "capabilities": {"restart": false},      // what THIS backend can't do
+  "command": {"vx": 0.4, "vy": 0.0, "yaw": 0.0},
+  "telemetry": {
+    "projected_gravity": {"value": [0.02, -0.01, -0.999], "unit": "g",
+                           "source": "sensor", "label": "Orientation ..."},
+    "base_ang_vel": {"value": [...], "unit": "rad/s", "source": "sensor", ...},
+    "base_lin_vel": {"value": null, "source": "sim_ground_truth", ...}
+    // null on RealAdapter — no IMU measures velocity directly, see §9
+  }
+}</code></pre>
+        </details>
+        <p>Every telemetry field is self-describing — <code>source</code> tells you whether it's a real sensor reading (available on real hardware too) or simulator-only ground truth (<code>null</code> on <code>RealAdapter</code>), so a client never has to hardcode which fields are trustworthy off-simulator.</p>
+
+        <h3>Build your own controller</h3>
+        <p><code>examples/joystick_controller.py</code> is a complete, minimal reference client — connects, authenticates with a token, reads a gamepad, and streams <code>set_command</code> at a fixed rate. It's deliberately short and dependency-light (Python's standard <code>websockets</code> or any equivalent library in any language works the same way — the protocol is just JSON text frames, nothing Python-specific).</p>
+        <div class="aside">
+          <div class="label">Safety note for anyone wiring up new hardware</div>
+          A home-made controller only ever reaches <code>set_command</code>'s clamped envelope and the same <code>estop</code>/<code>pause</code> every other client shares — it can't ask the policy to do anything outside what it was trained across, and it can't bypass the physical remote-gated startup sequence in §9. Still, treat a first connection to real hardware the same as a first <code>--headless</code> run: harness-suspended, one person on the physical remote the whole time, nobody trusting a new client's output blind.
+        </div>
       </section>
 
       <section id="team">
-        <div class="num">§13 — this fork</div>
+        <div class="num">§14 — this fork</div>
         <h2>Working as a team</h2>
         <p>This fork is developed by a small team split across Mac, Linux, and Windows, with occasional access to a much more powerful (sometimes remote) GPU machine for training. None of what follows is a hard rule — Genesis itself runs identically (just slower) on a GPU-less laptop as it does on a workstation, and Docker erases most of the remaining OS differences — but it's worth being explicit about where each platform is genuinely more comfortable, so people default to the path of least friction instead of fighting their own machine.</p>
 
@@ -1073,7 +1147,7 @@ def step(self, obs):
       </section>
 
       <section id="training">
-        <div class="num">§14 — this fork</div>
+        <div class="num">§15 — this fork</div>
         <h2>Training a stable policy</h2>
         <p class="lead-q">The reward curve climbed, crashed, climbed again, crashed again. Is the entropy too high?</p>
         <p>Usually no — and this section exists because that question comes up naturally the first time anyone stares at a real training curve. Two <em>completely different</em> problems both look like "the curve is going up and down," and telling them apart is the single most useful diagnostic skill for anyone using the Create Policy panel (<a href="#control-arch">§12</a>). Everything below is grounded in two things: this fork's own training history (real logs, real numbers, no hypotheticals) and what the wider legged-locomotion RL community — ETH Zürich's <code>legged_gym</code>, Unitree's own <code>unitree_rl_gym</code>, and a few research papers — has already learned the hard way, cited as we go.</p>
@@ -1215,7 +1289,7 @@ python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2c \
       </section>
 
       <section id="glossary">
-        <div class="num">§15 — reference</div>
+        <div class="num">§16 — reference</div>
         <h2>Glossary</h2>
         <div class="tabwrap">
           <table>
@@ -1260,7 +1334,7 @@ python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2c \
       </section>
 
       <section id="credits" style="border-bottom:none;">
-        <div class="num">§16 — reference</div>
+        <div class="num">§17 — reference</div>
         <h2>Credits &amp; license</h2>
         <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
       </section>
