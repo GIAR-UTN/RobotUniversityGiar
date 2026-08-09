@@ -25,6 +25,9 @@ Usage:
 
     rugiar train --list_tasks
     rugiar train --task g1 --list_reward_scales
+
+    rugiar order --show
+    rugiar order --set stable_home_made_4 crouch_walk
 """
 from __future__ import annotations
 
@@ -152,6 +155,35 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     return p
 
 
+def _build_order_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "order",
+        formatter_class=_HelpFormatter,
+        help="View or set the display order of local policies",
+        description=(
+            "Configure the order local policies are listed in — not what's used to TRAIN or "
+            "fine-tune a policy, but the catalog order a separate downstream layer (e.g. a "
+            "control app that only selects among already-trained policies) can read via "
+            "TrainingManager.get_policy_order() to decide what to offer first."
+        ),
+        epilog=(
+            "examples:\n"
+            "  # see the current order (unpinned policies float to the end, alphabetically)\n"
+            "  rugiar order --show\n\n"
+            "  # pin these two first; every other local policy still appears, after them\n"
+            "  rugiar order --set stable_home_made_4 crouch_walk\n"
+        ),
+    )
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument("--show", action="store_true",
+                        help="print the current policy order, then exit")
+    group.add_argument("--set", type=str, nargs="+", default=None, metavar="NAME",
+                        help="set the display order to this sequence of local policy names "
+                             "(see --list_policies under 'train' for valid names). Names left "
+                             "out keep appearing, alphabetically, after the ones given here.")
+    return p
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -160,7 +192,8 @@ def build_parser():
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     train_parser = _build_train_parser(subparsers)
-    return parser, {"train": train_parser}
+    order_parser = _build_order_parser(subparsers)
+    return parser, {"train": train_parser, "order": order_parser}
 
 
 def _print_lines(title: str, rows) -> None:
@@ -185,11 +218,33 @@ def _list_reward_scales(mgr, task: str) -> None:
 
 def _list_policies(mgr) -> None:
     discovered = mgr.discover_local_policies()
+    order = mgr.get_policy_order()
     rows = [
-        f"{name}  (task={info['task']}, fine-tunable={'yes' if info['train_checkpoint'] else 'no'})"
-        for name, info in sorted(discovered.items())
+        f"{name}  (task={discovered[name]['task']}, "
+        f"fine-tunable={'yes' if discovered[name]['train_checkpoint'] else 'no'})"
+        for name in order
     ]
-    _print_lines("Local policies (./policies/<name>/):", rows or ["(none found)"])
+    _print_lines("Local policies (./policies/<name>/), in configured order:", rows or ["(none found)"])
+
+
+def run_order(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    import legged_gym.envs  # noqa: F401 — see run_train()'s identical import for why
+    from legged_gym.control.training import TrainingManager
+
+    mgr = TrainingManager()
+    for name, info in mgr.discover_local_policies().items():
+        mgr.register_source(name, **info)
+
+    if args.set is not None:
+        try:
+            mgr.set_policy_order(args.set)
+        except ValueError as e:
+            parser.error(str(e))
+            return 2  # unreachable, parser.error() exits — keeps type-checkers happy
+        print(f"[rugiar] order set — pinned {len(args.set)} name(s), others float to the end alphabetically")
+
+    _print_lines("Policy order (./policies/.policy_order.json):", mgr.get_policy_order() or ["(none found)"])
+    return 0
 
 
 def run_train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -297,6 +352,8 @@ def main(argv: Optional[list] = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "train":
         sys.exit(run_train(args, subparsers["train"]))
+    elif args.command == "order":
+        sys.exit(run_order(args, subparsers["order"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)

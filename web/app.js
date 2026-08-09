@@ -1718,6 +1718,31 @@ function restoreTrainFormConfig() {
   });
 }
 
+// Rescans ./policies/ for anything trained by a separate process (the
+// rugiar CLI, most commonly) since this server started — see
+// ControlService.refresh_local_policies()'s docstring for why this can't
+// just happen automatically every tick. The Policies list itself repaints
+// from the next status push (supervisor.policies already has the new
+// name(s) once the call resolves); the Clone-from dropdown is a separate
+// fetch, same as after delete_policy, so it needs its own refresh too.
+const refreshPoliciesBtn = $('#refresh-policies-btn');
+refreshPoliciesBtn.addEventListener('click', () => {
+  refreshPoliciesBtn.disabled = true;
+  call('refresh_local_policies').then((added) => {
+    refreshPoliciesBtn.disabled = false;
+    refreshTrainingCatalog();
+    if (added.length) {
+      footer.textContent = `found ${added.length} new polic${added.length === 1 ? 'y' : 'ies'}: ${added.join(', ')}`;
+    } else {
+      footer.textContent = 'no new policies found';
+    }
+    setTimeout(() => { footer.textContent = 'connected'; }, 3000);
+  }).catch((err) => {
+    refreshPoliciesBtn.disabled = false;
+    window.alert(`Refresh failed: ${err.message}`);
+  });
+});
+
 function refreshTrainingCatalog() {
   call('training_catalog').then((catalog) => {
     trainingCatalog = catalog;

@@ -15,7 +15,7 @@ just be a second, unsynchronized copy of what the unified web already does.
 Usage:
     python legged_gym/scripts/swap_experiment.py \
         --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
-        --policy crouch:logs/g1_crouch/<run>/exported/policy_lstm_1.pt \
+        --policy crouch:logs/g1/<run>/exported/policy_lstm_1.pt \
         --active stable
 """
 import argparse
@@ -147,9 +147,23 @@ def main():
         simulator = discovered.get(name, {}).get("simulator", "genesis")
         training.register_source(name, task=args.task, checkpoint=path,
                                   train_checkpoint=train_checkpoint, simulator=simulator)
-    service = ControlService(adapter, supervisor, safety, selector=None, training=training)
 
     hidden_size_for_new_policies = hidden_size  # matches G1RoughCfgPPO.policy.rnn_hidden_size (see above)
+
+    def _load_policy_for_refresh(name, path, task):
+        # Rejects a task mismatch itself (see ControlService.refresh_local_policies()'s
+        # docstring) — same filter startup already applies below at line ~127,
+        # just re-expressed here since a rescan can surface a policy for a
+        # DIFFERENT task than this process is running (e.g. a go2 policy
+        # sitting in the same ./policies/ next to this g1 server).
+        if task != args.task:
+            raise ValueError(f"'{name}' is task '{task}', this server is running '{args.task}'")
+        return load_policy(name, path, num_obs=env_cfg.env.num_observations,
+                            hidden_size=hidden_size_for_new_policies, num_envs=env.num_envs,
+                            description="Rediscovered from disk (refresh — trained outside this server)")
+
+    service = ControlService(adapter, supervisor, safety, selector=None, training=training,
+                              policy_loader=_load_policy_for_refresh)
 
     def drain_finished_training():
         """Call once per sim tick. Any job TrainingManager reports done gets

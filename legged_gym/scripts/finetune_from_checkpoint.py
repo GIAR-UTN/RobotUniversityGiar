@@ -2,8 +2,8 @@
 Fine-tune a registered task FROM an already-trained checkpoint, instead of from random init.
 Unlike plain train.py --resume (which only resumes within the SAME task's log root and
 config), this loads a checkpoint from any path — same task (continuing under a revised
-reward, e.g. g1_crouch v1 -> v2) or a different one (e.g. a g1 checkpoint used to seed a
-g1_crouch run) — by calling ppo_runner.load() directly with an explicit path.
+reward) or a different one (e.g. a go2 checkpoint used to seed a related go2 variant task)
+— by calling ppo_runner.load() directly with an explicit path.
 
 The optimizer state is intentionally NOT loaded (load_optimizer=False): the source
 checkpoint's Adam momentum was accumulated under a different reward function (or a
@@ -16,8 +16,8 @@ reward-scale overrides instead (see HANDOFF_task_reward_harmony.md). This script
 resuming training under a task that's structurally different from the source checkpoint's.
 
 Usage:
-    python legged_gym/scripts/finetune_from_checkpoint.py --task g1_crouch \
-        --from_checkpoint logs/g1_crouch/<run>/model_1000.pt \
+    python legged_gym/scripts/finetune_from_checkpoint.py --task g1 \
+        --from_checkpoint logs/g1/<run>/model_1000.pt \
         --max_iterations 1500 --headless --cpu --num_envs=64
 """
 import argparse
@@ -31,7 +31,7 @@ from legged_gym.utils import task_registry
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune a registered task from an existing checkpoint")
     parser.add_argument('--task', type=str, required=True,
-                         help="registered task to train under (e.g. g1, g1_crouch)")
+                         help="registered task to train under (e.g. g1, go2)")
     parser.add_argument('--from_checkpoint', type=str, required=True,
                          help="path to the checkpoint to start from")
     parser.add_argument('--max_iterations', type=int, default=1000,

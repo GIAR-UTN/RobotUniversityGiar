@@ -17,7 +17,7 @@ write-up in the README.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 
@@ -36,12 +36,24 @@ class ControlService:
         safety: SafetyGovernor,
         selector: Optional[Selector] = None,
         training: Optional[TrainingManager] = None,
+        policy_loader: Optional[Callable[[str, str, str], "Policy"]] = None,  # noqa: F821 - see refresh_local_policies()
     ):
         self.adapter = adapter
         self.supervisor = supervisor
         self.safety = safety
         self.selector = selector
         self.training = training
+        # Turns a (name, checkpoint_path, task) triple into a loaded, in-process
+        # Policy compatible with THIS running sim's obs/action space — see
+        # refresh_local_policies() below. Lives outside ControlService/
+        # TrainingManager on purpose: building a runtime Policy needs the
+        # current env's obs size / hidden size / num_envs, which only
+        # swap_experiment.py's main() has in scope (same reason
+        # drain_finished_training() there calls load_policy() directly
+        # instead of this class doing it). None on a caller that never
+        # wires one up (e.g. a future real-robot deployment with no local
+        # training/refresh story) — refresh_local_policies() then no-ops.
+        self.policy_loader = policy_loader
         self.paused = False
         # Restart only *records* intent, same shape as PolicySupervisor's
         # request_switch — the sim loop owns `obs` (the raw observation
@@ -69,6 +81,43 @@ class ControlService:
         self.supervisor.remove_policy(name)
         if self.training is not None:
             self.training.forget_source(name)
+
+    def refresh_local_policies(self) -> list:
+        """Rescans ./policies/<name>/ for folders not yet loaded into THIS
+        running process and loads/registers each one — the counterpart to
+        drain_finished_training() in swap_experiment.py, which only catches
+        completions of jobs THIS process itself started. A policy trained
+        by a separate process (e.g. the `rugiar` CLI, running independently
+        of any server) writes straight to disk and is otherwise invisible
+        here until the server restarts — see rugiar's SKILL.md
+        "Picking up policies trained outside the web" for why. Returns the
+        list of names actually added (empty if nothing new was found, or if
+        no policy_loader/training was wired up at construction). Best-effort
+        per policy — one bad/incompatible checkpoint (e.g. a different
+        task's obs shape) is skipped rather than blocking the rest."""
+        if self.training is None or self.policy_loader is None:
+            return []
+        known = set(self.supervisor.policies.keys())
+        discovered = self.training.discover_local_policies(exclude=known)
+        added = []
+        for name, info in discovered.items():
+            try:
+                # policy_loader is responsible for rejecting a task mismatch
+                # (a different obs/action space) itself — see
+                # swap_experiment.py's wiring; ObsSpec enforcement elsewhere
+                # is only a warning, not a hard stop, so this can't rely on
+                # load_policy() to catch it after the fact.
+                new_policy = self.policy_loader(name, info["checkpoint"], info["task"])
+            except Exception:  # noqa: BLE001 - one bad/mismatched checkpoint must not block the rest
+                continue
+            self.supervisor.add_policy(new_policy)
+            self.training.register_source(
+                name, task=info["task"], checkpoint=info["checkpoint"],
+                train_checkpoint=info.get("train_checkpoint"),
+                simulator=info.get("simulator", "genesis"),
+            )
+            added.append(name)
+        return added
 
     _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 

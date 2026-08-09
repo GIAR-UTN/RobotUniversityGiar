@@ -42,6 +42,13 @@ HISTORY_PATH = JOBS_DIR / "history.json"
 # finalize_policy()'s docstring for why this replaced leaving the exported
 # checkpoint sitting wherever rsl_rl's log_dir happened to be.
 POLICIES_DIR = REPO_ROOT / "policies"
+# Display order for the local policy catalog — deliberately NOT inside any
+# policies/<name>/ folder (those are self-contained and get renamed/deleted
+# as a unit) or inside meta.json (order is a property of the CATALOG, not of
+# any one policy). A separate control-layer app is expected to read this via
+# TrainingManager.get_policy_order() to decide what it offers first, without
+# having any opinion of its own about training/naming.
+POLICY_ORDER_PATH = POLICIES_DIR / ".policy_order.json"
 
 
 def _cpu_brand() -> str:
@@ -446,13 +453,7 @@ class TrainingManager:
     # HANDOFF_task_reward_harmony.md §3/§5 step 2). Add an entry here whenever
     # a reward term's purpose isn't obvious from `TRACKING_LIN_VEL`-style
     # all-caps rendering alone — most don't need one.
-    REWARD_SCALE_NOTES = {
-        "crouch_depth": "Open-ended crouch reward (see G1CrouchCfg / _reward_crouch_depth in "
-                         "legged_robot.py) — no fixed setpoint, the robot settles as low as it can "
-                         "sustain while staying stable. Higher weight pushes lower. Its zero-point "
-                         "(crouch_depth_reference, not shown here) is a numerical constant, not a "
-                         "tunable target.",
-    }
+    REWARD_SCALE_NOTES = {}
 
     # One-line reason each registered task exists as a TASK rather than a UI override on
     # its robot's base task — i.e. what's structural about it (new reward term, obs/action
@@ -461,8 +462,6 @@ class TrainingManager:
     # HANDOFF_task_reward_harmony.md §4a. A task's own base (g1, go2, k1, tron1pf, tron1sf)
     # doesn't need an entry — it's the default, nothing to explain relative to itself.
     TASK_NOTES = {
-        "g1_crouch": "Adds an open-ended crouch_depth reward term (no fixed height setpoint) instead of "
-                     "g1's fixed base_height target — a new reward TERM, not just a different weight.",
         "k1_deepmimic": "Motion-imitation architecture: frame-stacked observations, 22 actions, its own PPO setup.",
         "k1_motion_vis": "Visualization only, not for training — a separate env class with no training loop.",
         "k1_amp": "Adversarial Motion Prior: adds a discriminator/replay-buffer training pipeline, not just reward weights.",
@@ -671,6 +670,47 @@ class TrainingManager:
                 "simulator": meta.get("simulator", "genesis"),
             }
         return found
+
+    def get_policy_order(self) -> List[str]:
+        """The configured display order for local policies — what a
+        downstream control-layer app (a separate process/UI that only
+        SELECTS among policies this tool creates, never trains them) should
+        read to decide what to offer first, instead of inventing its own
+        opinion about naming or recency. Any local policy not yet mentioned
+        in .policy_order.json floats to the end, alphabetically, so a freshly
+        trained policy always shows up somewhere without needing an explicit
+        set_policy_order() call first. Names in the file that no longer
+        exist on disk are silently dropped. Never raises — a missing or
+        corrupt order file just means "no preference yet" (empty list)."""
+        known = sorted(self.discover_local_policies().keys())
+        try:
+            with open(POLICY_ORDER_PATH) as f:
+                configured = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            configured = []
+        ordered = [name for name in configured if name in known]
+        ordered += [name for name in known if name not in ordered]
+        return ordered
+
+    def set_policy_order(self, names: Sequence[str]) -> None:
+        """Persists the display order for local policies to
+        POLICY_ORDER_PATH, read back by get_policy_order(). `names` need not
+        list every local policy — anything omitted keeps floating to the end
+        alphabetically via get_policy_order(), so this only needs to name
+        the ones you actually want to pin/reorder. Every given name MUST
+        already be a local policy (checked against discover_local_policies())
+        — this catches a typo'd name up front instead of it silently having
+        no effect."""
+        known = set(self.discover_local_policies().keys())
+        unknown = [name for name in names if name not in known]
+        if unknown:
+            raise ValueError(
+                f"unknown local polic{'y' if len(unknown) == 1 else 'ies'}: "
+                f"{', '.join(unknown)} — see discover_local_policies()"
+            )
+        POLICIES_DIR.mkdir(parents=True, exist_ok=True)
+        with open(POLICY_ORDER_PATH, "w") as f:
+            json.dump(list(names), f, indent=2)
 
     def policy_info(self, name: str) -> dict:
         """Everything the info popup shows for one policy — a light read of
