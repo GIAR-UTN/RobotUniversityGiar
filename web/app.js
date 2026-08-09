@@ -121,7 +121,13 @@ function call(method, params = {}) {
 }
 
 function connect() {
-  const url = `ws://${location.host}/ws`;
+  // When --token is set on the server (see swap_experiment.py --real / -h),
+  // it's never served up automatically — the operator shares a link like
+  // http://<host>:<port>/?token=... out of band (same mechanism a
+  // home-made controller uses, see docs/index.html §13), and this page
+  // just forwards its own query string onto the socket.
+  const token = new URLSearchParams(location.search).get('token');
+  const url = `ws://${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   ws = new WebSocket(url);
   ws.onopen = () => {
     footer.textContent = 'connected'; connDot.className = 'ok';
@@ -2357,6 +2363,31 @@ const METRIC_SPECS = [
   { key: 'noise_std', label: 'Action noise std', color: 'var(--danger, #d9534f)' },
 ];
 
+// Cycled for any per-run reward-term series (series points' `rew_*` keys)
+// beyond the three METRIC_SPECS defaults — those aren't known ahead of time,
+// they're whatever training.py found common to every sampled block of THIS
+// run, so they can't have fixed colors the way the three defaults do.
+const EXTRA_SERIES_COLORS = ['#7b8fd9', '#d97bc7', '#7bd9a8', '#d9b87b', '#9b7bd9', '#d97b7b', '#7bc7d9', '#b8d97b'];
+
+// Turns one series point's keys into the full menu of chartable metrics for
+// this run: the three defaults (only if this run actually has them) plus
+// every `rew_<term>` key training.py included, alphabetized and given a
+// swatch color so the same term gets the same color across renders of this
+// popup instance (colors aren't stable ACROSS policies — a different run can
+// have a different set of terms, shifting the cycle — only within one).
+function buildMetricMenu(series) {
+  if (!series.length) return [];
+  const keys = Object.keys(series[0]).filter((k) => k !== 'iteration');
+  const core = METRIC_SPECS.filter((s) => keys.includes(s.key));
+  const extraKeys = keys.filter((k) => !METRIC_SPECS.some((s) => s.key === k)).sort();
+  const extras = extraKeys.map((key, i) => ({
+    key,
+    label: key.startsWith('rew_') ? key.slice(4).replace(/_/g, ' ') : key,
+    color: EXTRA_SERIES_COLORS[i % EXTRA_SERIES_COLORS.length],
+  }));
+  return [...core, ...extras];
+}
+
 // Plain inline SVG polylines — no charting dependency, three series on
 // independent 0–max scales (their units aren't comparable) sharing one
 // x-axis. Didactic over precise: this is "did it trend the right way", not
@@ -2369,7 +2400,7 @@ const METRIC_SPECS = [
 // give the eye a constant reference — without them the same pixel column
 // means a different fraction-of-training on every policy, which is what
 // made stepping through policies with ↑/↓ feel like the chart "jumped".
-function renderSeriesChart(series) {
+function renderSeriesChart(series, specs) {
   const width = 560, height = 100, pad = 4, tickH = 8;
   const plotH = height - tickH;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -2396,7 +2427,7 @@ function renderSeriesChart(series) {
     svg.appendChild(label);
   }
 
-  for (const spec of METRIC_SPECS) {
+  for (const spec of specs) {
     const values = series.map((p) => p[spec.key]);
     const yMax = Math.max(...values, 1e-6), yMin = Math.min(...values, 0);
     const yScale = (v) => plotH - pad - (plotH - 2 * pad) * ((v - yMin) / ((yMax - yMin) || 1));
@@ -2517,11 +2548,48 @@ function renderPolicyInfo(info) {
     results.appendChild(statRow);
 
     if (info.metrics.series?.length > 1) {
-      results.appendChild(renderSeriesChart(info.metrics.series));
+      const series = info.metrics.series;
+      const menu = buildMetricMenu(series);
+      const defaultKeys = new Set(METRIC_SPECS.map((s) => s.key));
+
+      const chartWrap = document.createElement('div');
+      chartWrap.appendChild(renderSeriesChart(series, menu.filter((s) => defaultKeys.has(s.key))));
+      results.appendChild(chartWrap);
+
       const caption = document.createElement('div');
       caption.className = 'info-chart-caption';
-      caption.textContent = `${info.metrics.series[0].iteration}→${info.metrics.series[info.metrics.series.length - 1].iteration} iterations, normalized to % of this run — episode length / reward / noise std`;
+      caption.textContent = `${series[0].iteration}→${series[series.length - 1].iteration} iterations, normalized to % of this run`;
       results.appendChild(caption);
+
+      // One checkbox per chartable metric this run has (the three defaults
+      // plus whatever per-term rewards training.py found common to every
+      // sampled block — see buildMetricMenu()). Re-renders just the <svg>
+      // in place on toggle so the checklist itself doesn't get rebuilt.
+      if (menu.length > 1) {
+        const checklist = document.createElement('div');
+        checklist.className = 'info-chart-checks';
+        const checkboxes = new Map();
+        for (const spec of menu) {
+          const row = document.createElement('label');
+          row.className = 'info-chart-check-row';
+          const chk = document.createElement('input');
+          chk.type = 'checkbox';
+          chk.checked = defaultKeys.has(spec.key);
+          chk.addEventListener('change', () => {
+            const active = menu.filter((s) => checkboxes.get(s.key).checked);
+            chartWrap.replaceChild(renderSeriesChart(series, active), chartWrap.firstChild);
+          });
+          checkboxes.set(spec.key, chk);
+          const swatch = document.createElement('span');
+          swatch.className = 'info-chart-check-swatch';
+          swatch.style.background = spec.color;
+          row.appendChild(chk);
+          row.appendChild(swatch);
+          row.appendChild(document.createTextNode(spec.label));
+          checklist.appendChild(row);
+        }
+        results.appendChild(checklist);
+      }
     }
     top.appendChild(results);
     frag.appendChild(top);

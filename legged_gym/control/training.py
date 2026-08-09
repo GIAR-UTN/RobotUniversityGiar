@@ -111,11 +111,14 @@ def parse_training_log(log_path: str) -> dict:
     its meta.json fields, just without the chart.
 
     Returns {"series": [{"iteration", "noise_std", "reward",
-    "episode_length"}, ...] (downsampled to SERIES_MAX_POINTS),
+    "episode_length", "rew_<term>": value, ...}, ...] (downsampled to
+    SERIES_MAX_POINTS; the rew_* keys are whichever reward terms this run
+    printed on EVERY sampled block — a term only added mid-run via a config
+    change is dropped rather than drawing a line with gaps),
     "final": {"noise_std", "reward", "episode_length"} | None,
     "final_reward_terms": {<term>: value} | None} — the LAST fully-parsed
     block's per-reward-term breakdown (`Mean episode rew_*` lines), for
-    "what is this policy actually optimizing for" at a glance."""
+    "what is this policy actually optimized for" at a glance."""
     empty = {"series": [], "final": None, "final_reward_terms": None}
     try:
         with open(log_path) as f:
@@ -159,9 +162,14 @@ def parse_training_log(log_path: str) -> dict:
     if sampled[-1] is not records[-1]:
         sampled.append(records[-1])  # always keep the true final point
 
+    # A term only counts as a chartable series if every sampled block has it —
+    # one printed by rsl_rl only after a mid-run config change would otherwise
+    # draw a polyline with holes in it.
+    common_terms = set.intersection(*(set(r["terms"]) for r in sampled)) if sampled else set()
     series = [
         {"iteration": r["iteration"], "noise_std": r["noise_std"],
-         "reward": r["reward"], "episode_length": r["episode_length"]}
+         "reward": r["reward"], "episode_length": r["episode_length"],
+         **{f"rew_{term}": r["terms"][term] for term in common_terms}}
         for r in sampled
     ]
     last = records[-1]
