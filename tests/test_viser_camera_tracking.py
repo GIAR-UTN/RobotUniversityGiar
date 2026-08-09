@@ -104,6 +104,7 @@ def _make_viewer():
     viewer._camera_offset = np.array([2.0, 2.0, 1.5])
     viewer._camera_look_at_offset = np.array([0.0, 0.0, 0.3])
     viewer._camera_track_last_base_pos = None
+    viewer._last_base_pos = np.zeros(3)
     return viewer
 
 
@@ -173,6 +174,27 @@ class TestCameraTracking(unittest.TestCase):
         # Should not raise with zero connected clients.
         viewer._apply_camera_tracking(np.array([1.0, 2.0, 3.0]))
         self.assertIsNotNone(viewer._camera_track_last_base_pos)
+
+    def test_reconnecting_client_snaps_to_current_robot_position(self):
+        """Regression for the "reload the page and the camera/robot aren't
+        centered, have to toggle Track robot" bug: on_client_connect used to
+        place a fresh client's camera at a fixed offset from the ORIGIN,
+        not from wherever the robot actually was after walking away from it
+        — so a client reconnecting mid-session (e.g. a browser reload) saw
+        an empty patch of ground instead of the robot until the next
+        tracking tick (or never, if tracking was off) caught up.
+        _on_client_connect must use _last_base_pos, kept current every tick
+        by update()/update_from_simulator() regardless of whether tracking
+        is enabled."""
+        viewer = _make_viewer()
+        viewer._last_base_pos = np.array([12.0, -4.0, 0.8])  # robot walked far from origin
+
+        client = _FakeClient(position=[0.0, 0.0, 0.0], look_at=[0.0, 0.0, 0.0])
+        viewer._on_client_connect(client)
+
+        np.testing.assert_allclose(client.camera.position, viewer._last_base_pos + viewer._camera_offset)
+        np.testing.assert_allclose(client.camera.look_at, viewer._last_base_pos + viewer._camera_look_at_offset)
+        self.assertIsNone(viewer._camera_track_last_base_pos)
 
     def test_multiple_clients_each_keep_their_own_offset(self):
         viewer = _make_viewer()

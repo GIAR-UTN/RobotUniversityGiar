@@ -1243,10 +1243,10 @@ function refreshSystemInfo() {
 
 // ---- create policy (training) ----
 // The whole point of this panel, per the user ask: never hide the actual
-// command behind the form — #train-cmd-preview always shows exactly what
-// ControlService.start_training()/TrainingManager.start() will run (see
-// legged_gym/control/training.py's display_command construction, which this
-// mirrors on purpose so the two never drift apart silently).
+// command behind the form — #train-cmd-preview always shows the rugiar CLI
+// invocation (legged_gym/cli/rugiar.py) that reproduces what this Start
+// button is about to do via ControlService.start_training()/
+// TrainingManager.start(), so it's copy-pasteable into a real terminal.
 
 const btnNewPolicy = $('#btn-new-policy');
 const createPolicyForm = $('#create-policy-form');
@@ -1282,6 +1282,8 @@ const trainPushDir = $('#train-push-dir');
 const trainEntropyCoef = $('#train-entropy-coef');
 const trainRewardScales = $('#train-reward-scales');
 const trainCmdPreview = $('#train-cmd-preview');
+const trainCmdCopy = $('#train-cmd-copy');
+trainCmdCopy.addEventListener('click', () => copyToClipboard(trainCmdPreview.textContent, trainCmdCopy));
 const trainEstimate = $('#train-estimate');
 const trainError = $('#train-error');
 const btnStartTraining = $('#btn-start-training');
@@ -1828,24 +1830,23 @@ function composeTrainingParams() {
 }
 
 function updateCommandPreview() {
+  // rugiar (legged_gym/cli/rugiar.py) is a thin argv wrapper around this
+  // same TrainingManager.start() — showing ITS invocation instead of the
+  // raw `python legged_gym/scripts/web_train.py ...` subprocess line means
+  // what's previewed here is something a user can actually paste into a
+  // terminal and run themselves, not an internal implementation detail.
   const p = composeTrainingParams();
   const parts = [
-    'python legged_gym/scripts/web_train.py',
+    'rugiar train',
     `--task ${p.task || '<task>'}`,
     `--name ${p.name || '<policy name>'}`,
     `--num_envs ${Number.isFinite(p.numEnvs) ? p.numEnvs : '<num_envs>'}`,
-    p.backend === 'kaggle' ? '--headless' : '--headless --cpu',
-    p.backend === 'kaggle' ? '# runs on a Kaggle GPU kernel, not this machine' : '--result_path <assigned by the server>',
   ];
   if (p.iterations !== null) parts.push(`--max_iterations ${p.iterations}`);
   if (p.minutes !== null) parts.push(`--max_minutes ${p.minutes}`);
   if (p.iterations === null && p.minutes === null) parts.push('--max_iterations <or> --max_minutes <required>');
-  if (p.base) {
-    const source = trainingCatalog?.base_policies.find((b) => b.name === p.base);
-    parts.push(p.backend === 'kaggle'
-      ? `--from_checkpoint /kaggle/input/<uploaded from '${p.base}'>/train_checkpoint.pt`
-      : `--from_checkpoint ${source?.train_checkpoint || '<' + p.base + "'s training checkpoint>"}`);
-  }
+  if (p.base) parts.push(`--from_policy ${p.base}`);
+  if (p.backend === 'kaggle') parts.push('--backend kaggle');
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
   if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);

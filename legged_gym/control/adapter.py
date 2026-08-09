@@ -113,6 +113,16 @@ class SimAdapter:
         self._auto_commands = True
         self._manual_command = (0.0, 0.0, 0.0)
 
+        # The live control web's Stress Stimuli panel defaults both toggles
+        # to unchecked — an operator opening the viewer should see the robot
+        # hold still and driveable, not immediately get shoved/re-commanded
+        # by the same domain-randomization stressors used during training.
+        # This only overrides SimAdapter's own initial state (the task's own
+        # cfg.domain_rand.push_robots, read by training's web_train.py
+        # directly, is untouched) — see set_random_events for the same
+        # toggle wired to the checkboxes.
+        self.set_random_events(push_robots=False, auto_commands=False)
+
         # Disabled by default: legged_robot.py's own check_termination() (see
         # set_episode_timeout's docstring) is training-episode machinery that
         # would otherwise silently teleport the robot on a fixed timer, with

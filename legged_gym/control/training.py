@@ -956,19 +956,51 @@ class TrainingManager:
         progress_path = JOBS_DIR / f"{job_id}.progress.json"
         log_path = JOBS_DIR / f"{job_id}.log"
 
-        # The flags shared by both backends — exactly what a human would type
-        # to web_train.py, minus --headless/--cpu/--result_path/--progress_path,
-        # which differ per backend (a Kaggle kernel always has a GPU and its
-        # own filesystem layout — see kaggle_backend._build_kernel_script).
-        train_flags: List[str] = [
+        # The flags shared by both backends AND by both the web_train.py argv
+        # and the rugiar CLI equivalent shown to the user (job.command) —
+        # everything except how the base policy to fine-tune from is
+        # expressed, which differs between the two (see below), and
+        # --headless/--cpu/--result_path/--progress_path, which differ per
+        # backend (a Kaggle kernel always has a GPU and its own filesystem
+        # layout — see kaggle_backend._build_kernel_script).
+        shared_flags: List[str] = [
             "--task", task,
             "--name", policy_name,
             "--num_envs", str(num_envs),
         ]
         if max_iterations is not None:
-            train_flags += ["--max_iterations", str(max_iterations)]
+            shared_flags += ["--max_iterations", str(max_iterations)]
         if max_minutes is not None:
-            train_flags += ["--max_minutes", str(max_minutes)]
+            shared_flags += ["--max_minutes", str(max_minutes)]
+        if cmd_vx:
+            shared_flags += ["--cmd_vx_range", str(cmd_vx[0]), str(cmd_vx[1])]
+        if cmd_vy:
+            shared_flags += ["--cmd_vy_range", str(cmd_vy[0]), str(cmd_vy[1])]
+        if cmd_yaw:
+            shared_flags += ["--cmd_yaw_range", str(cmd_yaw[0]), str(cmd_yaw[1])]
+        if base_height_target is not None:
+            shared_flags += ["--base_height_target", str(base_height_target)]
+        if lin_vel_z_target is not None:
+            shared_flags += ["--lin_vel_z_target", str(lin_vel_z_target)]
+        if ang_vel_xy_target is not None:
+            shared_flags += ["--ang_vel_xy_target", str(ang_vel_xy_target)]
+        if orientation_tilt_target is not None:
+            shared_flags += ["--orientation_tilt_target", str(orientation_tilt_target)]
+        if push_robots is not None:
+            shared_flags += ["--push_robots", "on" if push_robots else "off"]
+        if max_push_vel_xy is not None:
+            shared_flags += ["--max_push_vel_xy", str(max_push_vel_xy)]
+        if push_interval_s is not None:
+            shared_flags += ["--push_interval_s", str(push_interval_s)]
+        if push_dir is not None:
+            shared_flags += ["--push_dir", push_dir]
+        if entropy_coef is not None:
+            shared_flags += ["--entropy_coef", str(entropy_coef)]
+        if reward_scale_overrides:
+            for name, value in sorted(reward_scale_overrides.items()):
+                shared_flags += ["--reward_scale", name, str(value)]
+
+        train_flags = list(shared_flags)
         if from_checkpoint and backend == "local":
             # Kaggle jobs can't take this local absolute path directly — the
             # kernel has no access to this machine's filesystem. KaggleRunner
@@ -976,33 +1008,15 @@ class TrainingManager:
             # own --from_checkpoint pointing at the /kaggle/input/ mount
             # (see the backend=="kaggle" branch below).
             train_flags += ["--from_checkpoint", from_checkpoint]
-        if cmd_vx:
-            train_flags += ["--cmd_vx_range", str(cmd_vx[0]), str(cmd_vx[1])]
-        if cmd_vy:
-            train_flags += ["--cmd_vy_range", str(cmd_vy[0]), str(cmd_vy[1])]
-        if cmd_yaw:
-            train_flags += ["--cmd_yaw_range", str(cmd_yaw[0]), str(cmd_yaw[1])]
-        if base_height_target is not None:
-            train_flags += ["--base_height_target", str(base_height_target)]
-        if lin_vel_z_target is not None:
-            train_flags += ["--lin_vel_z_target", str(lin_vel_z_target)]
-        if ang_vel_xy_target is not None:
-            train_flags += ["--ang_vel_xy_target", str(ang_vel_xy_target)]
-        if orientation_tilt_target is not None:
-            train_flags += ["--orientation_tilt_target", str(orientation_tilt_target)]
-        if push_robots is not None:
-            train_flags += ["--push_robots", "on" if push_robots else "off"]
-        if max_push_vel_xy is not None:
-            train_flags += ["--max_push_vel_xy", str(max_push_vel_xy)]
-        if push_interval_s is not None:
-            train_flags += ["--push_interval_s", str(push_interval_s)]
-        if push_dir is not None:
-            train_flags += ["--push_dir", push_dir]
-        if entropy_coef is not None:
-            train_flags += ["--entropy_coef", str(entropy_coef)]
-        if reward_scale_overrides:
-            for name, value in sorted(reward_scale_overrides.items()):
-                train_flags += ["--reward_scale", name, str(value)]
+
+        # rugiar (legged_gym/cli/rugiar.py) is the same TrainingManager.start()
+        # wrapped as a CLI, but it takes a policy NAME (--from_policy) rather
+        # than a resolved --from_checkpoint path — so job.command (what the
+        # UI shows as "copy the exact command") is built from this list,
+        # separate from train_flags/argv which is what actually runs.
+        rugiar_flags = list(shared_flags)
+        if base_policy:
+            rugiar_flags += ["--from_policy", base_policy]
 
         job = TrainingJob(
             id=job_id, policy_name=policy_name, task=task, command="",
@@ -1016,14 +1030,11 @@ class TrainingManager:
         )
 
         if backend == "kaggle":
-            # Exactly what the kernel runs, modulo the interpreter path and
-            # the base checkpoint's real mount point (not known until
-            # KaggleRunner picks its dataset slug) — same "show the real
-            # command" spirit as the local preview below.
-            display_flags = list(train_flags)
-            if from_checkpoint:
-                display_flags += ["--from_checkpoint", "<uploaded base checkpoint, see kernel log>"]
-            job.command = "python legged_gym/scripts/web_train.py --headless " + " ".join(display_flags)
+            # The rugiar equivalent of what the kernel runs — same "show the
+            # real command" spirit as the local job below, minus the
+            # base-checkpoint upload/mount step rugiar's own --backend
+            # kaggle handles the same way TrainingManager does here.
+            job.command = "rugiar train --backend kaggle " + " ".join(rugiar_flags)
             runner = kaggle_backend.KaggleRunner(
                 job_id=job_id, train_flags=train_flags,
                 result_path=result_path, log_path=log_path,
@@ -1043,10 +1054,12 @@ class TrainingManager:
             "--progress_path", str(progress_path),
         ] + train_flags
 
-        # Exactly what a human would type, modulo the interpreter path and
-        # `-u` — this string is what the web UI already showed as a preview
-        # before Start was clicked; nothing here should surprise it.
-        job.command = "python " + " ".join(argv[2:])
+        # The rugiar CLI equivalent of this run — this string is what the
+        # web UI already showed as a preview before Start was clicked
+        # (see web/app.js's updateCommandPreview), and is what a user would
+        # paste into a terminal to reproduce it, not the raw web_train.py
+        # subprocess invocation actually exec'd below.
+        job.command = "rugiar train " + " ".join(rugiar_flags)
 
         log_f = open(log_path, "w")
         # Pin PYTHONPATH to THIS repo checkout explicitly rather than trusting

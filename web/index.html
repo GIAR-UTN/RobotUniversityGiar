@@ -425,7 +425,11 @@
   .tele-badge.sim_ground_truth{background:color-mix(in srgb, var(--accent) 20%, transparent); color:var(--accent);}
   .tele-badge.sensor{background:color-mix(in srgb, var(--accent2) 20%, transparent); color:var(--accent2);}
   .tele-note{font-size:.66rem; color:var(--muted); margin:.15rem 0 0;}
+  #train-cmd-row{
+    display:flex; align-items:flex-start; gap:.35rem;
+  }
   #train-cmd-preview{
+    flex:1; min-width:0;
     display:block; white-space:pre-wrap; word-break:break-word;
     background:var(--bg); border:1px solid var(--line); border-radius:6px;
     padding:.5rem .55rem; font:11px/1.4 ui-monospace,monospace; color:var(--ink-soft);
@@ -911,7 +915,10 @@
           </div>
 
           <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
-          <code id="train-cmd-preview">python legged_gym/scripts/web_train.py &hellip;</code>
+          <div id="train-cmd-row">
+            <code id="train-cmd-preview">rugiar train &hellip;</code>
+            <button type="button" id="train-cmd-copy" class="job-copy-btn" title="Copy the rugiar command">Copy</button>
+          </div>
           <p id="train-error"></p>
           <button type="submit" id="btn-start-training">Start training</button>
           <p class="field-hint">A run in progress shows in the Policies list — with live progress, ETA, and its exact command.</p>

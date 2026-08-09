@@ -495,13 +495,27 @@ class ViserViewer:
         # manually flying away snaps back predictably instead of jumping by
         # whatever the robot moved while tracking was off.
         self._camera_track_last_base_pos: Optional[np.ndarray] = None
+        # The robot's most recently seen base position, kept up to date on
+        # EVERY update()/update_from_simulator() tick regardless of whether
+        # tracking is enabled (see there) -- this is what a freshly
+        # connected client (e.g. the browser tab reloading mid-session, long
+        # after the robot has walked away from the origin) needs to place
+        # its camera against. Without it, on_client_connect below used to
+        # place the new camera at a fixed offset from the ORIGIN, not from
+        # wherever the robot actually was, so the new client saw an empty
+        # patch of ground until the very next tracking tick caught up (or
+        # never did, if tracking had been left off) -- the reported "camera
+        # and robot aren't centered after a reload, have to toggle Track
+        # robot" bug.
+        self._last_base_pos = np.zeros(3)
 
-        @self.server.on_client_connect
-        def _(client: viser.ClientHandle) -> None:
-            client.camera.position = self._camera_offset.copy()
-            client.camera.look_at = self._camera_look_at_offset.copy()
-            client.camera.fov = np.radians(60.0)
-            self._camera_track_last_base_pos = None
+        self.server.on_client_connect(self._on_client_connect)
+
+    def _on_client_connect(self, client: "viser.ClientHandle") -> None:
+        client.camera.position = self._last_base_pos + self._camera_offset
+        client.camera.look_at = self._last_base_pos + self._camera_look_at_offset
+        client.camera.fov = np.radians(60.0)
+        self._camera_track_last_base_pos = None
 
     def _apply_camera_tracking(self, base_pos: np.ndarray) -> None:
         """Follow the robot without fighting the user's own camera control.
@@ -682,6 +696,7 @@ class ViserViewer:
                     handle.position = pos
                     handle.wxyz = quat
 
+            self._last_base_pos = base_pos.copy()
             if self._camera_tracking_enabled:
                 self._apply_camera_tracking(base_pos)
 
@@ -710,6 +725,7 @@ class ViserViewer:
                 handle.position = state["pos"][robot_index].detach().cpu().numpy()
                 handle.wxyz = _xyzw_to_wxyz(state["quat"][robot_index].detach().cpu().numpy())
 
+            self._last_base_pos = base_pos.copy()
             if self._camera_tracking_enabled:
                 self._apply_camera_tracking(base_pos)
 
