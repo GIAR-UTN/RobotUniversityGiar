@@ -2377,21 +2377,32 @@ const selectedChartKeys = new Set(METRIC_SPECS.map((s) => s.key));
 // run, so they can't have fixed colors the way the three defaults do.
 const EXTRA_SERIES_COLORS = ['#7b8fd9', '#d97bc7', '#7bd9a8', '#d9b87b', '#9b7bd9', '#d97b7b', '#7bc7d9', '#b8d97b'];
 
+// A term's color must stay the same no matter which policy's menu it's
+// drawn from — different policies have different sets of common reward
+// terms (see training.py's common_terms intersection), so picking colors
+// by POSITION in each policy's own sorted list reassigns colors every time
+// you step to a different policy. Hashing the key name into the palette
+// instead makes the mapping depend only on the key itself.
+function hashColor(key) {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  return EXTRA_SERIES_COLORS[Math.abs(hash) % EXTRA_SERIES_COLORS.length];
+}
+
 // Turns one series point's keys into the full menu of chartable metrics for
 // this run: the three defaults (only if this run actually has them) plus
 // every `rew_<term>` key training.py included, alphabetized and given a
-// swatch color so the same term gets the same color across renders of this
-// popup instance (colors aren't stable ACROSS policies — a different run can
-// have a different set of terms, shifting the cycle — only within one).
+// swatch color so the same term gets the same color everywhere — see
+// hashColor() above.
 function buildMetricMenu(series) {
   if (!series.length) return [];
   const keys = Object.keys(series[0]).filter((k) => k !== 'iteration');
   const core = METRIC_SPECS.filter((s) => keys.includes(s.key));
   const extraKeys = keys.filter((k) => !METRIC_SPECS.some((s) => s.key === k)).sort();
-  const extras = extraKeys.map((key, i) => ({
+  const extras = extraKeys.map((key) => ({
     key,
     label: key.startsWith('rew_') ? key.slice(4).replace(/_/g, ' ') : key,
-    color: EXTRA_SERIES_COLORS[i % EXTRA_SERIES_COLORS.length],
+    color: hashColor(key),
   }));
   return [...core, ...extras];
 }
