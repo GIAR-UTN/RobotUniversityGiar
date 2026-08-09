@@ -145,7 +145,27 @@ class GenesisSimulator(Simulator):
             self._update_surrounding_heights()
             if self._cfg.terrain.obtain_terrain_info_around_feet:
                 self._calc_terrain_info_around_feet()
-        
+
+    def get_camera_frame(self):
+        """Renders one RGB frame from the robot-POV camera set up in
+        _create_envs() (self._cfg.sensor.add_rgb_camera) -- repositions it
+        to base_pos/base_quat plus the configured fixed offset (see
+        rgb_camera_config's docstring for why it's not attached to a named
+        head link) and renders. Only ever called for env 0 -- this control
+        demo always runs num_envs=1. Returns a (H, W, 3) uint8 numpy array,
+        or None if add_rgb_camera wasn't enabled."""
+        if self._rgb_camera is None:
+            return None
+        cam_cfg = self._cfg.sensor.rgb_camera_config
+        quat = self._base_quat[0:1]  # xyzw -- matches math_utils.quat_apply's convention
+        offset = torch.tensor([cam_cfg.pos], device=self._device, dtype=torch.float32)
+        forward = torch.tensor([cam_cfg.forward], device=self._device, dtype=torch.float32)
+        cam_pos = (self._base_pos[0] + quat_apply(quat, offset)[0]).detach().cpu().numpy()
+        cam_lookat = (self._base_pos[0] + quat_apply(quat, offset + forward)[0]).detach().cpu().numpy()
+        self._rgb_camera.set_pose(pos=cam_pos, lookat=cam_lookat, up=(0.0, 0.0, 1.0))
+        rgb_arr, _, _, _ = self._rgb_camera.render(rgb=True)
+        return rgb_arr
+
     def reset_idx(self, env_ids):
         # domain randomization
         if self._cfg.domain_rand.randomize_joint_armature:
@@ -344,6 +364,19 @@ class GenesisSimulator(Simulator):
             self._depth_image_update_decimation = self._cfg.sensor.depth_camera_config.decimation
     
     def _create_sim(self):
+        # cfg.viewer.rendered_envs_idx defaults to range(5) (training-scale
+        # assumption) — with num_envs=1 (e.g. this control demo, whose
+        # unitree_rl_gym checkpoints are pinned to batch size 1) that leaves
+        # indices pointing past the only env that exists, which
+        # RasterizerContext.on_rigid() indexes into unconditionally as soon
+        # as it's actually built (rasterizer_context.py's geoms_T[...][
+        # geom_envs_idx]) -- IndexError. Previously masked entirely because
+        # headless runs (see the build monkey-patch below) skipped building
+        # the rasterizer/context at all; building it for the RGB camera
+        # (cfg.sensor.add_rgb_camera) surfaces it. Clamp defensively here
+        # rather than only when a camera is requested -- out-of-range
+        # indices were never valid regardless.
+        rendered_envs_idx = [i for i in self._cfg.viewer.rendered_envs_idx if i < self._num_envs]
         # create scene
         self._scene = gs.Scene(
             sim_options=gs.options.SimOptions(
@@ -356,7 +389,7 @@ class GenesisSimulator(Simulator):
                 camera_fov=40,
             ),
             vis_options=gs.options.VisOptions(
-                rendered_envs_idx=self._cfg.viewer.rendered_envs_idx,
+                rendered_envs_idx=rendered_envs_idx,
                 shadow=False,
                 ),
             rigid_options=gs.options.RigidOptions(
@@ -435,9 +468,31 @@ class GenesisSimulator(Simulator):
         if self._cfg.sensor.add_depth:
             self._setup_depth_camera()
 
+        # add an RGB camera for the live control web's camera feed (see
+        # get_camera_frame()) -- must be added before scene.build(), like
+        # every other camera/entity above.
+        self._rgb_camera = None
+        if self._cfg.sensor.add_rgb_camera:
+            cam_cfg = self._cfg.sensor.rgb_camera_config
+            self._rgb_camera = self._scene.add_camera(
+                res=cam_cfg.resolution,
+                pos=(1.0, 0.0, 1.0), lookat=(0.0, 0.0, 1.0),  # placeholder -- get_camera_frame() repositions every call
+                fov=cam_cfg.fov_deg, GUI=False,
+            )
+
         # build
-        if self._headless:
-            # Monkey-patch the visualizer to skip building
+        if self._headless and not self._cfg.sensor.add_rgb_camera:
+            # Monkey-patch the visualizer to skip building -- but only when
+            # there's truly nothing to render: this skips the interactive
+            # viewer AND the offscreen rasterizer/context underneath it
+            # (visualizer.build() is replaced wholesale, not just its
+            # viewer.build() call), which would just as well skip building
+            # the RGB camera above if one was requested (Camera.build(),
+            # called from the same visualizer.build(), needs that rasterizer
+            # -- see genesis/vis/camera.py). show_viewer is already False in
+            # headless mode either way (see gs.Scene(...) above), so letting
+            # the real build() run when a camera is wanted costs nothing
+            # extra here -- no viewer window gets created regardless.
             original_build = self._scene.build
             def patched_build(n_envs):
                 # Store the original visualizer build method

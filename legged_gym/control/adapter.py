@@ -207,6 +207,19 @@ class SimAdapter:
         the SimAdapter directly rather than through the generic protocol."""
         return self.env.get_observations()
 
+    def get_camera_frame(self):
+        """Not part of RobotAdapter (see get_observations' docstring for
+        why — this is an optional, backend-specific extra, not something
+        PolicySupervisor/SafetyGovernor/Selector ever touch). Returns a
+        (H, W, 3) uint8 numpy array from the simulator's RGB camera (see
+        GenesisSimulator.get_camera_frame(), gated by
+        cfg.sensor.add_rgb_camera), or None if the current backend has no
+        camera support or it wasn't enabled — callers (swap_experiment.py's
+        control loop) must treat None as "nothing to stream this tick", not
+        an error."""
+        get_frame = getattr(self.env.simulator, "get_camera_frame", None)
+        return get_frame() if get_frame is not None else None
+
     def record(self, obs: torch.Tensor, action: torch.Tensor, state: RobotState) -> None:
         pass
 

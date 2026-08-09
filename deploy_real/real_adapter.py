@@ -192,6 +192,15 @@ class RealAdapter:
     def record(self, obs: torch.Tensor, action: torch.Tensor, state: RobotState) -> None:
         pass
 
+    def get_camera_frame(self):
+        """Mirrors SimAdapter.get_camera_frame()'s optional extra -- no real
+        camera is wired up yet (this robot's onboard RGB-D sensor, e.g. the
+        G1's D435 head camera, isn't read anywhere in this file). Returns
+        None until that's added (a lazy-imported reader module under
+        deploy_real/common/, the same pattern unitree_sdk2py itself is
+        imported here -- see this module's docstring)."""
+        return None
+
     def estop(self) -> None:
         """True emergency stop — cuts to zero torque immediately. Deliberately
         NOT routed through PolicySupervisor/SafetyGovernor's damping-policy

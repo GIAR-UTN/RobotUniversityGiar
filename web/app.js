@@ -2692,6 +2692,14 @@ async function boot() {
     commandRanges = config.command_ranges;
   }
 
+  // --camera wasn't passed: leave #camera-section hidden (its default in
+  // index.html) rather than pointing <img> at a stream that will never
+  // publish a frame.
+  if (config.camera_enabled) {
+    $('#camera-feed').src = '/camera.mjpg';
+    $('#camera-section').hidden = false;
+  }
+
   bindKeycapActions();
   initSectionDrag();
   restorePanelOrder();

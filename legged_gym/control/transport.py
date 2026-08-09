@@ -43,6 +43,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 
 # The whole ControlService surface this transport exposes. estop is always
 # accepted (see dispatch()) — it must never be blocked by anything here,
@@ -70,6 +71,15 @@ class ControlServer:
         # Socket-thread -> sim-thread command handoff.
         self.commands: "queue.Queue[tuple]" = queue.Queue()
 
+        # Sim-thread -> socket-thread handoff of the latest camera frame,
+        # same pattern as _status_lock/_latest_status above. Holds a single
+        # already-JPEG-encoded frame (see publish_camera_frame()) -- no
+        # queue/backlog, a stale in-flight frame is simply overwritten,
+        # since a live preview should always show the newest frame, not
+        # catch up through old ones.
+        self._camera_lock = threading.Lock()
+        self._latest_frame_jpeg: Optional[bytes] = None
+
         self._clients = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -80,6 +90,12 @@ class ControlServer:
         # is called) rather than standing up a second server/port.
         self.app = FastAPI()
         self.app.add_api_websocket_route("/ws", self._ws_endpoint)
+        # No token gate here -- same precedent as /config and the web/docs
+        # StaticFiles mounts swap_experiment.py adds below: --token protects
+        # the command surface reachable over /ws, not general content this
+        # server serves. See publish_camera_frame()/get_camera_frame() (
+        # adapter.py) for where the actual frames come from.
+        self.app.add_api_route("/camera.mjpg", self._camera_stream_endpoint, methods=["GET"])
 
         # StaticFiles (mounted by swap_experiment.py for web/ and docs/)
         # sends no Cache-Control header by default, so browsers fall back to
@@ -104,6 +120,17 @@ class ControlServer:
     def publish_status(self, status: dict) -> None:
         with self._status_lock:
             self._latest_status = status
+
+    def publish_camera_frame(self, jpeg_bytes: bytes) -> None:
+        """Sim-thread -> socket-thread handoff of one already-JPEG-encoded
+        camera frame -- see swap_experiment.py's control loop, which calls
+        this every N ticks (RgbCameraCfg.decimation) with whatever
+        adapter.get_camera_frame() returned, re-encoded to JPEG. Picked up
+        by _mjpeg_stream() below and pushed to every client on /camera.mjpg.
+        A no-op call with nothing new to show is fine -- callers just don't
+        call this on ticks with no frame (get_camera_frame() returned None)."""
+        with self._camera_lock:
+            self._latest_frame_jpeg = jpeg_bytes
 
     def drain_commands(self) -> None:
         """Execute every command queued since the last tick, on THIS
@@ -166,6 +193,34 @@ class ControlServer:
             pass
         finally:
             self._clients.discard(websocket)
+
+    async def _camera_stream_endpoint(self) -> StreamingResponse:
+        return StreamingResponse(
+            self._mjpeg_stream(), media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    async def _mjpeg_stream(self):
+        """One multipart/x-mixed-replace stream per connected client --
+        plain <img src="/camera.mjpg"> in the web UI is all a client needs;
+        no JS, no WebSocket. Polls the shared _latest_frame_jpeg slot (see
+        publish_camera_frame()) rather than pushing on every sim tick -- the
+        sim's control rate (~50-200Hz) is far higher than any human needs
+        to watch a preview at, and this decouples the stream's own pace
+        from however often the sim thread actually captures a frame."""
+        last_sent = None
+        while True:
+            await asyncio.sleep(0.08)  # ~12Hz -- plenty for a live preview
+            with self._camera_lock:
+                frame = self._latest_frame_jpeg
+            if frame is None or frame is last_sent:
+                continue
+            last_sent = frame
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                + frame + b"\r\n"
+            )
 
     def _send_threadsafe(self, websocket, payload: dict) -> None:
         if self._loop is None:

@@ -280,6 +280,19 @@ class LeggedRobotCfg(BaseConfig):
     # sensor configuration:
     class sensor:
         add_depth: bool = False
+        add_rgb_camera: bool = False  # [Genesis only] robot-POV RGB feed for the live control web (see swap_experiment.py --camera)
+        class rgb_camera_config:
+            resolution: Tuple[int, int] = (320, 240)  # (width, height) -- Genesis Camera's own (w,h) convention
+            fov_deg: float = 87.0  # vertical FOV; ~matches a RealSense D435's horizontal FOV
+            # Fixed offset from the base link, in the base's own frame (x fwd, y left, z up).
+            # Not attached to a named head/camera link: the 12dof leg-only G1 variant this
+            # control demo runs (see common_cfgs.py G1Flat12DofCommonCfg) fuses the head into
+            # the base link, so there's no separate body to Camera.attach() to -- same
+            # fixed-offset-from-base approach the existing Warp depth camera already uses
+            # (depth_camera_config.pos/euler above).
+            pos: Tuple[float, float, float] = (0.05, 0.0, 0.45)
+            forward: Tuple[float, float, float] = (1.0, 0.0, 0.0)
+            decimation: int = 10  # sim ticks between captured frames -- a live video feed doesn't need control-loop rate
         class depth_camera_config:
             num_sensors: int = 1         # number of depth cameras, currently only support 1
             num_history: int = 1         # history frames for depth images

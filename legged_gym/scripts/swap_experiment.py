@@ -19,11 +19,13 @@ Usage:
         --active stable
 """
 import argparse
+import io
 import os
 import time
 from pathlib import Path
 
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 
 from legged_gym import *
 from legged_gym.envs import *
@@ -36,6 +38,15 @@ from legged_gym.control import (
     load_policy, damping_policy, TrainingManager,
 )
 from legged_gym.control.transport import ControlServer
+
+
+def _encode_camera_frame_jpeg(frame) -> bytes:
+    """frame: (H, W, 3) uint8 RGB, as returned by RobotAdapter.get_camera_frame().
+    JPEG (not PNG) — this is a live preview streamed at ~12Hz (see
+    ControlServer._mjpeg_stream), not an archival asset."""
+    buf = io.BytesIO()
+    Image.fromarray(frame).save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
 
 
 def parse_policy_args(policy_args):
@@ -70,7 +81,43 @@ def main():
                               "http://localhost:<control_port>/.")
     parser.add_argument('--ball', action='store_true', default=False,
                          help="spawn a physics-enabled ball prop next to the robot (Genesis only, for now)")
+    parser.add_argument('--camera', action='store_true', default=False,
+                         help="stream a robot-POV RGB camera feed to the control web at /camera.mjpg (Genesis "
+                              "sim only, for now — see GenesisSimulator.get_camera_frame() and "
+                              "legged_robot_config.py's sensor.rgb_camera_config). Incompatible with "
+                              "--headless (no camera is built in that mode, and there's no web UI to stream to).")
+    parser.add_argument('--real', action='store_true', default=False,
+                         help="drive an actual robot over DDS (deploy_real/real_adapter.py::RealAdapter) "
+                              "instead of the Genesis simulator. No Genesis env, no viser — see "
+                              "docs/index.html §13 for the first-boot checklist. Incompatible with "
+                              "--headless (a real robot's reset() blocks on a human at the physical remote; "
+                              "there is no unattended smoke test).")
+    parser.add_argument('--net_interface', type=str, default=None,
+                         help="network interface DDS should bind to on the robot's onboard computer "
+                              "(e.g. 'eth0', 'enp3s0') — required with --real.")
+    parser.add_argument('--robot_config', type=str, default=None,
+                         help="path to a deploy_real/configs/*.yaml (see g1.yaml) — required with --real.")
+    parser.add_argument('--token', type=str, default=None,
+                         help="shared-secret required on every /ws connection (query param ?token=...), "
+                              "including the web UI, which forwards its own page's ?token=... — see "
+                              "legged_gym/control/transport.py and docs/index.html §13. Strongly "
+                              "recommended whenever --control_port is reachable from more than localhost, "
+                              "which --real always is (the robot's own WiFi/LAN).")
     cli = parser.parse_args()
+
+    if cli.real and cli.headless:
+        raise ValueError("--real and --headless are mutually exclusive — a real robot's reset() blocks on "
+                          "a human at the physical remote control, so there is no unattended smoke test.")
+    if cli.camera and cli.headless:
+        raise ValueError("--camera and --headless are mutually exclusive — no camera is built in headless "
+                          "mode (see GenesisSimulator._create_envs()) and there's no web UI to stream to.")
+    if cli.camera and cli.real:
+        raise ValueError("--camera isn't wired up for --real yet — RealAdapter.get_camera_frame() always "
+                          "returns None (see deploy_real/real_adapter.py).")
+    if cli.real and not cli.net_interface:
+        raise ValueError("--real requires --net_interface (the DDS network interface, e.g. 'eth0')")
+    if cli.real and not cli.robot_config:
+        raise ValueError("--real requires --robot_config (e.g. deploy_real/configs/g1.yaml)")
 
     policy_paths = parse_policy_args(cli.policy_specs)
     active_name = cli.active or next(iter(policy_paths))
@@ -85,24 +132,40 @@ def main():
         num_student=None,
     )
 
-    if SIMULATOR == "genesis":
-        backend = os.environ.get("GENESIS_BACKEND", "cpu").lower()
-        if backend == "cuda":
-            try:
-                gs.init(backend=gs.cuda, logging_level='warning')
-                print("Genesis initialised with CUDA backend.")
-            except Exception as e:
-                print(f"Warning: CUDA backend failed ({e}), falling back to CPU.")
+    env = None
+    if cli.real:
+        # No Genesis at all in this branch — deploy_real/real_adapter.py's
+        # RealAdapter is the only thing that talks to the robot, over DDS.
+        # env_cfg is still needed below (num_observations/num_actions for
+        # load_policy, cfg.commands.ranges for the /config route) — get_cfgs
+        # only returns cfg classes, it doesn't build a simulator.
+        env_cfg, _ = task_registry.get_cfgs(name=args.task)
+
+        from deploy_real.config import RobotConfig
+        from deploy_real.real_adapter import RealAdapter
+        robot_config = RobotConfig(cli.robot_config)
+        adapter = RealAdapter(robot_config, cli.net_interface)
+    else:
+        if SIMULATOR == "genesis":
+            backend = os.environ.get("GENESIS_BACKEND", "cpu").lower()
+            if backend == "cuda":
+                try:
+                    gs.init(backend=gs.cuda, logging_level='warning')
+                    print("Genesis initialised with CUDA backend.")
+                except Exception as e:
+                    print(f"Warning: CUDA backend failed ({e}), falling back to CPU.")
+                    gs.init(backend=gs.cpu, logging_level='warning')
+            else:
                 gs.init(backend=gs.cpu, logging_level='warning')
-        else:
-            gs.init(backend=gs.cpu, logging_level='warning')
 
-    env_cfg, _ = task_registry.get_cfgs(name=args.task)
-    if cli.ball:
-        env_cfg.props.list = [default_ball_prop()]
+        env_cfg, _ = task_registry.get_cfgs(name=args.task)
+        if cli.ball:
+            env_cfg.props.list = [default_ball_prop()]
+        if cli.camera:
+            env_cfg.sensor.add_rgb_camera = True
 
-    env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
-    adapter = SimAdapter(env)
+        env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+        adapter = SimAdapter(env)
 
     hidden_size = 64  # matches G1RoughCfgPPO.policy.rnn_hidden_size
 
@@ -131,9 +194,9 @@ def main():
     policies = {}
     for name, path in policy_paths.items():
         policies[name] = load_policy(name, path, num_obs=env_cfg.env.num_observations,
-                                      hidden_size=hidden_size, num_envs=env.num_envs)
+                                      hidden_size=hidden_size, num_envs=adapter.num_envs)
         print(f"  '{name}' <- {path}{' (rediscovered from a previous run)' if name in discovered else ''}")
-    policies["damping"] = damping_policy(env.num_envs, env_cfg.env.num_actions)
+    policies["damping"] = damping_policy(adapter.num_envs, env_cfg.env.num_actions)
 
     supervisor = PolicySupervisor(policies, active=active_name, ramp_ticks=cli.ramp_ticks)
     safety = SafetyGovernor(supervisor, damping_policy_name="damping")
@@ -159,7 +222,7 @@ def main():
         if task != args.task:
             raise ValueError(f"'{name}' is task '{task}', this server is running '{args.task}'")
         return load_policy(name, path, num_obs=env_cfg.env.num_observations,
-                            hidden_size=hidden_size_for_new_policies, num_envs=env.num_envs,
+                            hidden_size=hidden_size_for_new_policies, num_envs=adapter.num_envs,
                             description="Rediscovered from disk (refresh — trained outside this server)")
 
     service = ControlService(adapter, supervisor, safety, selector=None, training=training,
@@ -187,7 +250,7 @@ def main():
                 new_policy = load_policy(
                     job.policy_name, final_checkpoint,
                     num_obs=env_cfg.env.num_observations,
-                    hidden_size=hidden_size_for_new_policies, num_envs=env.num_envs,
+                    hidden_size=hidden_size_for_new_policies, num_envs=adapter.num_envs,
                     description=f"Trained via the control web ({job.command})",
                 )
                 supervisor.add_policy(new_policy)
@@ -200,11 +263,18 @@ def main():
 
     control_server = None
     if cli.control_port is not None:
-        control_server = ControlServer(service, port=cli.control_port)
+        control_server = ControlServer(service, port=cli.control_port, token=cli.token)
+        if cli.token is None and cli.real:
+            print("[swap_experiment] WARNING: --real with no --token — the control socket is reachable "
+                  "unauthenticated from anything on this robot's network. Pass --token to require a "
+                  "shared secret (see docs/index.html §13).")
 
     viser_viewer = None
 
-    if not cli.headless:
+    if not cli.headless and not cli.real:
+        # viser has nothing to render against a real robot (no Genesis env)
+        # — see module docstring on why it has no robot-control GUI of its
+        # own either way.
         viser_viewer = create_viser_viewer(env, port=cli.viser_port, show_command_sliders=False)
         print(f"Viser web viewer started at http://localhost:{cli.viser_port}")
         # No robot-control GUI added here on purpose — see module docstring.
@@ -213,35 +283,43 @@ def main():
         # viser's built-in (and, in this script, never-wired) velocity
         # sliders, which duplicated the unified web's Stimuli panel.
 
-        if control_server is not None:
-            # Mount the unified control web (Docs/Simulator tabs + controls
-            # panel + keyboard shortcuts — web/index.html) onto the SAME
-            # FastAPI app/port as the /ws transport, per HANDOFF_control_web.md
-            # §3-B: one process, one port, same-origin WS (no CORS). Routes
-            # must be added before serve_in_thread().
-            repo_root = Path(__file__).resolve().parents[2]
+    if not cli.headless and control_server is not None:
+        # Mount the unified control web (Docs/Simulator tabs + controls
+        # panel + keyboard shortcuts — web/index.html) onto the SAME
+        # FastAPI app/port as the /ws transport, per HANDOFF_control_web.md
+        # §3-B: one process, one port, same-origin WS (no CORS). Routes
+        # must be added before serve_in_thread(). Works the same whether
+        # adapter is Sim or Real — the Simulator tab just has nothing to
+        # show in --real mode (no viser_viewer above).
+        repo_root = Path(__file__).resolve().parents[2]
 
-            @control_server.app.get("/config")
-            def _web_config():
-                # command_ranges lets the web panel clamp its velocity
-                # sliders to the exact envelope this policy was trained
-                # across (env_cfg.commands.ranges) — see SimAdapter.set_command.
-                ranges = env_cfg.commands.ranges
-                return {
-                    "viser_port": cli.viser_port,
-                    "command_ranges": {
-                        "vx": list(ranges.lin_vel_x),
-                        "vy": list(ranges.lin_vel_y),
-                        "yaw": list(ranges.ang_vel_yaw),
-                    },
-                }
+        @control_server.app.get("/config")
+        def _web_config():
+            # command_ranges lets the web panel clamp its velocity
+            # sliders to the exact envelope this policy was trained
+            # across (env_cfg.commands.ranges) — see SimAdapter.set_command
+            # / RealAdapter.set_command.
+            ranges = env_cfg.commands.ranges
+            return {
+                "viser_port": cli.viser_port if not cli.real else None,
+                # Lets the web panel show/hide its Camera section — a plain
+                # <img src="/camera.mjpg"> otherwise has no way to know
+                # whether anything will ever be published there (see
+                # ControlServer._mjpeg_stream / --camera above).
+                "camera_enabled": cli.camera,
+                "command_ranges": {
+                    "vx": list(ranges.lin_vel_x),
+                    "vy": list(ranges.lin_vel_y),
+                    "yaw": list(ranges.ang_vel_yaw),
+                },
+            }
 
-            control_server.app.mount(
-                "/docs", StaticFiles(directory=str(repo_root / "docs"), html=True), name="docs",
-            )
-            control_server.app.mount(
-                "/", StaticFiles(directory=str(repo_root / "web"), html=True), name="web",
-            )
+        control_server.app.mount(
+            "/docs", StaticFiles(directory=str(repo_root / "docs"), html=True), name="docs",
+        )
+        control_server.app.mount(
+            "/", StaticFiles(directory=str(repo_root / "web"), html=True), name="web",
+        )
 
     if control_server is not None:
         # Routes/mounts (if any — see the `if not cli.headless` block above)
@@ -252,7 +330,11 @@ def main():
             listening_at += f" — unified control web at http://localhost:{cli.control_port}/"
         print(listening_at)
 
-    frame_dt = (1 / 60.0) / max(cli.speed, 0.01)
+    # RealAdapter.send_action() already sleeps config.control_dt internally
+    # (matching deploy_real.py's own pacing) — an extra sleep here would just
+    # slow the real control loop down further. cli.speed only makes sense as
+    # a sim-playback knob.
+    frame_dt = 0.0 if cli.real else (1 / 60.0) / max(cli.speed, 0.01)
 
     def run_headless_smoke_test():
         """No web UI at all: request one switch partway through, purely to
@@ -284,13 +366,20 @@ def main():
         run_headless_smoke_test()
         return
 
+    token_qs = f"?token={cli.token}" if cli.token else ""
     if control_server is not None and not cli.headless:
-        print(f"\nOpen http://localhost:{cli.control_port} — switch policies, pause/restart, "
-              f"E-STOP, and drive velocity commands live. {cli.viser_port} is the raw 3D view.")
+        url = f"http://localhost:{cli.control_port}{token_qs}"
+        extra = "" if cli.real else f" {cli.viser_port} is the raw 3D view."
+        print(f"\nOpen {url} — switch policies, pause/restart, E-STOP, and drive velocity commands live.{extra}")
+        if cli.real:
+            print("Share this SAME URL (with the token) with anyone building a home-made controller for "
+                  "this robot — see docs/index.html §13 for the raw WebSocket protocol.")
     else:
         print(f"\nOpen http://localhost:{cli.viser_port} — pass --control_port to also get "
               f"the unified control web (policy switching, pause/restart, E-STOP, velocity commands).")
     obs = adapter.get_observations()
+    camera_tick = 0
+    camera_decimation = env_cfg.sensor.rgb_camera_config.decimation if cli.camera else None
     while True:
         t_start = time.perf_counter()
 
@@ -314,6 +403,18 @@ def main():
 
         if control_server is not None:
             control_server.publish_status(service.status())
+
+            # A live video feed doesn't need control-loop rate (~50-200Hz) —
+            # capture/encode/publish only every rgb_camera_config.decimation
+            # ticks. get_camera_frame() returns None on any backend/config
+            # that doesn't have a camera (see RobotAdapter.get_camera_frame's
+            # docstring) — nothing to publish on those ticks.
+            if camera_decimation is not None:
+                camera_tick += 1
+                if camera_tick % camera_decimation == 0:
+                    frame = adapter.get_camera_frame()
+                    if frame is not None:
+                        control_server.publish_camera_frame(_encode_camera_frame_jpeg(frame))
 
         elapsed = time.perf_counter() - t_start
         remaining = frame_dt - elapsed
