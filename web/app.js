@@ -1548,8 +1548,8 @@ function renderRewardScaleFields(scales, notes = {}) {
     const label = document.createElement('label');
     label.textContent = term;
     label.htmlFor = `train-reward-${term}`;
-    // Same didactic hover/focus tooltip used for the "final reward terms"
-    // readout (REWARD_TERM_GLOSSARY, renderRewardTerms()) — falls back to
+    // Same didactic hover/focus tooltip used for the merged Result list
+    // (REWARD_TERM_GLOSSARY, renderMetricList()) — falls back to
     // the backend's REWARD_SCALE_NOTES for weight-only terms the glossary
     // doesn't cover (e.g. crouch_depth), so every field gets an
     // explanation rather than just the ones with a backend note.
@@ -2466,7 +2466,7 @@ function renderSeriesChart(series, specs) {
 // reward term should never appear as an unexplained identifier. Sign
 // convention noted where it isn't obvious ("penalizes X" = negative scale
 // in the task config, "rewards X" = positive). Falls back to the term name
-// itself in renderRewardTerms() if a term isn't listed here yet.
+// itself in metricTooltip() if a term isn't listed here yet.
 const REWARD_TERM_GLOSSARY = {
   base_height: 'Penalizes the base being above/below a target height off the ground — pulls the robot toward a specific standing/crouching posture. Target set in "Target variable" above.',
   tracking_lin_vel: 'Rewards matching the commanded forward/strafe velocity (the WASD/arrow-key command) — how well it goes where it’s told.',
@@ -2523,9 +2523,9 @@ function metricTooltip(key) {
   return REWARD_TERM_GLOSSARY[term] || `No description written for "${term}" yet.`;
 }
 
-// Same data-tip + .info-term-name/.info-term-name-label wrapping used by
-// renderRewardTerms() below — one place so the Result list and the chart
-// checklist can't drift into two different tooltip mechanisms.
+// Shared data-tip + .info-term-name/.info-term-name-label wrapping — one
+// place so every row in the merged Result list uses the same tooltip
+// mechanism.
 function metricLabelSpan(spec) {
   const name = document.createElement('span');
   name.className = 'info-term-name';
@@ -2556,37 +2556,113 @@ function formatMetricValue(key, val) {
   return val.toFixed(decimals);
 }
 
-function renderRewardTerms(terms) {
-  const wrap = document.createElement('div');
-  wrap.className = 'info-terms';
-  const maxAbs = Math.max(...Object.values(terms).map(Math.abs), 1e-9);
-  for (const [term, value] of Object.entries(terms).sort(([, a], [, b]) => Math.abs(b) - Math.abs(a))) {
-    const row = document.createElement('div');
-    row.className = 'info-term-row';
-    const name = document.createElement('span');
-    name.className = 'info-term-name';
-    name.tabIndex = 0;
-    name.setAttribute('data-tip', REWARD_TERM_GLOSSARY[term] || `No description written for "${term}" yet.`);
-    const nameLabel = document.createElement('span');
-    nameLabel.className = 'info-term-name-label';
-    nameLabel.textContent = term;
-    name.appendChild(nameLabel);
+// isCoreMetric()'s three keys are training-run stats (a count, a sum, a
+// std-dev) — not reward terms — so they don't get the pos/neg centered bar
+// below; only actual reward-term rows are commensurable that way.
+function isCoreMetric(key) {
+  return METRIC_SPECS.some((s) => s.key === key);
+}
+
+// One merged row list backing the "Result" section: the chartable menu
+// (core stats + whatever rew_<term> keys are common across every sampled
+// block, see buildMetricMenu()) PLUS any reward term that only showed up in
+// the final logged block (present in final_reward_terms but not common
+// enough to make the series) — those still get a bar+value, just no
+// checkbox, since there's no series to plot them against.
+function buildDisplayRows(info, menu) {
+  const rows = menu.map((spec) => ({ ...spec, chartable: true }));
+  const menuKeys = new Set(rows.map((r) => r.key));
+  const finalTerms = info.metrics.final_reward_terms || {};
+  const extraTerms = Object.keys(finalTerms).filter((t) => !menuKeys.has(`rew_${t}`)).sort();
+  for (const term of extraTerms) {
+    const key = `rew_${term}`;
+    rows.push({ key, label: term.replace(/_/g, ' '), color: hashColor(key), chartable: false });
+  }
+  return rows;
+}
+
+function rowValue(row, info) {
+  return row.chartable ? metricFinalValue(row.key, info) : info.metrics.final_reward_terms[row.key.slice(4)];
+}
+
+// Replaces the old three-way split (a plain Result list mirroring the
+// checkboxes, the checkbox grid itself, and a separate "what the reward
+// actually optimized" bar list) with one list: checkbox (chart on/off,
+// absent when there's no chart to toggle), swatch (matches the chart's
+// line color), name+tooltip, a centered pos/neg bar for actual reward
+// terms, and the value — all in one row so nothing needs cross-referencing
+// between sections. `interactive` is false when there's no series to chart
+// (a policy with only a couple of logged blocks) — checkboxes are dropped
+// entirely rather than shown disabled, since "select for a chart that
+// doesn't exist" isn't a real choice.
+function renderMetricList(wrap, rows, info, interactive, checkboxes, refreshChart, syncCheckboxes) {
+  wrap.replaceChildren();
+  wrap.classList.toggle('non-interactive', !interactive);
+  checkboxes.length = 0;
+  const termRows = rows.filter((r) => !isCoreMetric(r.key));
+  const maxAbs = Math.max(...termRows.map((r) => Math.abs(rowValue(r, info) ?? 0)), 1e-9);
+  for (const row of rows) {
+    const val = rowValue(row, info);
+    if (val == null) continue;
+    const line = document.createElement('div');
+    line.className = 'info-result-row';
+
+    if (interactive) {
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      if (row.chartable) {
+        chk.checked = selectedChartKeys.has(row.key);
+        chk.addEventListener('change', () => {
+          if (chk.checked) selectedChartKeys.add(row.key);
+          else selectedChartKeys.delete(row.key);
+          refreshChart();
+        });
+        checkboxes.push({ chk, spec: row });
+      } else {
+        chk.disabled = true;
+        chk.title = 'No series data to chart for this run';
+      }
+      line.appendChild(chk);
+    }
+
+    const swatch = document.createElement('span');
+    swatch.className = 'info-chart-check-swatch';
+    swatch.style.background = row.color;
+    line.appendChild(swatch);
+    line.appendChild(metricLabelSpan(row));
+
     const track = document.createElement('div');
-    track.className = 'info-term-bar-track';
-    const bar = document.createElement('div');
-    bar.className = 'info-term-bar';
-    // Track spans [-maxAbs, +maxAbs] centered at 50% — a term's bar grows
-    // right from center if it rewards (positive), left if it penalizes.
-    const halfPct = (Math.abs(value) / maxAbs) * 50;
-    bar.style.width = `${halfPct}%`;
-    bar.style.left = value >= 0 ? '50%' : `${50 - halfPct}%`;
-    bar.style.background = value >= 0 ? 'var(--accent2)' : 'var(--danger, #d9534f)';
-    track.appendChild(bar);
-    const val = document.createElement('span');
-    val.className = 'info-term-val';
-    val.textContent = value.toFixed(4);
-    row.appendChild(name); row.appendChild(track); row.appendChild(val);
-    wrap.appendChild(row);
+    track.className = 'info-result-bar-track';
+    if (!isCoreMetric(row.key)) {
+      track.classList.add('info-term-bar-track');
+      const bar = document.createElement('div');
+      bar.className = 'info-term-bar';
+      // Track spans [-maxAbs, +maxAbs] centered at 50% — a term's bar grows
+      // right from center if it rewards (positive), left if it penalizes.
+      const halfPct = (Math.abs(val) / maxAbs) * 50;
+      bar.style.width = `${halfPct}%`;
+      bar.style.left = val >= 0 ? '50%' : `${50 - halfPct}%`;
+      bar.style.background = val >= 0 ? 'var(--accent2)' : 'var(--danger, #d9534f)';
+      track.appendChild(bar);
+    }
+    line.appendChild(track);
+
+    const v = document.createElement('span');
+    v.className = 'info-result-val';
+    v.textContent = formatMetricValue(row.key, val);
+    line.appendChild(v);
+
+    if (interactive && row.chartable) {
+      line.title = 'Double-click to show only this variable on the chart';
+      line.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        selectedChartKeys.clear();
+        selectedChartKeys.add(row.key);
+        syncCheckboxes();
+        refreshChart();
+      });
+    }
+    wrap.appendChild(line);
   }
   return wrap;
 }
@@ -2604,41 +2680,20 @@ function renderPolicyInfo(info) {
 
     const results = infoSection('Result');
     const series = info.metrics.series || [];
-    // Same menu the checklist below offers: the 3 core stats (only if this
-    // run has series data to chart) plus every rew_<term> the run tracked,
-    // or just the core specs as a plain list when there's no chartable
-    // series at all (e.g. a policy with only a few logged blocks).
+    // The 3 core stats (only if this run has series data to chart) plus
+    // every rew_<term> the run tracked, or just the core specs as a plain
+    // list when there's no chartable series at all (e.g. a policy with
+    // only a few logged blocks).
     const menu = series.length > 1 ? buildMetricMenu(series) : METRIC_SPECS.filter((s) => info.metrics.final[s.key] != null);
+    const rows = buildDisplayRows(info, menu);
 
-    // Result list: shows only what's actually checked in the checklist below
-    // (selectedChartKeys) instead of always the same 3 fixed cards — so it
-    // mirrors whatever the chart is drawing. Rebuilt in place on every
-    // checkbox toggle; falls back to the full menu if the user has
-    // unchecked everything, so the list is never empty.
-    const resultList = document.createElement('div');
-    resultList.className = 'info-result-list';
-    function renderResultList() {
-      resultList.replaceChildren();
-      const shown = menu.filter((s) => selectedChartKeys.has(s.key));
-      for (const spec of shown.length ? shown : menu) {
-        const val = metricFinalValue(spec.key, info);
-        if (val == null) continue;
-        const row = document.createElement('div');
-        row.className = 'info-result-row';
-        const swatch = document.createElement('span');
-        swatch.className = 'info-chart-check-swatch';
-        swatch.style.background = spec.color;
-        const v = document.createElement('span');
-        v.className = 'info-result-val';
-        v.textContent = formatMetricValue(spec.key, val);
-        row.appendChild(swatch);
-        row.appendChild(metricLabelSpan(spec));
-        row.appendChild(v);
-        resultList.appendChild(row);
-      }
-    }
-    renderResultList();
-    results.appendChild(resultList);
+    // Chart renders first — see #policy-info-top — so the merged list
+    // below it (checkbox + bar + value per metric, see renderMetricList())
+    // is read as "detail behind the lines above" rather than the other way
+    // around.
+    const listWrap = document.createElement('div');
+    listWrap.className = 'info-result-list';
+    const interactive = series.length > 1 && menu.length > 1;
 
     if (series.length > 1) {
       const chartWrap = document.createElement('div');
@@ -2650,22 +2705,15 @@ function renderPolicyInfo(info) {
       caption.textContent = `${series[0].iteration}→${series[series.length - 1].iteration} iterations, normalized to % of this run`;
       results.appendChild(caption);
 
-      // One checkbox per chartable metric this run has (the three defaults
-      // plus whatever per-term rewards training.py found common to every
-      // sampled block — see buildMetricMenu()). Checked state comes from the
-      // module-level selectedChartKeys, not a per-render default, so the
-      // selection survives stepping to a different policy with ↑/↓.
-      // Re-renders the <svg> and the Result list above in place on toggle
-      // so the checklist itself doesn't get rebuilt.
-      if (menu.length > 1) {
-        // Every checkbox, so "Select all" / double-click-to-isolate can
-        // update all of them in one place instead of each row only knowing
-        // about itself.
+      // Checked state comes from the module-level selectedChartKeys, not a
+      // per-render default, so the selection survives stepping to a
+      // different policy with ↑/↓.
+      if (interactive) {
         const checkboxes = [];
         function refreshChart() {
           const active = menu.filter((s) => selectedChartKeys.has(s.key));
           chartWrap.replaceChild(renderSeriesChart(series, active), chartWrap.firstChild);
-          renderResultList();
+          renderMetricList(listWrap, rows, info, true, checkboxes, refreshChart, syncCheckboxes);
         }
         function syncCheckboxes() {
           for (const { chk, spec } of checkboxes) chk.checked = selectedChartKeys.has(spec.key);
@@ -2685,41 +2733,14 @@ function renderPolicyInfo(info) {
         checklistHead.appendChild(selectAllBtn);
         results.appendChild(checklistHead);
 
-        const checklist = document.createElement('div');
-        checklist.className = 'info-chart-checks';
-        for (const spec of menu) {
-          const row = document.createElement('label');
-          row.className = 'info-chart-check-row';
-          // Double-click a row to isolate it — select ONLY this metric and
-          // uncheck every other one, instead of hand-unchecking the rest.
-          row.title = 'Double-click to show only this variable';
-          row.addEventListener('dblclick', (e) => {
-            e.preventDefault();
-            selectedChartKeys.clear();
-            selectedChartKeys.add(spec.key);
-            syncCheckboxes();
-            refreshChart();
-          });
-          const chk = document.createElement('input');
-          chk.type = 'checkbox';
-          chk.checked = selectedChartKeys.has(spec.key);
-          chk.addEventListener('change', () => {
-            if (chk.checked) selectedChartKeys.add(spec.key);
-            else selectedChartKeys.delete(spec.key);
-            refreshChart();
-          });
-          checkboxes.push({ chk, spec });
-          const swatch = document.createElement('span');
-          swatch.className = 'info-chart-check-swatch';
-          swatch.style.background = spec.color;
-          row.appendChild(chk);
-          row.appendChild(swatch);
-          row.appendChild(metricLabelSpan(spec));
-          checklist.appendChild(row);
-        }
-        results.appendChild(checklist);
+        renderMetricList(listWrap, rows, info, true, checkboxes, refreshChart, syncCheckboxes);
+      } else {
+        renderMetricList(listWrap, rows, info, false, [], null, null);
       }
+    } else {
+      renderMetricList(listWrap, rows, info, false, [], null, null);
     }
+    results.appendChild(listWrap);
     top.appendChild(results);
     frag.appendChild(top);
   }
@@ -2756,12 +2777,6 @@ function renderPolicyInfo(info) {
     ['Parallel envs', info.num_envs],
   ]));
   frag.appendChild(run);
-
-  if (info.metrics?.final_reward_terms) {
-    const terms = infoSection('What the reward actually optimized (final iteration)');
-    terms.appendChild(renderRewardTerms(info.metrics.final_reward_terms));
-    frag.appendChild(terms);
-  }
 
   const paths = infoSection('Files');
   paths.appendChild(kvList([

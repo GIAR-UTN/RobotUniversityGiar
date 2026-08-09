@@ -231,17 +231,28 @@
      so stepping through policies with ↑/↓ compares the same chart+cards
      first, without scrolling past Provenance/Training-run every time. */
   #policy-info-top{padding-bottom:.6rem; margin-bottom:.6rem; border-bottom:1px solid var(--line);}
-  /* Result list — only the metrics currently checked in .info-chart-checks
-     below, so it always mirrors what the chart is drawing instead of 3
-     fixed cards. Same row language as .info-term-row (grid columns,
-     .info-term-name tooltip) so it reads as one system with the reward-term
-     breakdown further down the popup. */
+  /* Result list — one row per metric: checkbox (chart on/off — dropped
+     entirely on a policy with no series, see .non-interactive below),
+     swatch (matches the chart line color), name+tooltip, a centered
+     pos/neg bar for actual reward terms (core stats like episode_length
+     get an empty bar-track cell instead — see isCoreMetric() in app.js),
+     and the value. Fuses what used to be three separate pieces (a plain
+     stat list, a checkbox grid, and a standalone reward-term bar list)
+     into the one thing below the chart. Double-click a row to isolate it
+     on the chart (see app.js) — "Select all" undoes that. */
   .info-result-list{display:flex; flex-direction:column; gap:.15rem; margin-bottom:.5rem;}
   .info-result-row{
-    display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.5rem;
+    display:grid; grid-template-columns:auto auto minmax(0,1fr) minmax(60px,1fr) auto;
+    align-items:center; gap:.5rem;
     font-size:.82rem; padding:.3rem .1rem; border-bottom:1px solid var(--line);
   }
+  .info-result-list.non-interactive .info-result-row{
+    grid-template-columns:auto minmax(0,1fr) minmax(60px,1fr) auto;
+  }
   .info-result-row:last-child{border-bottom:none;}
+  .info-result-row input[type="checkbox"]{cursor:pointer;}
+  .info-result-row:has(input:disabled){opacity:.55;}
+  .info-result-bar-track{min-width:0;}
   .info-result-val{font-family:ui-monospace,monospace; font-weight:700; text-align:right; white-space:nowrap; color:var(--ink);}
   .info-chart{width:100%; height:110px; display:block;}
   .info-chart-grid{stroke:var(--line); stroke-width:1;}
@@ -253,19 +264,7 @@
     border:1px solid var(--line); background:none; color:var(--ink-soft); cursor:pointer;
   }
   .info-chart-select-all-btn:hover{border-color:var(--accent2); color:var(--accent2);}
-  /* Grid, not flex-wrap, so checkboxes line up in tidy columns instead of
-     an unaligned wrapping row — each item gets its own tooltip via the
-     shared .info-term-name mechanism below. Double-click a row to isolate
-     it (see the dblclick handler in app.js) — "Select all" undoes that. */
-  .info-chart-checks{
-    display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));
-    row-gap:.3rem; column-gap:.6rem; margin-top:.3rem;
-  }
-  .info-chart-check-row{display:flex; align-items:center; gap:.35rem; font-size:.72rem; cursor:pointer; user-select:none; min-width:0;}
-  .info-chart-check-row .info-term-name{flex:1; min-width:0;}
   .info-chart-check-swatch{width:.6rem; height:.6rem; border-radius:2px; flex:none;}
-  .info-terms{display:flex; flex-direction:column; gap:.2rem;}
-  .info-term-row{display:grid; grid-template-columns:9rem 1fr auto; align-items:center; gap:.4rem; font-size:.74rem;}
   /* Didactic tooltip — hover/focus a reward-term name to see what it means,
      see REWARD_TERM_GLOSSARY in app.js. Plain CSS, no JS positioning: pins
      above the row so it never gets clipped by the dock's own scroll. */
@@ -290,7 +289,6 @@
   }
   .info-term-bar-track{position:relative; height:8px; background:var(--bg); border:1px solid var(--line); border-radius:4px; overflow:hidden;}
   .info-term-bar{position:absolute; top:0; bottom:0;}
-  .info-term-val{font-family:ui-monospace,monospace; text-align:right; white-space:nowrap;}
 
   .policy-btn, .action-btn{
     display:flex; align-items:center; justify-content:space-between; width:100%;
