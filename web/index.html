@@ -231,24 +231,38 @@
      so stepping through policies with ↑/↓ compares the same chart+cards
      first, without scrolling past Provenance/Training-run every time. */
   #policy-info-top{padding-bottom:.6rem; margin-bottom:.6rem; border-bottom:1px solid var(--line);}
-  .info-stat-row{display:flex; gap:.6rem; flex-wrap:wrap;}
-  .info-stat{
-    flex:1; min-width:110px; border:1px solid var(--line); border-top:3px solid var(--stat-color, var(--line));
-    border-radius:8px; padding:.5rem .6rem; text-align:center;
+  /* Result list — only the metrics currently checked in .info-chart-checks
+     below, so it always mirrors what the chart is drawing instead of 3
+     fixed cards. Same row language as .info-term-row (grid columns,
+     .info-term-name tooltip) so it reads as one system with the reward-term
+     breakdown further down the popup. */
+  .info-result-list{display:flex; flex-direction:column; gap:.15rem; margin-bottom:.5rem;}
+  .info-result-row{
+    display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:.5rem;
+    font-size:.82rem; padding:.3rem .1rem; border-bottom:1px solid var(--line);
   }
-  /* Episode length is the metric that matters most right now (see
-     HANDOFF_stability_curriculum.md §6 — it's the one still stuck) — give
-     its card visual priority so it reads as "the one to watch" at a glance. */
-  .info-stat.featured{flex-basis:100%; padding:.7rem .6rem;}
-  .info-stat.featured .val{font-size:1.6rem;}
-  .info-stat .val{font-size:1.15rem; font-weight:700; font-family:ui-monospace,monospace; color:var(--stat-color, var(--ink));}
-  .info-stat .lbl{font-size:.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;}
+  .info-result-row:last-child{border-bottom:none;}
+  .info-result-val{font-family:ui-monospace,monospace; font-weight:700; text-align:right; white-space:nowrap; color:var(--ink);}
   .info-chart{width:100%; height:110px; display:block;}
   .info-chart-grid{stroke:var(--line); stroke-width:1;}
   .info-chart-tick{font-size:5px; fill:var(--muted); font-family:ui-monospace,monospace;}
   .info-chart-caption{font-size:.65rem; color:var(--muted); text-align:right; margin-top:.15rem;}
-  .info-chart-checks{display:flex; flex-wrap:wrap; gap:.15rem .7rem; margin-top:.5rem;}
-  .info-chart-check-row{display:flex; align-items:center; gap:.35rem; font-size:.72rem; cursor:pointer; user-select:none;}
+  .info-chart-checks-head{display:flex; justify-content:flex-end; margin-top:.5rem;}
+  .info-chart-select-all-btn{
+    font:inherit; font-size:.65rem; line-height:1; padding:.25rem .5rem; border-radius:5px;
+    border:1px solid var(--line); background:none; color:var(--ink-soft); cursor:pointer;
+  }
+  .info-chart-select-all-btn:hover{border-color:var(--accent2); color:var(--accent2);}
+  /* Grid, not flex-wrap, so checkboxes line up in tidy columns instead of
+     an unaligned wrapping row — each item gets its own tooltip via the
+     shared .info-term-name mechanism below. Double-click a row to isolate
+     it (see the dblclick handler in app.js) — "Select all" undoes that. */
+  .info-chart-checks{
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr));
+    row-gap:.3rem; column-gap:.6rem; margin-top:.3rem;
+  }
+  .info-chart-check-row{display:flex; align-items:center; gap:.35rem; font-size:.72rem; cursor:pointer; user-select:none; min-width:0;}
+  .info-chart-check-row .info-term-name{flex:1; min-width:0;}
   .info-chart-check-swatch{width:.6rem; height:.6rem; border-radius:2px; flex:none;}
   .info-terms{display:flex; flex-direction:column; gap:.2rem;}
   .info-term-row{display:grid; grid-template-columns:9rem 1fr auto; align-items:center; gap:.4rem; font-size:.74rem;}

@@ -2502,7 +2502,59 @@ const REWARD_TERM_GLOSSARY = {
   feet_contact_stand_still: 'Rewards keeping both feet planted while the commanded velocity is ~zero — discourages stepping in place when told to stand still.',
   dof_close_to_default: 'Penalizes joints straying from their default pose in general — a mild prior toward a "neutral" posture.',
   dof_close_to_default_stand_still: 'Same as dof_close_to_default, but only applied while the commanded velocity is ~zero.',
+  actual_lin_vel_x: 'Not a reward term — a plain diagnostic of the base\'s actual forward/strafe velocity, logged for every run so it can be compared against tracking_lin_vel\'s target.',
 };
+
+// Tooltip text for the 3 fixed METRIC_SPECS keys — these are training-run
+// stats, not `_reward_<name>` terms, so they don't belong in
+// REWARD_TERM_GLOSSARY above but still need the same didactic hover/focus
+// treatment everywhere they're shown (Result list and the chart checklist).
+const CORE_METRIC_GLOSSARY = {
+  episode_length: 'How many steps the average episode lasted before ending (falling, timing out, etc.) in this logged block — the main signal for "is it still falling over".',
+  reward: 'The average total reward per episode in this logged block — the sum of every weighted reward term, the one number PPO is actually optimizing.',
+  noise_std: 'The standard deviation of the exploration noise PPO is currently adding to actions — starts high for exploration and should shrink as training converges.',
+};
+
+// Shared by the Result list and the chart checklist so both use the exact
+// same wording for the same key.
+function metricTooltip(key) {
+  if (key in CORE_METRIC_GLOSSARY) return CORE_METRIC_GLOSSARY[key];
+  const term = key.startsWith('rew_') ? key.slice(4) : key;
+  return REWARD_TERM_GLOSSARY[term] || `No description written for "${term}" yet.`;
+}
+
+// Same data-tip + .info-term-name/.info-term-name-label wrapping used by
+// renderRewardTerms() below — one place so the Result list and the chart
+// checklist can't drift into two different tooltip mechanisms.
+function metricLabelSpan(spec) {
+  const name = document.createElement('span');
+  name.className = 'info-term-name';
+  name.tabIndex = 0;
+  name.setAttribute('data-tip', metricTooltip(spec.key));
+  const label = document.createElement('span');
+  label.className = 'info-term-name-label';
+  label.textContent = spec.label;
+  name.appendChild(label);
+  return name;
+}
+
+// A metric's "current value" — info.metrics.final only ever has the 3 core
+// keys (see training.py's parse_training_log), so any extra rew_<term> key
+// has to come from the last (most recent) point of the series instead.
+function metricFinalValue(key, info) {
+  if (info.metrics.final && info.metrics.final[key] != null) return info.metrics.final[key];
+  const series = info.metrics.series;
+  if (series && series.length) {
+    const v = series[series.length - 1][key];
+    if (v != null) return v;
+  }
+  return null;
+}
+
+function formatMetricValue(key, val) {
+  const decimals = key === 'episode_length' ? 1 : key === 'reward' || key === 'noise_std' ? 3 : 4;
+  return val.toFixed(decimals);
+}
 
 function renderRewardTerms(terms) {
   const wrap = document.createElement('div');
@@ -2551,25 +2603,44 @@ function renderPolicyInfo(info) {
     top.id = 'policy-info-top';
 
     const results = infoSection('Result');
-    const statRow = document.createElement('div');
-    statRow.className = 'info-stat-row';
-    for (const spec of METRIC_SPECS) {
-      const val = info.metrics.final[spec.key];
-      const box = document.createElement('div');
-      box.className = spec.key === 'episode_length' ? 'info-stat featured' : 'info-stat';
-      box.style.setProperty('--stat-color', spec.color);
-      const v = document.createElement('div'); v.className = 'val';
-      v.textContent = val != null ? val.toFixed(spec.key === 'reward' || spec.key === 'noise_std' ? 3 : 1) : '–';
-      const l = document.createElement('div'); l.className = 'lbl'; l.textContent = spec.label;
-      box.appendChild(v); box.appendChild(l);
-      statRow.appendChild(box);
+    const series = info.metrics.series || [];
+    // Same menu the checklist below offers: the 3 core stats (only if this
+    // run has series data to chart) plus every rew_<term> the run tracked,
+    // or just the core specs as a plain list when there's no chartable
+    // series at all (e.g. a policy with only a few logged blocks).
+    const menu = series.length > 1 ? buildMetricMenu(series) : METRIC_SPECS.filter((s) => info.metrics.final[s.key] != null);
+
+    // Result list: shows only what's actually checked in the checklist below
+    // (selectedChartKeys) instead of always the same 3 fixed cards — so it
+    // mirrors whatever the chart is drawing. Rebuilt in place on every
+    // checkbox toggle; falls back to the full menu if the user has
+    // unchecked everything, so the list is never empty.
+    const resultList = document.createElement('div');
+    resultList.className = 'info-result-list';
+    function renderResultList() {
+      resultList.replaceChildren();
+      const shown = menu.filter((s) => selectedChartKeys.has(s.key));
+      for (const spec of shown.length ? shown : menu) {
+        const val = metricFinalValue(spec.key, info);
+        if (val == null) continue;
+        const row = document.createElement('div');
+        row.className = 'info-result-row';
+        const swatch = document.createElement('span');
+        swatch.className = 'info-chart-check-swatch';
+        swatch.style.background = spec.color;
+        const v = document.createElement('span');
+        v.className = 'info-result-val';
+        v.textContent = formatMetricValue(spec.key, val);
+        row.appendChild(swatch);
+        row.appendChild(metricLabelSpan(spec));
+        row.appendChild(v);
+        resultList.appendChild(row);
+      }
     }
-    results.appendChild(statRow);
+    renderResultList();
+    results.appendChild(resultList);
 
-    if (info.metrics.series?.length > 1) {
-      const series = info.metrics.series;
-      const menu = buildMetricMenu(series);
-
+    if (series.length > 1) {
       const chartWrap = document.createElement('div');
       chartWrap.appendChild(renderSeriesChart(series, menu.filter((s) => selectedChartKeys.has(s.key))));
       results.appendChild(chartWrap);
@@ -2584,29 +2655,66 @@ function renderPolicyInfo(info) {
       // sampled block — see buildMetricMenu()). Checked state comes from the
       // module-level selectedChartKeys, not a per-render default, so the
       // selection survives stepping to a different policy with ↑/↓.
-      // Re-renders just the <svg> in place on toggle so the checklist itself
-      // doesn't get rebuilt.
+      // Re-renders the <svg> and the Result list above in place on toggle
+      // so the checklist itself doesn't get rebuilt.
       if (menu.length > 1) {
+        // Every checkbox, so "Select all" / double-click-to-isolate can
+        // update all of them in one place instead of each row only knowing
+        // about itself.
+        const checkboxes = [];
+        function refreshChart() {
+          const active = menu.filter((s) => selectedChartKeys.has(s.key));
+          chartWrap.replaceChild(renderSeriesChart(series, active), chartWrap.firstChild);
+          renderResultList();
+        }
+        function syncCheckboxes() {
+          for (const { chk, spec } of checkboxes) chk.checked = selectedChartKeys.has(spec.key);
+        }
+
+        const checklistHead = document.createElement('div');
+        checklistHead.className = 'info-chart-checks-head';
+        const selectAllBtn = document.createElement('button');
+        selectAllBtn.type = 'button';
+        selectAllBtn.className = 'info-chart-select-all-btn';
+        selectAllBtn.textContent = 'Select all';
+        selectAllBtn.addEventListener('click', () => {
+          for (const spec of menu) selectedChartKeys.add(spec.key);
+          syncCheckboxes();
+          refreshChart();
+        });
+        checklistHead.appendChild(selectAllBtn);
+        results.appendChild(checklistHead);
+
         const checklist = document.createElement('div');
         checklist.className = 'info-chart-checks';
         for (const spec of menu) {
           const row = document.createElement('label');
           row.className = 'info-chart-check-row';
+          // Double-click a row to isolate it — select ONLY this metric and
+          // uncheck every other one, instead of hand-unchecking the rest.
+          row.title = 'Double-click to show only this variable';
+          row.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            selectedChartKeys.clear();
+            selectedChartKeys.add(spec.key);
+            syncCheckboxes();
+            refreshChart();
+          });
           const chk = document.createElement('input');
           chk.type = 'checkbox';
           chk.checked = selectedChartKeys.has(spec.key);
           chk.addEventListener('change', () => {
             if (chk.checked) selectedChartKeys.add(spec.key);
             else selectedChartKeys.delete(spec.key);
-            const active = menu.filter((s) => selectedChartKeys.has(s.key));
-            chartWrap.replaceChild(renderSeriesChart(series, active), chartWrap.firstChild);
+            refreshChart();
           });
+          checkboxes.push({ chk, spec });
           const swatch = document.createElement('span');
           swatch.className = 'info-chart-check-swatch';
           swatch.style.background = spec.color;
           row.appendChild(chk);
           row.appendChild(swatch);
-          row.appendChild(document.createTextNode(spec.label));
+          row.appendChild(metricLabelSpan(spec));
           checklist.appendChild(row);
         }
         results.appendChild(checklist);
