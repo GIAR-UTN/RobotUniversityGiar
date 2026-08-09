@@ -1,7 +1,127 @@
 ---
 name: rugiar
-description: Create/fine-tune RobotUniversityGiar policies from the command line with the `rugiar` CLI — picking the right simulator per OS (Genesis on Mac/Linux CPU, IsaacGym/IsaacLab on Linux+NVIDIA), or training on Kaggle's free cloud GPU. Also configures the local-policy display order (`rugiar order`) that a separate downstream control app can read. Use whenever the user wants to train a policy, fine-tune one, discover tasks/reward scales/local policies, set/view policy display order, or set up Kaggle for cloud training.
-allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*)
+description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, AND running/controlling a robot (sim today, real G1 once wired up) with `swap_experiment.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
+allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/swap_experiment.py:*) Bash(.venv/bin/python legged_gym/scripts/swap_experiment.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
+---
+
+# RUgiar system — training CLI (`rugiar`) and running/control (`swap_experiment.py`)
+
+This skill covers the two command-line ways someone actually touches this
+system day to day: **training** a policy (`rugiar`, this file's original
+scope) and **running/driving a robot with one** (`swap_experiment.py`,
+covered in the new section right below). If a user's ask is "connect to the
+robot," "switch policies live," "let me drive it with a gamepad," or
+anything about the WebSocket control protocol, that's the second section —
+don't assume it's a training question.
+
+## swap_experiment.py — running / controlling a robot (sim today, real G1 once wired up)
+
+This is the process behind the control web: it loads one or more trained
+policies, exposes policy-switching/pause/restart/E-STOP/velocity commands
+over a WebSocket, and drives either the Genesis simulator or (with `--real`)
+an actual robot over DDS. Full walkthrough with diagrams: **docs/index.html
+§12 "Switching policies live"** (architecture) and **§13 "Talking to the
+robot: the control protocol"** (the wire protocol, for building clients).
+§9 "Onto the real robot" explains the physical DDS/remote-control gating
+sequence `--real` drives through.
+
+**The live, authoritative flag reference is `python legged_gym/scripts/
+swap_experiment.py --help`** (needs `SIMULATOR` set first, same as `rugiar`
+— see "Prerequisite" below). Snapshot as of this writing, so you don't have
+to run it just to see what exists:
+
+```
+usage: swap_experiment.py [-h] --policy POLICY_SPECS [--active ACTIVE]
+                          [--ramp_ticks RAMP_TICKS] [--headless]
+                          [--viser_port VISER_PORT] [--speed SPEED]
+                          [--control_port CONTROL_PORT] [--ball] [--real]
+                          [--net_interface NET_INTERFACE]
+                          [--robot_config ROBOT_CONFIG] [--token TOKEN]
+
+--policy POLICY_SPECS   name:/path/to/policy.pt — repeatable, first one is the default active
+--active ACTIVE         which --policy name starts active (default: first one given)
+--ramp_ticks N          control ticks to cross-fade over on a switch
+--headless              no viewer — runs a scripted smoke test (switch once, then exit).
+                        Mutually exclusive with --real (see below).
+--viser_port PORT       raw 3D viewer port (sim only — Genesis's native viewer has a
+                        rendering bug on Mac/this asset combo, so viser is what's used)
+--speed FLOAT           sim playback speed multiplier (1.0 = real-time 50Hz). Ignored
+                        with --real — the real control loop paces itself off the
+                        robot's own control_dt.
+--control_port PORT     starts a networked ControlServer (JSON-over-WebSocket at /ws)
+                        on this port. Unless --headless, also serves the unified
+                        control web (policies/pause/restart/E-STOP/velocity panel +
+                        Docs tab) at http://localhost:<control_port>/.
+--ball                  spawn a physics ball prop next to the robot (Genesis only)
+--real                  drive an actual robot over DDS (deploy_real/real_adapter.py::
+                        RealAdapter) instead of Genesis. No sim env, no viser.
+                        Incompatible with --headless — a real robot's reset() blocks
+                        on a human at the physical remote, no unattended smoke test.
+--net_interface IFACE   DDS network interface on the robot's onboard computer
+                        (e.g. 'eth0', 'enp3s0') — required with --real.
+--robot_config PATH     a deploy_real/configs/*.yaml (see g1.yaml) — required with --real.
+--token SECRET          shared secret required on every /ws connection
+                        (?token=... query param, including the web UI, which forwards
+                        its own page's own ?token=...). Strongly recommended whenever
+                        --control_port is reachable from more than localhost — which
+                        --real always is (the robot's own WiFi/LAN).
+```
+
+### Quick start — sim, with the control web
+
+```bash
+export SIMULATOR=genesis
+python legged_gym/scripts/swap_experiment.py \
+    --policy stable:policies/stable.pt \
+    --policy crouch:policies/crouch/checkpoint.pt \
+    --active stable --control_port 9013
+# open http://localhost:9013 — switch policies, pause/restart, E-STOP,
+# drive velocity commands live; :9006 is the raw 3D view (printed at startup)
+```
+
+### Connecting to a real robot
+
+```bash
+python legged_gym/scripts/swap_experiment.py \
+    --policy stable:policies/stable.pt \
+    --control_port 9013 --token <a-shared-secret> \
+    --real --net_interface eth0 --robot_config deploy_real/configs/g1.yaml
+```
+Runs on the robot's own onboard computer (needs `unitree_sdk2py` installed —
+this is untested in this dev environment, no physical robot/SDK here — see
+`deploy_real/real_adapter.py`'s module docstring for exactly what's been
+verified vs. what still needs re-checking against real hardware before
+trusting it). `--token` is what stands between "anyone on the robot's WiFi"
+and "can send it commands" — always set it for `--real`. Share
+`http://<robot-ip>:9013/?token=<secret>` with whoever needs either the web
+UI or to build their own controller against the same robot — see below.
+
+### The control protocol, for building a client (home-made controller, automation, etc.)
+
+Full spec: **docs/index.html §13**. The short version: connect to
+`ws://<host>:<port>/ws` (append `?token=...` if the server has one), send
+`{"method": "set_command", "params": {"vx": 0.4, "vy": 0.0, "yaw": 0.0}, "id": 1}`
+to drive a walking velocity (clamped server-side to the active policy's
+trained envelope — send whatever, it won't ask for something unsafe), and
+either poll `status` or just listen — the server pushes a `status` message
+to every connected client at ~10Hz unprompted, with `backend` ("sim"/"real"),
+`capabilities`, `command`, and per-field-labeled `telemetry`. A complete,
+minimal reference client (connects, authenticates, streams `set_command`
+from a gamepad or a `--demo` scripted loop) is `examples/joystick_controller.py`
+— read it before writing a new client from scratch, the connect/send loop
+doesn't need to change, only where the (vx, vy, yaw) numbers come from.
+
+### Reviewing a specific checkpoint before trusting it
+
+`play.py` opens any single checkpoint live in the browser (not the control
+web — no policy switching, just watch one policy):
+```bash
+python legged_gym/scripts/play.py --task=g1 --load_run=<run> --ckpt=<N> \
+    --viewer=viser --viser_port=9006
+```
+See "Troubleshooting" below (this is the single most important habit in
+this whole skill — a good reward curve is not evidence a policy walks).
+
 ---
 
 # rugiar — CLI for creating RobotUniversityGiar policies
@@ -622,6 +742,27 @@ two variables at once (high entropy AND too-few envs/iterations per "Scale
 matters" above), so it was never a clean test of entropy alone; the correct way to
 test entropy is at the reference `num_envs=4096`, isolating it as the only changed
 variable from a known-good base, exactly as done here.
+
+**Follow-up, same day: `0.02` looks like a sweet spot for this lineage, `0.04`
+did not help further.** Two more chunks branched from `walk_gpu_c4_hient`:
+`walk_gpu_c4_hient2` (same `entropy_coef=0.02`, +290 more iterations —
+continuing to improve: reward 20.77, episode_length 981.6, up from `hient`'s
+19.59/973.0) vs. `walk_gpu_c4_hient_x2` (`entropy_coef=0.04` instead, +280
+iterations from the same `hient` base — reward dropped to 6.66, episode_length
+to 831.1, `noise_std` up to 1.12 vs `hient2`'s 0.71). This time the numbers and
+the direct observation **agreed**: watched in viser, `hient_x2` did not look
+better than `hient`/`hient2` — doubling entropy again past the point that
+already fixed the bunny-hop bought nothing further (and the reward/episode_length
+drop plus rising noise_std are at least consistent with it starting to erode
+rather than help, though a single data point isn't enough to call that a firm
+ceiling).
+
+**Practical takeaway: don't assume "more entropy = more improvement" scales
+linearly.** The jump that mattered was `0.01 → 0.02` (bunny-hop → much better
+gait); `0.02 → 0.04` was flat-to-worse in this lineage. If replicating this
+recipe elsewhere, try `0.02` before reaching for anything higher, and treat
+higher values as needing their own confirmation rather than an automatic
+"more is better" continuation of this same result.
 
 ## Measuring actual velocity, not just the tracking-reward proxy
 
