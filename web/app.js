@@ -2363,6 +2363,14 @@ const METRIC_SPECS = [
   { key: 'noise_std', label: 'Action noise std', color: 'var(--danger, #d9534f)' },
 ];
 
+// Which chart metrics are checked — lives OUTSIDE renderPolicyInfo so
+// stepping between policies with ↑/↓ (each a fresh renderPolicyInfo call)
+// keeps whatever the user last chose instead of resetting to the 3
+// defaults every time. Seeded with the defaults on first load; a key not
+// present in a given policy's own menu just has nothing to render — it
+// stays remembered in case a later policy has that same reward term.
+const selectedChartKeys = new Set(METRIC_SPECS.map((s) => s.key));
+
 // Cycled for any per-run reward-term series (series points' `rew_*` keys)
 // beyond the three METRIC_SPECS defaults — those aren't known ahead of time,
 // they're whatever training.py found common to every sampled block of THIS
@@ -2550,10 +2558,9 @@ function renderPolicyInfo(info) {
     if (info.metrics.series?.length > 1) {
       const series = info.metrics.series;
       const menu = buildMetricMenu(series);
-      const defaultKeys = new Set(METRIC_SPECS.map((s) => s.key));
 
       const chartWrap = document.createElement('div');
-      chartWrap.appendChild(renderSeriesChart(series, menu.filter((s) => defaultKeys.has(s.key))));
+      chartWrap.appendChild(renderSeriesChart(series, menu.filter((s) => selectedChartKeys.has(s.key))));
       results.appendChild(chartWrap);
 
       const caption = document.createElement('div');
@@ -2563,23 +2570,26 @@ function renderPolicyInfo(info) {
 
       // One checkbox per chartable metric this run has (the three defaults
       // plus whatever per-term rewards training.py found common to every
-      // sampled block — see buildMetricMenu()). Re-renders just the <svg>
-      // in place on toggle so the checklist itself doesn't get rebuilt.
+      // sampled block — see buildMetricMenu()). Checked state comes from the
+      // module-level selectedChartKeys, not a per-render default, so the
+      // selection survives stepping to a different policy with ↑/↓.
+      // Re-renders just the <svg> in place on toggle so the checklist itself
+      // doesn't get rebuilt.
       if (menu.length > 1) {
         const checklist = document.createElement('div');
         checklist.className = 'info-chart-checks';
-        const checkboxes = new Map();
         for (const spec of menu) {
           const row = document.createElement('label');
           row.className = 'info-chart-check-row';
           const chk = document.createElement('input');
           chk.type = 'checkbox';
-          chk.checked = defaultKeys.has(spec.key);
+          chk.checked = selectedChartKeys.has(spec.key);
           chk.addEventListener('change', () => {
-            const active = menu.filter((s) => checkboxes.get(s.key).checked);
+            if (chk.checked) selectedChartKeys.add(spec.key);
+            else selectedChartKeys.delete(spec.key);
+            const active = menu.filter((s) => selectedChartKeys.has(s.key));
             chartWrap.replaceChild(renderSeriesChart(series, active), chartWrap.firstChild);
           });
-          checkboxes.set(spec.key, chk);
           const swatch = document.createElement('span');
           swatch.className = 'info-chart-check-swatch';
           swatch.style.background = spec.color;
