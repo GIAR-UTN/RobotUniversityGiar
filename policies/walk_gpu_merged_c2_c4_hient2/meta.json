@@ -1,0 +1,1 @@
+{"task": "g1", "created_at": 1786369474.9675038, "trained_via": "fusion", "simulator": "isaacgym", "fusion": {"method": "weighted_average", "sources": [{"name": "walk_gpu_c2", "task": "g1", "weight": 1}, {"name": "walk_gpu_c4_hient2", "task": "g1", "weight": 2}], "warnings": ["sources were trained on different simulators (genesis, isaacgym)"]}}
