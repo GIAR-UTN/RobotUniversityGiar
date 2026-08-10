@@ -14,6 +14,9 @@ let keymap = {};
 let keyByPolicy = {}; // policy name -> shortcut key, recomputed on every render from LIST POSITION
 let policyByKey = {}; // inverse of keyByPolicy, for keydown dispatch — see recomputePolicyShortcuts()
 let renderedPolicyNames = null; // policies list actually painted into the DOM right now
+let policyListExpanded = false; // false = only the first POLICY_VISIBLE_COUNT rows are shown;
+                                 // toggled by the "Show all" button, survives re-renders (drag
+                                 // reorder, status pushes) until the user collapses it again
 let renderedTrainingJobsKey = null; // like renderedPolicyNames — dedupe key excluding elapsed_s
                                      // (elapsed_s would otherwise change on every ~10Hz status
                                      // push while a job is running and force a DOM rebuild every tick)
@@ -251,6 +254,12 @@ function policyButtonRow(name, active) {
 const POLICY_ORDER_KEY = 'giar.policyOrder.v1';
 const POLICY_SHORTCUT_KEYS = ['0', '9', '8', '7', '6', '5', '4', '3', '2', '1'];
 
+// Collapsed by default to match the shortcut cap above — the first 10 slots
+// are the only ones with a keycap anyway, so anything past that is already
+// "extra" and belongs behind "Show all" rather than pushing the Policies
+// panel taller than its neighbors (Live Telemetry etc).
+const POLICY_VISIBLE_COUNT = 10;
+
 function loadPolicyOrder() {
   const raw = localStorage.getItem(POLICY_ORDER_KEY);
   if (!raw) return null;
@@ -304,14 +313,37 @@ function recomputePolicyShortcuts(names) {
 function renderPolicyList(names, active) {
   recomputePolicyShortcuts(names);
   policyList.innerHTML = '';
-  for (const name of names) {
+  const visibleCount = policyListExpanded ? names.length : POLICY_VISIBLE_COUNT;
+  names.slice(0, visibleCount).forEach((name) => {
     policyList.appendChild(policyButtonRow(name, active));
+  });
+
+  const hiddenCount = names.length - POLICY_VISIBLE_COUNT;
+  if (hiddenCount > 0) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'policy-show-all-btn';
+    toggle.textContent = policyListExpanded ? 'Show fewer' : `Show all (${names.length})`;
+    toggle.onclick = () => {
+      policyListExpanded = !policyListExpanded;
+      renderPolicyList(names, latestStatus?.active);
+    };
+    policyList.appendChild(toggle);
   }
+
   initPolicyDrag();
 }
 
 function onPolicyReorder() {
-  const names = [...policyList.querySelectorAll('.policy-row')].map((r) => r.dataset.policy);
+  // While collapsed, only the visible rows exist in the DOM to drag — any
+  // names hidden behind "Show all" aren't part of this drag at all, so
+  // splice them back in (in their prior relative order) rather than let
+  // them silently fall out of the saved order.
+  const visibleNames = [...policyList.querySelectorAll('.policy-row')].map((r) => r.dataset.policy);
+  const rawNames = latestStatus?.policies || [];
+  const visibleSet = new Set(visibleNames);
+  const hiddenNames = applyPolicyOrder(rawNames).filter((n) => !visibleSet.has(n));
+  const names = [...visibleNames, ...hiddenNames];
   savePolicyOrder(names);
   // Re-render (rather than patch in place) so the keycaps painted on each
   // row immediately reflect the new position -> key assignment.

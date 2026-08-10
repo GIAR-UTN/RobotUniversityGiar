@@ -168,7 +168,7 @@
   .help-popover p{margin:0;}
 
   .policy-info-btn{
-    flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
+    flex:none; width:22px; height:22px; border-radius:6px; border:1px solid var(--line);
     background:var(--bg); color:var(--muted); cursor:pointer; font:600 12px/1 inherit;
   }
   .policy-info-btn:hover{border-color:var(--accent2); color:var(--accent2);}
@@ -297,16 +297,25 @@
     background:var(--bg); color:var(--ink); cursor:pointer; font:inherit;
   }
   .policy-btn.active{border-color:var(--accent2); font-weight:600;}
-  .policy-row{display:flex; align-items:center; gap:.35rem; margin-bottom:.4rem;}
-  .policy-row .policy-btn{margin-bottom:0; flex:1; min-width:0;}
-  .policy-row .drag-handle{flex:none; font-size:.85rem;}
+  /* Narrower than a generic .action-btn — ten of these plus the Show-all
+     button should occupy roughly the same height as the Live Telemetry
+     panel, not run well past it. */
+  .policy-row{display:flex; align-items:center; gap:.3rem; margin-bottom:.25rem;}
+  .policy-row .policy-btn{margin-bottom:0; flex:1; min-width:0; padding:.3rem .55rem;}
+  .policy-row .drag-handle{flex:none; font-size:.8rem;}
   .policy-row.dragging{opacity:.6;}
   .policy-delete-btn{
-    flex:none; width:26px; height:26px; border-radius:6px; border:1px solid var(--line);
+    flex:none; width:22px; height:22px; border-radius:6px; border:1px solid var(--line);
     background:var(--bg); color:var(--muted); cursor:pointer; font:inherit; line-height:1;
   }
   .policy-delete-btn:hover:not(:disabled){border-color:var(--danger); color:var(--danger);}
   .policy-delete-btn:disabled{opacity:.35; cursor:not-allowed;}
+  .policy-show-all-btn{
+    display:block; width:100%; margin-top:.15rem; padding:.3rem .55rem;
+    border-radius:6px; border:1px dashed var(--line); background:transparent;
+    color:var(--muted); cursor:pointer; font:inherit; font-size:.78rem; text-align:center;
+  }
+  .policy-show-all-btn:hover{border-color:var(--accent2); color:var(--accent2);}
 
   /* ---- illuminated keycaps ---- */
   .keycap{
@@ -328,6 +337,7 @@
                 inset 0 2px 3px var(--cap-shadow);
   }
   .keycap.wide{ min-width:auto; padding:0 10px; }
+  .policy-row .keycap{ min-width:20px; height:20px; font-size:11px; }
 
   .kbd-map{display:flex; flex-direction:column; gap:.6rem;}
   .kbd-cluster{display:flex; flex-direction:column; gap:4px;}
