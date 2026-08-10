@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -508,14 +509,28 @@ class ViserViewer:
         # and robot aren't centered after a reload, have to toggle Track
         # robot" bug.
         self._last_base_pos = np.zeros(3)
+        # viser runs its websocket server on its own background thread, so
+        # _on_client_connect (fired on that thread, e.g. on a browser reload)
+        # can run concurrently with _apply_camera_tracking (called every
+        # sim/render tick from the main simulation-loop thread). Both read
+        # and write _camera_track_last_base_pos and, for the reconnecting
+        # client, its camera.position/look_at -- unsynchronized, the two
+        # threads could interleave their writes to the same client's camera
+        # and visibly fight over it for a tick or two right after a reload
+        # ("the camera keeps bouncing"), settling only once the user
+        # disabled+re-enabled "Track robot" removed one of the two writers
+        # long enough for things to resync. This lock makes each of those
+        # camera-repositioning sections atomic with respect to the other.
+        self._camera_track_lock = threading.Lock()
 
         self.server.on_client_connect(self._on_client_connect)
 
     def _on_client_connect(self, client: "viser.ClientHandle") -> None:
-        client.camera.position = self._last_base_pos + self._camera_offset
-        client.camera.look_at = self._last_base_pos + self._camera_look_at_offset
-        client.camera.fov = np.radians(60.0)
-        self._camera_track_last_base_pos = None
+        with self._camera_track_lock:
+            client.camera.position = self._last_base_pos + self._camera_offset
+            client.camera.look_at = self._last_base_pos + self._camera_look_at_offset
+            client.camera.fov = np.radians(60.0)
+            self._camera_track_last_base_pos = None
 
     def _apply_camera_tracking(self, base_pos: np.ndarray) -> None:
         """Follow the robot without fighting the user's own camera control.
@@ -529,25 +544,26 @@ class ViserViewer:
         exactly how far the robot moved since the last tick -- the user's
         chosen distance/angle survives, the camera just keeps riding along.
         """
-        if self._camera_track_last_base_pos is None:
-            for client in self.server.get_clients().values():
-                client.camera.position = base_pos + self._camera_offset
-                client.camera.look_at = base_pos + self._camera_look_at_offset
-        else:
-            delta = base_pos - self._camera_track_last_base_pos
-            if np.any(delta != 0):
+        with self._camera_track_lock:
+            if self._camera_track_last_base_pos is None:
                 for client in self.server.get_clients().values():
-                    # Setting .position alone already shifts .look_at by the
-                    # same delta as a side effect (see CameraHandle.position's
-                    # setter in viser -- "position updates translate both the
-                    # camera and its look_at point together", precisely so the
-                    # viewing direction survives a translation). Also setting
-                    # .look_at here would double-apply delta to it every tick
-                    # -- a real bug that shipped once already: look_at drifted
-                    # away from the robot more and more the longer the sim
-                    # ran, since only it (not position) was ever double-moved.
-                    client.camera.position = client.camera.position + delta
-        self._camera_track_last_base_pos = base_pos.copy()
+                    client.camera.position = base_pos + self._camera_offset
+                    client.camera.look_at = base_pos + self._camera_look_at_offset
+            else:
+                delta = base_pos - self._camera_track_last_base_pos
+                if np.any(delta != 0):
+                    for client in self.server.get_clients().values():
+                        # Setting .position alone already shifts .look_at by the
+                        # same delta as a side effect (see CameraHandle.position's
+                        # setter in viser -- "position updates translate both the
+                        # camera and its look_at point together", precisely so the
+                        # viewing direction survives a translation). Also setting
+                        # .look_at here would double-apply delta to it every tick
+                        # -- a real bug that shipped once already: look_at drifted
+                        # away from the robot more and more the longer the sim
+                        # ran, since only it (not position) was ever double-moved.
+                        client.camera.position = client.camera.position + delta
+            self._camera_track_last_base_pos = base_pos.copy()
 
     def _setup_camera_gui(self) -> None:
         """Add camera tracking and FOV controls."""
@@ -564,7 +580,8 @@ class ViserViewer:
             def _(_) -> None:
                 self._camera_tracking_enabled = cb_tracking.value
                 if self._camera_tracking_enabled:
-                    self._camera_track_last_base_pos = None
+                    with self._camera_track_lock:
+                        self._camera_track_last_base_pos = None
 
             slider_fov = self.server.gui.add_slider(
                 "FOV (\u00b0)",

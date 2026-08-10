@@ -22,6 +22,8 @@ normal file-based import resolve viser_viewer.py through them.
 Run directly: python tests/test_viser_camera_tracking.py
 """
 import sys
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -105,6 +107,7 @@ def _make_viewer():
     viewer._camera_look_at_offset = np.array([0.0, 0.0, 0.3])
     viewer._camera_track_last_base_pos = None
     viewer._last_base_pos = np.zeros(3)
+    viewer._camera_track_lock = threading.Lock()
     return viewer
 
 
@@ -220,6 +223,83 @@ class TestCameraTracking(unittest.TestCase):
             np.linalg.norm(far_client.camera.position - near_client.camera.position),
             1.0,
         )
+
+    def test_connect_and_tracking_tick_race_dont_interleave(self):
+        """Regression for the "reload the page and the camera keeps
+        bouncing" bug: viser fires _on_client_connect on its own websocket
+        thread, concurrently with _apply_camera_tracking running on the main
+        sim-loop thread. Both write a client's camera.position THEN
+        camera.look_at as two separate statements; without a lock the two
+        threads' statements can interleave (thread A's position write,
+        thread B's position write, thread B's look_at write, thread A's
+        look_at write), leaving position and look_at sourced from different
+        base_pos snapshots -- a camera pointed at the wrong spot, which
+        reads as the reported bouncing/glitching right after a reload.
+        _camera_track_lock must make each writer's position+look_at pair
+        atomic with respect to the other.
+
+        Uses a Barrier (not a sleep) inside the camera's position setter to
+        force a deterministic rendezvous between the two threads: if
+        _camera_track_lock actually serializes the two call sites, the
+        second thread can never reach the barrier while the first holds the
+        lock, so the barrier always times out (harmless, swallowed below)
+        and no interleaving happens. If the lock were missing, both threads
+        would reach the barrier together every iteration, guaranteeing the
+        interleave this test exists to catch."""
+
+        barrier = threading.Barrier(2)
+
+        class _RendezvousCamera(_FakeCamera):
+            @_FakeCamera.position.setter
+            def position(self, value):
+                _FakeCamera.position.fset(self, value)
+                try:
+                    barrier.wait(timeout=0.02)
+                except threading.BrokenBarrierError:
+                    pass
+                finally:
+                    barrier.reset()
+
+        viewer = _make_viewer()
+        client = _FakeClient(position=[0.0, 0.0, 0.0], look_at=[0.0, 0.0, 0.0])
+        client.camera = _RendezvousCamera(position=[0.0, 0.0, 0.0], look_at=[0.0, 0.0, 0.0])
+        viewer.server._clients[0] = client
+
+        errors = []
+        ITERS = 15
+        expected_diff = viewer._camera_offset - viewer._camera_look_at_offset
+
+        def connect_loop():
+            for i in range(ITERS):
+                try:
+                    viewer._last_base_pos = np.array([float(i), 0.0, 0.0])
+                    viewer._on_client_connect(client)
+                    np.testing.assert_allclose(
+                        client.camera.position - client.camera.look_at, expected_diff
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced via errors
+                    errors.append(exc)
+
+        def tracking_loop():
+            for i in range(ITERS):
+                try:
+                    with viewer._camera_track_lock:
+                        viewer._camera_track_last_base_pos = None
+                    viewer._apply_camera_tracking(np.array([0.0, float(i), 0.0]))
+                    np.testing.assert_allclose(
+                        client.camera.position - client.camera.look_at, expected_diff
+                    )
+                except Exception as exc:  # pragma: no cover - surfaced via errors
+                    errors.append(exc)
+
+        t1 = threading.Thread(target=connect_loop)
+        t2 = threading.Thread(target=tracking_loop)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertFalse(errors, errors)
 
 
 if __name__ == "__main__":
