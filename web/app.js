@@ -1329,6 +1329,224 @@ const trainError = $('#train-error');
 const btnStartTraining = $('#btn-start-training');
 const trainingJobsEl = $('#policy-training-jobs');
 
+// ---- fuse policies (see legged_gym/control/fusion.py + rugiar fuse) ----
+const btnFusePolicy = $('#btn-fuse-policy');
+const fusePolicyForm = $('#fuse-policy-form');
+const fuseSourcesEl = $('#fuse-sources');
+const fuseMethod = $('#fuse-method');
+const fuseMethodDescription = $('#fuse-method-description');
+const fuseName = $('#fuse-name');
+const fuseTaskWarning = $('#fuse-task-warning');
+const fuseTaskRow = $('#fuse-task-row');
+const fuseExportTask = $('#fuse-export-task');
+const fuseCmdPreview = $('#fuse-cmd-preview');
+const fuseCmdCopy = $('#fuse-cmd-copy');
+fuseCmdCopy.addEventListener('click', () => copyToClipboard(fuseCmdPreview.textContent, fuseCmdCopy));
+const fuseWarningsEl = $('#fuse-warnings');
+const fuseErrorEl = $('#fuse-error');
+const btnStartFusion = $('#btn-start-fusion');
+
+function showFuseError(msg) {
+  fuseErrorEl.textContent = msg;
+  fuseErrorEl.classList.toggle('show', !!msg);
+}
+
+function showFuseWarnings(warnings) {
+  fuseWarningsEl.textContent = (warnings || []).map((w) => `⚠ ${w}`).join('\n');
+  fuseWarningsEl.classList.toggle('show', !!(warnings || []).length);
+}
+
+// One checkbox + weight input per fusable local policy (train_checkpoint.pt
+// present — same requirement Clone-from has). Checked state/weights survive
+// a catalog refresh (e.g. right after this very panel fuses something) by
+// name, same spirit as refreshTrainingCatalog()'s prevTask/prevBase.
+function refreshFuseSources() {
+  const prev = new Map(fuseCheckedSources().map((s) => [s.name, s.weight]));
+  fuseSourcesEl.innerHTML = '';
+  for (const p of trainingCatalog?.fusable_policies || []) {
+    const row = document.createElement('div');
+    row.className = 'fuse-source-row';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = p.name;
+    checkbox.className = 'fuse-source-checkbox';
+    checkbox.checked = prev.has(p.name);
+
+    const label = document.createElement('label');
+    label.textContent = p.name;
+
+    const task = document.createElement('span');
+    task.className = 'fuse-source-task';
+    task.textContent = p.task;
+
+    const weight = document.createElement('input');
+    weight.type = 'number';
+    weight.min = '0'; weight.step = 'any';
+    weight.className = 'fuse-source-weight';
+    weight.value = prev.get(p.name) ?? '1';
+    weight.disabled = !checkbox.checked;
+
+    checkbox.addEventListener('change', () => {
+      weight.disabled = !checkbox.checked;
+      refreshFuseTaskDisambiguation();
+      updateFuseCmdPreview();
+    });
+    weight.addEventListener('input', updateFuseCmdPreview);
+
+    row.append(checkbox, label, task, weight);
+    fuseSourcesEl.appendChild(row);
+  }
+}
+
+function fuseCheckedSources() {
+  return Array.from(fuseSourcesEl.querySelectorAll('.fuse-source-row')).flatMap((row) => {
+    const checkbox = row.querySelector('.fuse-source-checkbox');
+    if (!checkbox.checked) return [];
+    const name = checkbox.value;
+    const task = trainingCatalog?.fusable_policies?.find((p) => p.name === name)?.task;
+    const weight = parseFloat(row.querySelector('.fuse-source-weight').value);
+    return [{ name, task, weight }];
+  });
+}
+
+function refreshFuseMethods() {
+  const prev = fuseMethod.value;
+  fuseMethod.innerHTML = '';
+  for (const m of trainingCatalog?.fusion_methods || []) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.available ? m.label : `${m.label} (coming soon)`;
+    opt.disabled = !m.available;
+    opt.title = m.description;
+    fuseMethod.appendChild(opt);
+  }
+  if ([...fuseMethod.options].some((o) => o.value === prev && !o.disabled)) {
+    fuseMethod.value = prev;
+  } else {
+    const firstAvailable = [...fuseMethod.options].find((o) => !o.disabled);
+    if (firstAvailable) fuseMethod.value = firstAvailable.value;
+  }
+  updateFuseMethodDescription();
+}
+
+function updateFuseMethodDescription() {
+  const info = trainingCatalog?.fusion_methods?.find((m) => m.id === fuseMethod.value);
+  fuseMethodDescription.textContent = info?.description || '';
+}
+
+// export_task only needs deciding when the checked sources disagree on
+// task — see TrainingManager.fuse_policies()'s docstring for why a
+// mismatched task is a warning, not a hard stop, and why THIS field still
+// has to be a real, obs/action-compatible task regardless.
+function refreshFuseTaskDisambiguation() {
+  const sources = fuseCheckedSources();
+  const tasks = [...new Set(sources.map((s) => s.task).filter(Boolean))];
+  if (tasks.length <= 1) {
+    fuseTaskWarning.hidden = true;
+    fuseTaskRow.hidden = true;
+    updateFuseCmdPreview();
+    return;
+  }
+  fuseTaskWarning.hidden = false;
+  fuseTaskWarning.textContent =
+    `Checked sources span different tasks (${tasks.join(', ')}) — pick which one the fused policy is registered under.`;
+  fuseTaskRow.hidden = false;
+  const prev = fuseExportTask.value;
+  fuseExportTask.innerHTML = '';
+  for (const t of tasks) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    fuseExportTask.appendChild(opt);
+  }
+  if (tasks.includes(prev)) fuseExportTask.value = prev;
+  updateFuseCmdPreview();
+}
+
+function updateFuseCmdPreview() {
+  const sources = fuseCheckedSources();
+  const parts = ['rugiar fuse'];
+  if (sources.length) parts.push(`--policies ${sources.map((s) => s.name).join(' ')}`);
+  if (fuseName.value.trim()) parts.push(`--name ${fuseName.value.trim()}`);
+  if (sources.some((s) => s.weight !== 1 && Number.isFinite(s.weight))) {
+    parts.push(`--weights ${sources.map((s) => (Number.isFinite(s.weight) ? s.weight : '?')).join(' ')}`);
+  }
+  if (fuseMethod.value && fuseMethod.value !== 'weighted_average') parts.push(`--method ${fuseMethod.value}`);
+  if (!fuseTaskRow.hidden && fuseExportTask.value) parts.push(`--export_task ${fuseExportTask.value}`);
+  fuseCmdPreview.textContent = parts.join(' ');
+}
+
+fuseName.addEventListener('input', updateFuseCmdPreview);
+fuseMethod.addEventListener('change', () => { updateFuseMethodDescription(); updateFuseCmdPreview(); });
+fuseExportTask.addEventListener('change', updateFuseCmdPreview);
+
+btnFusePolicy.addEventListener('click', () => {
+  const opening = fusePolicyForm.hidden;
+  fusePolicyForm.hidden = !opening;
+  btnFusePolicy.textContent = opening ? 'Cancel' : '⚛ Fuse policies…';
+  if (opening) {
+    showFuseError('');
+    showFuseWarnings([]);
+    refreshFuseSources();
+    refreshFuseMethods();
+    refreshFuseTaskDisambiguation();
+    updateFuseCmdPreview();
+  }
+});
+
+fusePolicyForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const sources = fuseCheckedSources();
+  const name = fuseName.value.trim();
+
+  if (sources.length < 2) return showFuseError('Check at least 2 policies to fuse.');
+  if (sources.some((s) => !Number.isFinite(s.weight) || s.weight < 0)) {
+    return showFuseError('Every checked policy needs a weight ≥ 0.');
+  }
+  if (sources.every((s) => s.weight === 0)) return showFuseError('At least one weight must be greater than 0.');
+  if (!name) return showFuseError('Output policy name is required.');
+  // Same "no silent overwrite" guard createPolicyForm enforces (see its own
+  // submit handler above) — finalize-style writers refuse to touch an
+  // existing policies/<name>/ rather than overwrite it.
+  if ((latestStatus?.policies || []).includes(name)) {
+    return showFuseError(
+      `'${name}' already exists — fusing into this name would overwrite its checkpoint. Pick a different name (e.g. '${name}_2').`);
+  }
+  if (!fuseTaskRow.hidden && !fuseExportTask.value) return showFuseError('Pick which task to register the fused policy under.');
+
+  showFuseError('');
+  showFuseWarnings([]);
+  btnStartFusion.disabled = true;
+  call('fuse_policies', {
+    names: sources.map((s) => s.name),
+    out_name: name,
+    weights: sources.map((s) => s.weight),
+    method: fuseMethod.value,
+    export_task: !fuseTaskRow.hidden ? fuseExportTask.value : null,
+  }).then((result) => {
+    fusePolicyForm.reset();
+    // The new policy needs to show up in the Clone-from/Fuse-from lists right
+    // away, not just the Policies list (which status() already refreshes on
+    // its own) — same refresh a just-finished training job triggers (see
+    // poll()'s justFinished branch below).
+    refreshTrainingCatalog();
+    if (result?.warnings?.length) {
+      // Fusion still succeeded — a warning is informational (e.g. "sources
+      // trained on different tasks"), not a reason to hide the result. Leave
+      // the form open with the warning visible instead of auto-collapsing,
+      // so it isn't shown for a split second and then lost.
+      showFuseWarnings(result.warnings);
+    } else {
+      fusePolicyForm.hidden = true;
+      btnFusePolicy.textContent = '⚛ Fuse policies…';
+    }
+  }).catch((e) => {
+    showFuseError(e.message);
+  }).finally(() => {
+    btnStartFusion.disabled = false;
+  });
+});
+
 let envsFieldTouched = false; // stop overwriting the field with the suggested
                                // default once the user has typed their own value
 trainEnvs.addEventListener('input', () => { envsFieldTouched = true; }, { once: true });
@@ -1822,6 +2040,11 @@ function refreshTrainingCatalog() {
     refreshNamePlaceholder();
     refreshCloneFromMismatchWarning();
     updateCommandPreview();
+
+    refreshFuseSources();
+    refreshFuseMethods();
+    refreshFuseTaskDisambiguation();
+    updateFuseCmdPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
     // server doesn't have a TrainingManager configured at all). Silent:

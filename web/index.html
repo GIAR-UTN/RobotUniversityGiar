@@ -479,6 +479,42 @@
     border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
   }
   #create-policy-form[hidden]{display:none;}
+
+  /* ---- fuse-policy form ---- */
+  #btn-fuse-policy{
+    width:100%; margin-bottom:.6rem; padding:.5rem .6rem; border-radius:6px;
+    border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
+  }
+  #fuse-policy-form[hidden]{display:none;}
+  #fuse-task-row[hidden]{display:none;}
+  .fuse-source-row{
+    display:flex; align-items:center; gap:.4rem; padding:.3rem 0; border-bottom:1px solid var(--line);
+  }
+  .fuse-source-row:last-child{border-bottom:none;}
+  .fuse-source-row label{
+    flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    font-size:.8rem; text-transform:none; letter-spacing:0; color:var(--ink); cursor:pointer;
+  }
+  .fuse-source-row input[type="number"]{width:4.5rem; flex:none;}
+  .fuse-source-row .fuse-source-task{font-size:.66rem; color:var(--muted); flex:none;}
+  #fuse-method option:disabled{color:var(--muted);}
+  #fuse-cmd-row{display:flex; align-items:flex-start; gap:.35rem;}
+  #fuse-cmd-preview{
+    flex:1; min-width:0;
+    display:block; white-space:pre-wrap; word-break:break-word;
+    background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .55rem; font:11px/1.4 ui-monospace,monospace; color:var(--ink-soft);
+    margin:.3rem 0 .6rem;
+  }
+  #fuse-error{color:var(--danger); font-size:.76rem; margin:0 0 .5rem; display:none;}
+  #fuse-error.show{display:block;}
+  #fuse-warnings{color:var(--accent2); font-size:.76rem; margin:0 0 .5rem; display:none;}
+  #fuse-warnings.show{display:block;}
+  #btn-start-fusion{
+    width:100%; padding:.5rem .6rem; border-radius:6px; border:1px solid var(--accent2);
+    background:var(--accent2); color:var(--accent-ink); font:600 .85rem/1 inherit; cursor:pointer;
+  }
+  #btn-start-fusion:disabled{opacity:.5; cursor:not-allowed;}
   #policy-training-jobs{display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem;}
   .job-row{
     border:1px solid var(--line); border-radius:6px; padding:.45rem .55rem .5rem; font-size:.76rem;
@@ -795,6 +831,7 @@
       </div>
       <div class="section-body">
         <button id="btn-new-policy" type="button">+ New policy&hellip;</button>
+        <button id="btn-fuse-policy" type="button">&#9878; Fuse policies&hellip;</button>
         <form id="create-policy-form" hidden>
 
           <div class="field-group field-group-context">
@@ -968,6 +1005,41 @@
           <p id="train-error"></p>
           <button type="submit" id="btn-start-training">Start training</button>
           <p class="field-hint">A run in progress shows in the Policies list — with live progress, ETA, and its exact command.</p>
+        </form>
+
+        <form id="fuse-policy-form" hidden>
+          <div class="field-group field-group-context">
+            <p class="field-group-label"><span class="dot"></span>Sources — which policies to merge, and how much each counts</p>
+            <p class="field-hint">Only policies with a train_checkpoint.pt (fine-tunable ones) can be fused — same requirement Clone-from has. Check 2 or more; the weight next to each is a ratio, not a percentage — "2 / 1 / 1" weighs the first source twice as heavily as the others, and every checked weight is normalized to sum to 1 automatically.</p>
+            <div id="fuse-sources"></div>
+          </div>
+
+          <div class="field-group field-group-target">
+            <p class="field-group-label"><span class="dot"></span>Method</p>
+            <select id="fuse-method"></select>
+            <p class="field-hint" id="fuse-method-description"></p>
+
+            <div class="field-row">
+              <label for="fuse-name">Output policy name</label>
+              <input type="text" id="fuse-name" placeholder="e.g. blended_v1" autocomplete="off">
+            </div>
+
+            <p class="field-hint field-warning" id="fuse-task-warning" hidden></p>
+            <div class="field-row" id="fuse-task-row" hidden>
+              <label for="fuse-export-task">Register fused policy under task</label>
+              <select id="fuse-export-task"></select>
+            </div>
+          </div>
+
+          <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
+          <div id="fuse-cmd-row">
+            <code id="fuse-cmd-preview">rugiar fuse &hellip;</code>
+            <button type="button" id="fuse-cmd-copy" class="job-copy-btn" title="Copy the rugiar command">Copy</button>
+          </div>
+          <p id="fuse-warnings"></p>
+          <p id="fuse-error"></p>
+          <button type="submit" id="btn-start-fusion">Fuse policies</button>
+          <p class="field-hint">Fusion runs synchronously (seconds, not minutes) — the result appears in the Policies list right after this form closes, no restart needed.</p>
         </form>
       </div>
     </section>
