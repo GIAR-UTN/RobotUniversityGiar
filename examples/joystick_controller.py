@@ -1,36 +1,83 @@
 #!/usr/bin/env python3
-"""Reference home-made controller for the control protocol described in
-docs/index.html §13 ("Talking to the robot: the control protocol").
+"""
+============================================================================
+ WHAT THIS IS
+============================================================================
+A ready-to-run gamepad controller for the robot (sim today, real G1 once
+--real is wired up). It does NOT train or load anything itself — it just
+connects to an ALREADY-RUNNING `swap_experiment.py` control server over a
+WebSocket and sends it the same kinds of messages the browser control web
+UI sends when you click its buttons. Point it at that server's
+--control_port and drive with a gamepad (or --demo, no gamepad needed).
 
+It sends two kinds of messages:
+  - A steady velocity stream (vx, vy, yaw) from the left/right sticks,
+    sent --hz times per second.
+  - One-shot button presses — switch policy, pause/resume, restart, estop —
+    sent once per press, not repeatedly while held.
+
+============================================================================
+ QUICK START
+============================================================================
+1) One-time setup:
+       pip install websockets          # always required
+       pip install pygame              # only if using a real gamepad (skip for --demo)
+
+2) Make sure a control server is already running somewhere (this is a
+   SEPARATE process/terminal — this script does not start it):
+       export SIMULATOR=genesis
+       python legged_gym/scripts/swap_experiment.py \\
+           --policy stable:policies/stable/checkpoint.pt \\
+           --policy other:policies/other/checkpoint.pt \\
+           --control_port 9013
+   (`las ports audit` / `lsof -iTCP -sTCP:LISTEN` first if unsure whether
+   one is already up — reuse it instead of starting a second one.)
+
+3) Try it with NO gamepad first, just to prove the connection works — this
+   sends a scripted forward/turn loop instead of reading a joystick:
+       python examples/joystick_controller.py ws://localhost:9013 --demo
+   You should see "Connected to ..." and a "[status] active=..." line.
+   Ctrl-C to stop.
+
+4) With a real gamepad plugged in, and knowing the policy names the server
+   loaded (check its startup log, or the web UI's policy panel):
+       python examples/joystick_controller.py ws://localhost:9013 \\
+           --policies stable other
+   Left stick = walk (forward/strafe), right stick X = turn. See "BUTTON
+   MAP" below for what each button does.
+
+5) For the real robot (once --real is wired up), the server will be
+   started elsewhere with --token <secret>; connect with:
+       python examples/joystick_controller.py ws://<robot-ip>:9013 \\
+           --token <secret> --policies stable other
+
+============================================================================
+ BUTTON MAP (Xbox-style controller; override numbering with --btn-* flags)
+============================================================================
+    A (button 0)        ESTOP              — trips safety immediately
+    B (button 1)        pause / resume     — toggles each press
+    X (button 2)        restart            — reset to standing pose
+    right bumper (5)    next policy        — cycles forward through --policies
+    left bumper  (4)    previous policy    — cycles backward through --policies
+
+Every button press prints what it sent (e.g. "-> estop") and the server's
+next status line confirms what actually happened (e.g. "[status]
+active=other PAUSED") — watch the terminal, don't assume a press landed
+silently.
+
+============================================================================
+ UNDER THE HOOD (for anyone modifying this file or building their own client)
+============================================================================
 This talks to legged_gym/control/transport.py::ControlServer the exact same
-way the web UI does — a plain WebSocket at /ws. Two kinds of traffic go over
-that socket:
+way the web UI does — a plain WebSocket at /ws. request_switch/pause/
+resume/restart/estop map to the exact same server-side calls
+(legged_gym/control/service.py) the web UI's policy panel/E-STOP button
+use; the server doesn't care what kind of client sent them. Full wire
+protocol: docs/index.html §13.
 
-  - A steady set_command stream (vx, vy, yaw) at --hz, driven by the stick.
-  - Discrete, edge-triggered control messages — request_switch, pause,
-    resume, restart, estop — fired once per button press, not every tick.
-    These map to the exact same server-side calls
-    (legged_gym/control/service.py) the web UI's policy panel/E-STOP button
-    use; the server doesn't care what kind of client sent them.
-
-It works unmodified against swap_experiment.py running either the Genesis
+Works unmodified against swap_experiment.py running either the Genesis
 simulator or (once wired up, --real) an actual G1 — same protocol either
 way, only what set_command/estop actually *do* underneath differs.
-
-Usage:
-    python examples/joystick_controller.py ws://localhost:9013 --demo
-    python examples/joystick_controller.py ws://<robot-ip>:9013 --token <secret>
-
-Default gamepad button mapping (Xbox-style; override with the --btn-* flags
-if your controller numbers these differently):
-    A (0)       estop                     — trips safety immediately
-    B (1)       pause / resume toggle
-    X (2)       restart                   — reset to standing pose
-    right bumper (5)   switch to next policy (cycles server's policy list)
-    left bumper  (4)   switch to previous policy
-
-Requires: pip install websockets   (pygame only if you want real gamepad
-input instead of --demo — see make_gamepad_command()/poll_buttons() below).
 
 Building your OWN home-made controller (a different gamepad library, a
 phone app, a custom microcontroller bridge, ...)? The connect/send/receive
