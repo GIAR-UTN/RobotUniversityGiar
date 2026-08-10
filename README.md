@@ -115,6 +115,42 @@ python legged_gym/scripts/finetune_from_checkpoint.py --task <task> \
     --max_iterations <more> --headless --cpu --num_envs=64
 ```
 
+### Fusing policies (model merging)
+
+Combine 2+ already-trained local policies' weights into a new policy — no
+further training involved. Available from the control web's Create Policy
+panel ("⚛ Fuse policies…", right under "+ New policy…") or the `rugiar` CLI:
+
+```bash
+rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended
+# weighted (3:1:1 ratio), name it explicitly
+rugiar fuse --policies base_a base_b base_c --weights 3 1 1 --name blended_v2
+rugiar fuse --list_fusion_methods   # see what's implemented vs. planned
+```
+
+The result is registered as a normal `./policies/<name>/` — fine-tunable via
+`train --from_policy` and fusable again, same as anything trained through
+this UI. Each source needs a `train_checkpoint.pt` (same requirement
+Clone-from has), and all sources must be architecturally compatible (same
+obs/action dims, hidden dims, and recurrent-or-not) — a mismatched *task*
+label across sources is only a warning, not a hard stop, since two tasks can
+share an identical network shape.
+
+**Method today: weighted average** (a.k.a. model soup / SWA-style
+interpolation) — an elementwise weighted sum of matching weights. It's cheap
+and works reasonably well for closely related checkpoints (a fine-tune
+lineage, or same-seed variants), but has no guarantee for independently-
+trained policies: two networks trained from different random inits can
+converge to functionally-equivalent but internally *permuted*
+representations, and naively averaging permuted weights usually lands
+between the two minima rather than a good spot near either.
+
+**Roadmap: Git Re-Basin.** The believed fix for that — solving for the
+hidden-unit permutation that best aligns two independently-trained policies
+*before* averaging — is planned as the next fusion method
+(`legged_gym/control/fusion.py`'s `FUSION_METHODS` registry already lists it
+as `"git_rebasin"`, `available: False`), not yet implemented.
+
 ### Run the policy-switching demo
 
 ```bash

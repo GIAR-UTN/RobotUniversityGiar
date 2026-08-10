@@ -372,6 +372,12 @@
   .giar-banner-text p{margin:0; max-width:none;}
   .giar-banner-text a{color:var(--accent2);}
   @media (max-width:560px){ .giar-banner-img{max-height:110px;} }
+
+  /* ---- tool screenshots (§16 — the toolkit) ---- */
+  .tool-screenshot{
+    display:block; width:100%; height:auto;
+    border:1px solid var(--line); border-radius:6px;
+  }
 </style>
 
 <div class="giar-banner">
@@ -406,6 +412,7 @@
       <li><a href="#control-protocol">Talking to the robot: the control protocol</a></li>
       <li><a href="#team">Working as a team</a></li>
       <li><a href="#training">Training a stable policy</a></li>
+      <li><a href="#toolkit">The toolkit: CLI, skill &amp; control web</a></li>
       <div class="grp">Reference</div>
       <li><a href="#glossary">Glossary</a></li>
       <li><a href="#credits">Credits &amp; license</a></li>
@@ -1076,6 +1083,7 @@ def step(self, obs):
             <tr><td><code>set_random_events</code></td><td><code>push_robots, auto_commands, push_dir</code></td><td>sim-only domain-randomization stressors — no-op/absent on <code>RealAdapter</code></td></tr>
             <tr><td><code>set_episode_timeout</code></td><td><code>seconds</code></td><td>sim-only timer reset — no-op/absent on <code>RealAdapter</code></td></tr>
             <tr><td><code>training_catalog</code>, <code>start_training</code>, <code>task_defaults</code>, <code>estimate_training_time</code></td><td>varies</td><td>the "Create Policy" panel's calls — see §15</td></tr>
+            <tr><td><code>fuse_policies</code></td><td><code>names, out_name, weights, method, export_task</code></td><td>merge 2+ existing policies' weights into a new one — see "Fusing policies" below</td></tr>
             <tr><td><code>delete_policy</code>, <code>rename_policy</code>, <code>policy_info</code>, <code>refresh_local_policies</code></td><td>varies</td><td>managing the switchable policy list</td></tr>
             <tr><td><code>system_info</code></td><td>—</td><td>host info for the web UI's footer (backend, device, etc.)</td></tr>
           </tbody>
@@ -1108,6 +1116,29 @@ def step(self, obs):
         <div class="aside">
           <div class="label">Safety note for anyone wiring up new hardware</div>
           A home-made controller only ever reaches <code>set_command</code>'s clamped envelope and the same <code>estop</code>/<code>pause</code> every other client shares — it can't ask the policy to do anything outside what it was trained across, and it can't bypass the physical remote-gated startup sequence in §9. Still, treat a first connection to real hardware the same as a first <code>--headless</code> run: harness-suspended, one person on the physical remote the whole time, nobody trusting a new client's output blind.
+        </div>
+
+        <h3>Fusing policies</h3>
+        <p><code>fuse_policies</code> (<code>legged_gym/control/service.py</code>) merges 2+ already-trained local policies' weights into a new one — no further training involved, runs synchronously (seconds, not minutes), and the result is registered exactly like a normally-trained policy: its own <code>policies/&lt;name&gt;/</code> with <code>checkpoint.pt</code> + <code>train_checkpoint.pt</code> + <code>meta.json</code>, fine-tunable via Clone-from and fusable again. Exposed three ways that all go through the same <code>TrainingManager.fuse_policies()</code> (<code>legged_gym/control/training.py</code>): the control web's "⚛ Fuse policies…" panel (right under "+ New policy…"), the <code>rugiar fuse</code> CLI, and this RPC directly for a custom client.</p>
+
+        <details class="code-box">
+          <summary><span>Merge two policies, weighted 3:1</span> <code>fuse_policies</code></summary>
+          <pre><code>{"method": "fuse_policies", "params": {
+  "names": ["stable_home_made_3", "stable_home_made_4"],
+  "out_name": "blended", "weights": [3, 1], "method": "weighted_average"
+}, "id": 7}
+// weights are normalized to sum to 1 server-side — raw ratios are fine.
+// export_task is optional (default: the first source's task) — only
+// matters when the sources span more than one task.</code></pre>
+        </details>
+
+        <p>Sources must be architecturally compatible — same obs/action dims, hidden dims, and recurrent-or-not (checked by inferring the network shape straight from each source's <code>train_checkpoint.pt</code> tensor shapes, no live env needed). A mismatched <em>task</em> label across sources is only a warning in the response's <code>warnings</code> list, not a hard stop — two different tasks can share an identical network shape and still be worth trying to merge.</p>
+
+        <p>The only method implemented today is <code>weighted_average</code> — an elementwise weighted sum of matching weights (a.k.a. model soup / SWA-style interpolation). It's cheap and works reasonably well for closely related checkpoints (a fine-tune lineage, or same-seed variants). It has no guarantee for independently-trained policies, though: two networks trained from different random initializations can converge to functionally-equivalent but internally <em>permuted</em> representations — hidden unit <em>i</em> in one network doesn't necessarily correspond to hidden unit <em>i</em> in the other — and naively averaging permuted weights typically lands in a poor region of the loss landscape between the two minima rather than a good one near either (the "mode connectivity" / permutation-symmetry problem).</p>
+
+        <div class="aside">
+          <div class="label">Roadmap: Git Re-Basin</div>
+          The believed fix for that failure mode — solving for the hidden-unit permutation that best aligns two independently-trained networks <em>before</em> averaging them, so the merge isn't hurt by permutation symmetry — is listed in <code>legged_gym/control/fusion.py</code>'s <code>FUSION_METHODS</code> registry as <code>"git_rebasin"</code>, <code>available: False</code>: proposed in the UI/CLI as a roadmap item, not yet implemented. Adding it is meant to be a contained change — a permutation-alignment pass inserted before <code>fusion.merge_state_dicts()</code>, same registry entry flipped to available — once this first weighted-average version has been used enough to judge whether it's worth the added complexity.
         </div>
       </section>
 
@@ -1230,7 +1261,7 @@ def step(self, obs):
             <tr><td class="k"><code>--base_height_target</code></td><td>0.78 m</td><td>task-specific</td><td>A run in this fork fine-tuned at <code>0.75</code> — 3cm lower than Unitree's own standing default. Not wrong, but if the base checkpoint already stands at 0.78, that's one more thing changing at once (see below).</td></tr>
           </table>
         </div>
-        <div class="cap" style="margin:-4px 0 20px;">Source for the Unitree column: <a href="https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py" target="_blank" rel="noopener"><code>g1_config.py</code>, unitreerobotics/unitree_rl_gym</a>. Source for the generic column: <a href="https://github.com/leggedrobotics/legged_gym/blob/master/legged_gym/envs/base/legged_robot_config.py" target="_blank" rel="noopener"><code>legged_robot_config.py</code>, leggedrobotics/legged_gym</a> (ETH Zürich Robotic Systems Lab — the original ANYmal-quadruped framework this whole family forked from, see <a href="#credits">§16</a>).</div>
+        <div class="cap" style="margin:-4px 0 20px;">Source for the Unitree column: <a href="https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/g1/g1_config.py" target="_blank" rel="noopener"><code>g1_config.py</code>, unitreerobotics/unitree_rl_gym</a>. Source for the generic column: <a href="https://github.com/leggedrobotics/legged_gym/blob/master/legged_gym/envs/base/legged_robot_config.py" target="_blank" rel="noopener"><code>legged_robot_config.py</code>, leggedrobotics/legged_gym</a> (ETH Zürich Robotic Systems Lab — the original ANYmal-quadruped framework this whole family forked from, see <a href="#credits">§18</a>).</div>
 
         <h3>One lesson at a time</h3>
         <p>The <code>stable_home_made_3</code>/<code>stable_home_made_4</code> run above changed <strong>three</strong> things at once relative to its base checkpoint: doubled the vx command range past Unitree's own default, turned pushes on, and moved the height target 3cm off the checkpoint's own standing height. Any one of those alone is a reasonable next step; all three together is a hard, unfamiliar situation dropped on the policy in one go — and Pattern B above is what that looks like in the logs.</p>
@@ -1288,8 +1319,49 @@ python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2c \
         </ul>
       </section>
 
+      <section id="toolkit">
+        <div class="num">§16 — this fork</div>
+        <h2>The toolkit: <code>rugiar</code> CLI, the Claude Code skill, and the control web</h2>
+        <p>Everything in §11–§15 — training, fine-tuning, fusing, switching policies live, driving a real robot — is one engine (<code>TrainingManager</code> / <code>ControlService</code>, <a href="#control-protocol">§13</a>) reachable through three doors that all stay in sync by construction, not by hand-maintained duplication: a terminal command, an AI coding assistant that already knows this system, and a browser tab.</p>
+
+        <h3><code>rugiar</code> — the command line</h3>
+        <p><code>legged_gym/cli/rugiar.py</code> is a thin wrapper that turns argv straight into the same keyword arguments <code>TrainingManager</code> already accepts — nothing about how a policy gets built, fine-tuned, or fused lives twice, so the CLI's flags and the control web's form fields can't drift apart. Three subcommands:</p>
+        <details class="code-box">
+          <summary><span>Train, fuse, and manage the local catalog — all from a terminal</span> <span class="file">rugiar</span></summary>
+          <pre><code># train from scratch, stop after 15 minutes
+rugiar train --task g1 --name crouch --max_minutes 15 --base_height_target 0.45
+
+# fine-tune an existing local policy
+rugiar train --task g1 --name crouch_v2 --from_policy crouch --max_iterations 500
+
+# merge two already-trained policies' weights into a new one (§13's Fuse policies)
+rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended
+
+# discover what's available before committing to any of the above
+rugiar train --list_tasks
+rugiar train --list_policies
+rugiar fuse --list_fusion_methods
+rugiar order --show   # the display order a downstream control layer offers policies in</code></pre>
+        </details>
+        <p>The live, authoritative reference for every flag is always <code>rugiar &lt;subcommand&gt; --help</code> — see the <code>rugiar</code> skill below for a maintained snapshot, and the root <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">README</a> for the full quick-start.</p>
+
+        <h3>The <code>rugiar</code> skill</h3>
+        <p><code>.claude/skills/rugiar/SKILL.md</code> is a packaged set of instructions <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> loads automatically whenever a conversation touches training, fusing, or driving a robot in this repo — the assistant doesn't have to be re-taught this system's gotchas every session. It captures things a plain <code>--help</code> output can't: that reward/episode-length numbers alone don't prove a policy walks (a real past mistake here, see §13), the exact recipe for training a crouched-but-mobile policy without it turning wobbly, how to set up Kaggle cloud training, the fusion roadmap (weighted average today, Git Re-Basin planned next), and the full WebSocket control protocol for anyone building a custom client. Kept next to the code it documents, in the same repo, so it's expected to be updated alongside a feature rather than drifting into stale advice.</p>
+
+        <h3>The control web</h3>
+        <p>The browser door — <code>swap_experiment.py --control_port 9013</code> serves it at <code>http://localhost:9013</code>, backed by the exact same <code>ControlService</code> the CLI and the WebSocket protocol (<a href="#control-protocol">§13</a>) talk to. A live screenshot from this fork's own development instance:</p>
+
+        <div class="plate">
+          <img class="tool-screenshot" src="assets/control-web-demo.png"
+               alt="RobotUniversityGiar control web: a G1 humanoid walking live in the Genesis simulator on the left, a camera preview and command/keyboard panels on the right, and the info popup for policy walk_gpu_c4_hient2 open in the middle — a reward-term chart, a PROVENANCE block (task g1, simulator isaacgym, cloned from walk_gpu_c4_hient, trained via control web), and the exact rugiar train command that produced it.">
+          <div class="cap">The info popup for <code>walk_gpu_c4_hient2</code>, open mid-session — the same <code>PROVENANCE</code> block <code>policy_info()</code> (§13's <code>fuse_policies</code> neighbor in the RPC table) hands back for any local policy: which task and simulator trained it, what it was cloned from, and the literal <code>rugiar train</code> command that reproduces it. Nothing about how a policy came to exist is hidden behind this panel.</div>
+        </div>
+
+        <p>Everything else in this page's earlier sections is a panel here too: <strong>policy switching</strong> with cross-fade (§12), <strong>pause/restart/E-STOP</strong> and manual velocity commands, <strong>live telemetry</strong> tagged by whether each field is a real sensor reading or simulator-only ground truth (§13), <strong>stress stimuli</strong> (random pushes/commands) for probing robustness, <strong>Create Policy</strong> for training/fine-tuning without hand-composing a command (§15), and — the newest addition — <strong>Fuse policies</strong> (§13), right under "+ New policy…", proposing every fusion method this build knows about (implemented ones enabled, planned ones like Git Re-Basin visibly listed but disabled) so the roadmap is discoverable in the UI itself, not just in a code comment.</p>
+      </section>
+
       <section id="glossary">
-        <div class="num">§16 — reference</div>
+        <div class="num">§17 — reference</div>
         <h2>Glossary</h2>
         <div class="tabwrap">
           <table>
@@ -1334,7 +1406,7 @@ python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2c \
       </section>
 
       <section id="credits" style="border-bottom:none;">
-        <div class="num">§17 — reference</div>
+        <div class="num">§18 — reference</div>
         <h2>Credits &amp; license</h2>
         <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
       </section>

@@ -1,6 +1,6 @@
 ---
 name: rugiar
-description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, AND running/controlling a robot (sim today, real G1 once wired up) with `swap_experiment.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
+description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, fusing/merging already-trained policies' weights with `rugiar fuse`, AND running/controlling a robot (sim today, real G1 once wired up) with `swap_experiment.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, fuse/merge policies, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
 allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/swap_experiment.py:*) Bash(.venv/bin/python legged_gym/scripts/swap_experiment.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
 ---
 
@@ -182,6 +182,62 @@ rugiar train --task g1 --name cloud_walk --backend kaggle --num_envs 4096 --max_
 
 Ctrl-C during a run terminates the training subprocess and leaves the policy
 **unregistered** (nothing gets written to `./policies/`) — safe to interrupt.
+
+## Fusing policies (`rugiar fuse`)
+
+Merges 2+ already-trained local policies' weights into a new policy — no
+further training. Same engine as the control web's "⚛ Fuse policies…" panel
+(right under "+ New policy…" — `legged_gym/control/fusion.py` +
+`TrainingManager.fuse_policies()`), driven from the CLI:
+
+```bash
+rugiar fuse --list_fusion_methods                          # implemented vs. planned
+rugiar fuse --list_policies                                # same list as `train`'s —
+                                                             # fine-tunable == fusable
+
+# uniform 2-way weighted average
+rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended
+
+# weighted 3-way merge, favoring the first source 2:1:1
+rugiar fuse --policies base_a base_b base_c --weights 2 1 1 --name blended_v2
+```
+
+`--list_fusion_methods` output shape (one line per method, available or
+not):
+
+```
+Fusion methods:
+  weighted_average (available): Weighted average — Elementwise weighted sum of matching weights across every source policy...
+  git_rebasin (planned, not yet implemented): Git Re-Basin (permutation alignment) — Solves for the hidden-unit permutation...
+```
+
+The result is registered as a normal `./policies/<name>/` — fine-tunable via
+`train --from_policy` and fusable again, same as anything trained through
+this UI. Every source needs a `train_checkpoint.pt` (same requirement
+`--from_policy` has — `--list_policies`'s `fine-tunable=yes/no` doubles as
+`fusable=yes/no`), and all sources must be architecturally compatible (same
+obs/action dims, hidden dims, recurrent-or-not) — checked directly from each
+`train_checkpoint.pt`'s tensor shapes, no live sim/task config needed. A
+mismatched **task** across sources is only a warning printed to stderr, not
+a hard stop, since two different tasks can share an identical network shape.
+
+**Method today: `weighted_average`** — a.k.a. model soup / SWA-style
+interpolation, an elementwise weighted sum of matching weights. Reasonable
+for closely related checkpoints (a fine-tune lineage, or same-seed
+variants) — no guarantee for independently-trained policies, since their
+hidden units aren't necessarily aligned (permutation symmetry: two networks
+trained from different random inits can converge to functionally-equivalent
+but internally *permuted* representations, and naively averaging permuted
+weights usually lands between the two minima rather than near either).
+
+**Roadmap: Git Re-Basin** (`fusion.FUSION_METHODS["git_rebasin"]`,
+`available: False`) — solving for the hidden-unit permutation that best
+aligns two independently-trained policies before averaging, believed to be
+why naive weighted averaging sometimes collapses for policies without a
+shared training lineage. Listed so the CLI/panel propose the roadmap, but
+not yet implemented — check `fusion.py`'s `FUSION_METHODS` registry (or
+`--list_fusion_methods`) for the current state before telling a user it's
+available.
 
 ## How to know if a checkpoint actually walks (don't trust the numbers)
 
