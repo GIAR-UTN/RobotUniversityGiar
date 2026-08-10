@@ -17,6 +17,8 @@ let renderedPolicyNames = null; // policies list actually painted into the DOM r
 let policyListExpanded = false; // false = only the first POLICY_VISIBLE_COUNT rows are shown;
                                  // toggled by the "Show all" button, survives re-renders (drag
                                  // reorder, status pushes) until the user collapses it again
+let metricListExpanded = false; // same idea as policyListExpanded, but for the Result panel's
+                                 // metric list — survives stepping between policies with ↑/↓
 let renderedTrainingJobsKey = null; // like renderedPolicyNames — dedupe key excluding elapsed_s
                                      // (elapsed_s would otherwise change on every ~10Hz status
                                      // push while a job is running and force a DOM rebuild every tick)
@@ -2627,15 +2629,18 @@ function rowValue(row, info) {
 // (a policy with only a couple of logged blocks) — checkboxes are dropped
 // entirely rather than shown disabled, since "select for a chart that
 // doesn't exist" isn't a real choice.
+const METRIC_LIST_VISIBLE_COUNT = 10;
+
 function renderMetricList(wrap, rows, info, interactive, checkboxes, refreshChart, syncCheckboxes) {
   wrap.replaceChildren();
   wrap.classList.toggle('non-interactive', !interactive);
   checkboxes.length = 0;
   const termRows = rows.filter((r) => !isCoreMetric(r.key));
   const maxAbs = Math.max(...termRows.map((r) => Math.abs(rowValue(r, info) ?? 0)), 1e-9);
-  for (const row of rows) {
+  const presentRows = rows.filter((r) => rowValue(r, info) != null);
+  const visibleRows = metricListExpanded ? presentRows : presentRows.slice(0, METRIC_LIST_VISIBLE_COUNT);
+  for (const row of visibleRows) {
     const val = rowValue(row, info);
-    if (val == null) continue;
     const line = document.createElement('div');
     line.className = 'info-result-row';
 
@@ -2696,6 +2701,19 @@ function renderMetricList(wrap, rows, info, interactive, checkboxes, refreshChar
     }
     wrap.appendChild(line);
   }
+
+  if (presentRows.length > METRIC_LIST_VISIBLE_COUNT) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'info-result-show-all-btn';
+    toggle.textContent = metricListExpanded ? 'Show fewer' : `Show all (${presentRows.length})`;
+    toggle.addEventListener('click', () => {
+      metricListExpanded = !metricListExpanded;
+      renderMetricList(wrap, rows, info, interactive, checkboxes, refreshChart, syncCheckboxes);
+    });
+    wrap.appendChild(toggle);
+  }
+
   return wrap;
 }
 
