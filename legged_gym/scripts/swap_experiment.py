@@ -20,6 +20,7 @@ Usage:
 """
 import argparse
 import io
+import json
 import os
 import time
 from pathlib import Path
@@ -56,6 +57,29 @@ def parse_policy_args(policy_args):
         name, path = spec.split(":", 1)
         policies[name] = path
     return policies
+
+
+def _sibling_meta_simulator(checkpoint_path: str) -> str:
+    """A --policy name:path spec is only ever cross-referenced against
+    discover_local_policies() when `name` wasn't ALSO given on the command
+    line (see main()'s `discovered = ...(exclude=policy_paths.keys())`) —
+    right for train_checkpoint (a raw file the caller might not want auto-
+    linked), wrong for `simulator`: when `checkpoint_path` sits inside a
+    self-contained policies/<name>/ folder (finalize_policy()'s own
+    convention), its meta.json already has the real answer sitting right
+    there. Defaulting to "genesis" instead — the previous behavior — was
+    simply wrong for anything actually trained on Kaggle (isaacgym), and fed
+    a false "sources were trained on different simulators" warning into the
+    Fuse policies panel for any such policy. Returns "genesis" (the
+    long-standing default) if there's no sibling meta.json to read, or it
+    doesn't parse — this must never crash startup over a missing/malformed
+    file."""
+    meta_path = os.path.join(os.path.dirname(checkpoint_path), "meta.json")
+    try:
+        with open(meta_path) as f:
+            return json.load(f).get("simulator", "genesis")
+    except (OSError, ValueError):
+        return "genesis"
 
 
 def main():
@@ -207,7 +231,7 @@ def main():
     # working across a restart, not just the checkpoint itself.
     for name, path in policy_paths.items():
         train_checkpoint = discovered.get(name, {}).get("train_checkpoint")
-        simulator = discovered.get(name, {}).get("simulator", "genesis")
+        simulator = discovered.get(name, {}).get("simulator") or _sibling_meta_simulator(path)
         training.register_source(name, task=args.task, checkpoint=path,
                                   train_checkpoint=train_checkpoint, simulator=simulator)
 

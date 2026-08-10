@@ -337,6 +337,27 @@ class ControlService:
             backend=backend,
         )
 
+    def fuse_policies(self, names: list, out_name: str, weights: Optional[list] = None,
+                       method: str = "weighted_average", export_task: Optional[str] = None) -> dict:
+        """Merges 2+ already-registered local policies' weights into a new
+        one — see TrainingManager.fuse_policies() for the actual merge/
+        validation logic (this is a thin delegate, same style as
+        start_training() above). Unlike start_training(), this runs to
+        completion synchronously and returns the result directly — merging
+        weights is a tensor op that takes seconds, not a multi-minute
+        subprocess job, so there's no job id / polling story here.
+        refresh_local_policies() afterward is what hot-loads the fused
+        result into the running supervisor immediately, the same way a
+        finished training job gets picked up (see poll_finished_training())
+        — without it the new policy would only appear after the next
+        connection/restart."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        result = self.training.fuse_policies(
+            names, out_name, weights=weights, method=method, export_task=export_task)
+        self.refresh_local_policies()
+        return result
+
     def task_defaults(self, task: str) -> dict:
         """Reference values (e.g. the task's own default pelvis height) for
         the Create Policy panel's 'relative' target fields — see

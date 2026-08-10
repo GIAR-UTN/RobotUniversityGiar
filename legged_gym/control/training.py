@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -508,9 +509,22 @@ class TrainingManager:
         (e.g. `stable`'s checkpoint is a completely separate, external
         unitree_rl_gym clone with no local training history at all — see
         HANDOFF_control_web.md's policy table) — those sources correctly
-        stay un-fine-tunable rather than silently guessing."""
+        stay un-fine-tunable rather than silently guessing.
+
+        Checked BEFORE that guess: the self-contained `policies/<name>/`
+        folder convention finalize_policy() itself writes — train_checkpoint.pt
+        sits right next to checkpoint.pt, no guessing needed at all. This
+        matters for a policy passed via swap_experiment.py's `--policy
+        name:policies/<name>/checkpoint.pt` (rather than picked up through
+        discover_local_policies(), which already checks this directly) —
+        without this check, launching a self-contained policy this way left
+        it permanently un-fine-tunable/un-fusable despite its
+        train_checkpoint.pt being right there on disk."""
         if not export_path:
             return None
+        sibling = os.path.join(os.path.dirname(export_path), "train_checkpoint.pt")
+        if os.path.isfile(sibling):
+            return sibling
         log_dir = os.path.dirname(os.path.dirname(export_path))
         if not os.path.isdir(log_dir):
             return None
@@ -632,6 +646,150 @@ class TrainingManager:
             simulator=meta["simulator"],
         )
         return str(dest_checkpoint)
+
+    def fuse_policies(self, names: Sequence[str], out_name: str,
+                       weights: Optional[Sequence[float]] = None,
+                       method: str = "weighted_average",
+                       export_task: Optional[str] = None) -> dict:
+        """Merges 2+ already-trained policies' weights into one new local
+        policy — no further training involved. See legged_gym/control/
+        fusion.py for the actual tensor math/module (re)construction; this
+        method is the disk/registration layer on top of it, mirroring
+        finalize_policy()'s own `policies/<out_name>/` conventions
+        (checkpoint.pt + train_checkpoint.pt + meta.json,
+        register_source()) so a fused policy is indistinguishable, to every
+        other caller, from a normally-trained one — fine-tunable via
+        --from_policy, and fusable again.
+
+        Each of `names` must already be in self.policy_sources (same
+        precondition run_train()/run_order() already establish via
+        discover_local_policies()+register_source() before calling in) and
+        have a train_checkpoint — the raw rsl_rl weights, not just an
+        exported TorchScript module, same restriction --from_policy has.
+
+        Sources must be architecturally compatible (matching obs/action/
+        hidden dims and recurrent-or-not — see fusion.architectures_
+        compatible()) regardless of what task each was trained on; a
+        mismatched TASK across sources is only a warning (returned, not
+        raised) since two different tasks can share an identical network
+        shape and still be a perfectly reasonable thing to try merging.
+        `export_task` picks which task the fused result gets registered
+        under (defaults to the first source's) — this determines the
+        activation function used to rebuild the network (not recoverable
+        from a state_dict) and is cross-checked against the merged weights'
+        own obs/action dims, which IS a hard error: a mismatched task here
+        would silently break ObsSpec for whoever loads this policy later
+        (see service.py's refresh_local_policies()).
+
+        Returns {"name", "checkpoint_path", "warnings": [str, ...]}."""
+        from legged_gym.control import fusion
+
+        method_info = fusion.FUSION_METHODS.get(method)
+        if method_info is None:
+            raise ValueError(f"unknown fusion method '{method}' — see fusion.FUSION_METHODS")
+        if not method_info["available"]:
+            raise ValueError(f"fusion method '{method}' is planned but not yet implemented")
+        if len(names) < 2:
+            raise ValueError("need at least 2 policies to fuse")
+        if (POLICIES_DIR / out_name).exists():
+            raise ValueError(f"'{out_name}' already exists — pick a different output name")
+
+        sources = []
+        for name in names:
+            info = self.policy_sources.get(name)
+            if info is None:
+                raise ValueError(f"'{name}' is not a known local policy")
+            if not info.get("train_checkpoint"):
+                raise ValueError(f"'{name}' has no train_checkpoint.pt — not fine-tunable, so not fusable either")
+            sources.append({"name": name, **info})
+
+        if weights is None:
+            weights = [1.0] * len(sources)
+        elif len(weights) != len(sources):
+            raise ValueError(f"got {len(weights)} weight(s) for {len(sources)} polic(y/ies)")
+
+        import torch
+        state_dicts = []
+        for src in sources:
+            ck = torch.load(src["train_checkpoint"], map_location="cpu", weights_only=False)
+            state_dicts.append(ck["model_state_dict"])
+
+        archs = [fusion.infer_architecture(sd) for sd in state_dicts]
+        for i, arch in enumerate(archs[1:], start=1):
+            mismatch = fusion.architectures_compatible(archs[0], arch)
+            if mismatch is not None:
+                raise ValueError(
+                    f"'{sources[0]['name']}' and '{sources[i]['name']}' aren't fusable: {mismatch}")
+
+        warnings: List[str] = []
+        tasks = sorted({src["task"] for src in sources})
+        if export_task is None:
+            export_task = sources[0]["task"]
+        if len(tasks) > 1:
+            warnings.append(
+                f"sources were trained on different tasks ({', '.join(tasks)}) — registering the "
+                f"fused policy under '{export_task}'; this only affects which reward/config reference "
+                f"values it's shown against, not the merged weights themselves")
+        simulators = sorted({src.get("simulator", "genesis") for src in sources})
+        if len(simulators) > 1:
+            warnings.append(f"sources were trained on different simulators ({', '.join(simulators)})")
+
+        from legged_gym.utils import task_registry
+        env_cfg, train_cfg = task_registry.get_cfgs(name=export_task)
+        if env_cfg.env.num_observations != archs[0]["num_actor_obs"] or \
+           env_cfg.env.num_actions != archs[0]["num_actions"]:
+            raise ValueError(
+                f"'{export_task}' expects {env_cfg.env.num_observations} obs / "
+                f"{env_cfg.env.num_actions} actions, but the sources have "
+                f"{archs[0]['num_actor_obs']} obs / {archs[0]['num_actions']} actions — "
+                f"pick a different --export_task")
+        # Export needs a *string* load_run to build its output filename (see
+        # PolicyExporter.export() in helpers.py) — left at its int sentinel default,
+        # a fresh task_registry.get_cfgs() config was never resolved against a real
+        # run directory the way an actual training/play invocation resolves it.
+        train_cfg.runner.load_run = "fusion"
+
+        merged = fusion.merge_state_dicts(state_dicts, list(weights))
+        actor_critic = fusion.build_actor_critic(archs[0], merged, activation=train_cfg.policy.activation)
+
+        task_type = "_".join(export_task.split("_")[1:])
+        dest_dir = POLICIES_DIR / out_name
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                exported = fusion.export_actor_critic(actor_critic, tmp, env_cfg, train_cfg, task_type)
+
+                dest_dir.mkdir(parents=True)
+                dest_checkpoint = dest_dir / "checkpoint.pt"
+                shutil.copyfile(exported, dest_checkpoint)
+
+            dest_train_checkpoint = dest_dir / "train_checkpoint.pt"
+            torch.save({"model_state_dict": merged, "optimizer_state_dict": {}, "iter": 0, "infos": {}},
+                       dest_train_checkpoint)
+
+            meta = {
+                "task": export_task, "created_at": time.time(), "trained_via": "fusion",
+                "simulator": sources[0].get("simulator", "genesis"),
+                "fusion": {
+                    "method": method,
+                    "sources": [{"name": s["name"], "task": s["task"], "weight": w}
+                                for s, w in zip(sources, weights)],
+                    "warnings": warnings,
+                },
+            }
+            with open(dest_dir / "meta.json", "w") as f:
+                json.dump(meta, f)
+        except Exception:
+            # Partial writes must not leave a half-built policies/<out_name>/ behind —
+            # that would block every retry with this name with a confusing "already
+            # exists" instead of surfacing the real error that just occurred.
+            shutil.rmtree(dest_dir, ignore_errors=True)
+            raise
+
+        self.register_source(
+            out_name, task=export_task, checkpoint=str(dest_checkpoint),
+            train_checkpoint=str(dest_train_checkpoint), simulator=meta["simulator"],
+        )
+        return {"name": out_name, "checkpoint_path": str(dest_checkpoint), "warnings": warnings}
 
     def discover_local_policies(self, exclude: Sequence[str] = ()) -> Dict[str, dict]:
         """Every self-contained `policies/<name>/` folder on disk that
@@ -800,21 +958,31 @@ class TrainingManager:
             self.policy_sources[new_name] = source
 
     def catalog(self, compatible_tasks: Optional[Sequence[str]] = None) -> dict:
+        from legged_gym.control import fusion
         from legged_gym.utils import task_registry
         all_tasks = sorted(task_registry.task_classes.keys())
         tasks = sorted(compatible_tasks) if compatible_tasks is not None else all_tasks
+        base_policies = [
+            # info already carries "simulator" (see register_source()) —
+            # surfaced here so Clone-from can flag an isaacgym/genesis
+            # sim2sim mismatch instead of silently fine-tuning across engines.
+            # Per-variable reference values come from task_defaults(info["task"])
+            # instead of being duplicated here — see app.js's refreshTargetReferences().
+            {"name": name, **info}
+            for name, info in sorted(self.policy_sources.items())
+        ]
         return {
             "tasks": tasks,
             "task_notes": {t: self.TASK_NOTES[t] for t in tasks if t in self.TASK_NOTES},
-            "base_policies": [
-                # info already carries "simulator" (see register_source()) —
-                # surfaced here so Clone-from can flag an isaacgym/genesis
-                # sim2sim mismatch instead of silently fine-tuning across engines.
-                # Per-variable reference values come from task_defaults(info["task"])
-                # instead of being duplicated here — see app.js's refreshTargetReferences().
-                {"name": name, **info}
-                for name, info in sorted(self.policy_sources.items())
-            ],
+            "base_policies": base_policies,
+            # Same filter --from_policy already requires (a train_checkpoint, not just
+            # an exported checkpoint.pt) — the Fuse policies panel's source picklist.
+            "fusable_policies": [p for p in base_policies if p.get("train_checkpoint")],
+            # Every fusion method this build knows about, available or not — see
+            # fusion.FUSION_METHODS's own docstring for why unavailable ones (e.g.
+            # "git_rebasin") are listed too: the panel/CLI should propose the roadmap,
+            # not hide it until it's implemented.
+            "fusion_methods": [{"id": key, **info} for key, info in fusion.FUSION_METHODS.items()],
             # Task-independent half of VARIABLE_REGISTRY (label/unit/source/
             # flag/note) — populates the 4 always-visible target fields once
             # per connection. The task-dependent half (reference, which

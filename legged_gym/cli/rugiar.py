@@ -184,6 +184,108 @@ def _build_order_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     return p
 
 
+def _build_fuse_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "fuse",
+        formatter_class=_HelpFormatter,
+        description=(
+            "Merge 2+ already-trained local policies' weights into a new one — no further "
+            "training involved. Exactly what the control web's 'Fuse policies…' panel does, "
+            "driven from the command line instead of a browser. The result is registered as a "
+            "normal ./policies/<name>/ — fine-tunable via `train --from_policy` and fusable "
+            "again, same as anything trained through this UI."
+        ),
+        help="Merge 2+ existing policies' weights into a new policy",
+        epilog=(
+            "examples:\n"
+            "  # uniform 2-way weighted average\n"
+            "  rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended\n\n"
+            "  # weighted 3-way merge, favoring the first source\n"
+            "  rugiar fuse --policies base_a base_b base_c --weights 2 1 1 --name blended_v2\n\n"
+            "  # see what fusion methods exist (implemented and planned)\n"
+            "  rugiar fuse --list_fusion_methods\n"
+        ),
+    )
+    required = p.add_argument_group("Required")
+    required.add_argument("--policies", type=str, nargs="+", metavar="NAME",
+                           help="2+ local policy names to merge (see `train --list_policies`); "
+                                "each must have a train_checkpoint.pt, same restriction "
+                                "`train --from_policy` has")
+    required.add_argument("--name", type=str, help="output policy name — becomes ./policies/<name>/, "
+                                                     "same as a trained policy")
+
+    weighting = p.add_argument_group("Weighting")
+    weighting.add_argument("--weights", type=float, nargs="+", default=None, metavar="W",
+                            help="one weight per --policies entry, same order (default: uniform). "
+                                 "Normalized to sum to 1 internally — raw ratios are fine, e.g. "
+                                 "'2 1 1' weighs the first source twice as heavily as the others")
+    weighting.add_argument("--method", type=str, default="weighted_average",
+                            help="fusion method (see --list_fusion_methods for what's implemented "
+                                 "vs. planned) — only 'weighted_average' is available today")
+
+    disambig = p.add_argument_group(
+        "Task disambiguation (only matters if --policies spans more than one task)")
+    disambig.add_argument("--export_task", type=str, default=None, metavar="TASK",
+                           help="which task to register the fused policy under (default: the "
+                                "first --policies entry's task). Must describe the same obs/action "
+                                "space as the sources being merged — a mismatch is rejected outright, "
+                                "not just warned about")
+
+    discover = p.add_argument_group("Discovery (print information and exit — no fusing)")
+    discover.add_argument("--list_fusion_methods", action="store_true",
+                           help="list every fusion method this build knows about, including ones "
+                                "not implemented yet, then exit")
+    discover.add_argument("--list_policies", action="store_true",
+                           help="list every local ./policies/<name>/ available to fuse — same as "
+                                "`train --list_policies`; 'fine-tunable=yes' means 'fusable=yes' too")
+
+    return p
+
+
+def _list_fusion_methods() -> None:
+    from legged_gym.control import fusion
+    rows = []
+    for key, info in fusion.FUSION_METHODS.items():
+        status = "available" if info["available"] else "planned, not yet implemented"
+        rows.append(f"{key} ({status}): {info['label']} — {info['description']}")
+    _print_lines("Fusion methods:", rows)
+
+
+def run_fuse(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    import legged_gym.envs  # noqa: F401 — see run_train()'s identical import for why
+    from legged_gym.control.training import TrainingManager
+
+    mgr = TrainingManager()
+    for name, info in mgr.discover_local_policies().items():
+        mgr.register_source(name, **info)
+
+    if args.list_fusion_methods:
+        _list_fusion_methods()
+        return 0
+    if args.list_policies:
+        _list_policies(mgr)
+        return 0
+
+    if not args.policies or len(args.policies) < 2:
+        parser.error("--policies needs at least 2 names")
+    if not args.name:
+        parser.error("--name is required")
+
+    try:
+        result = mgr.fuse_policies(
+            args.policies, args.name, weights=args.weights,
+            method=args.method, export_task=args.export_task,
+        )
+    except ValueError as e:
+        parser.error(str(e))
+        return 2  # unreachable, parser.error() exits — keeps type-checkers happy
+
+    print(f"[rugiar] '{result['name']}' ready — {result['checkpoint_path']}")
+    for warning in result["warnings"]:
+        print(f"[rugiar] warning: {warning}", file=sys.stderr)
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
@@ -193,7 +295,8 @@ def build_parser():
     subparsers = parser.add_subparsers(dest="command", required=True)
     train_parser = _build_train_parser(subparsers)
     order_parser = _build_order_parser(subparsers)
-    return parser, {"train": train_parser, "order": order_parser}
+    fuse_parser = _build_fuse_parser(subparsers)
+    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser}
 
 
 def _print_lines(title: str, rows) -> None:
@@ -354,6 +457,8 @@ def main(argv: Optional[list] = None) -> None:
         sys.exit(run_train(args, subparsers["train"]))
     elif args.command == "order":
         sys.exit(run_order(args, subparsers["order"]))
+    elif args.command == "fuse":
+        sys.exit(run_fuse(args, subparsers["fuse"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)
