@@ -749,6 +749,13 @@ class TrainingManager:
         # run directory the way an actual training/play invocation resolves it.
         train_cfg.runner.load_run = "fusion"
 
+        if method == "git_rebasin":
+            # Align every non-reference source's hidden units to the first source
+            # before averaging — see fusion.rebasin_align()'s docstring for why this
+            # (rather than plain elementwise averaging) is the whole point of the method.
+            state_dicts = [state_dicts[0]] + [
+                fusion.rebasin_align(state_dicts[0], sd) for sd in state_dicts[1:]]
+
         merged = fusion.merge_state_dicts(state_dicts, list(weights))
         actor_critic = fusion.build_actor_critic(archs[0], merged, activation=train_cfg.policy.activation)
 

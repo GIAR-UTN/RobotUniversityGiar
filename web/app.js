@@ -1530,16 +1530,14 @@ fusePolicyForm.addEventListener('submit', (e) => {
     // its own) — same refresh a just-finished training job triggers (see
     // poll()'s justFinished branch below).
     refreshTrainingCatalog();
-    if (result?.warnings?.length) {
-      // Fusion still succeeded — a warning is informational (e.g. "sources
-      // trained on different tasks"), not a reason to hide the result. Leave
-      // the form open with the warning visible instead of auto-collapsing,
-      // so it isn't shown for a split second and then lost.
-      showFuseWarnings(result.warnings);
-    } else {
-      fusePolicyForm.hidden = true;
-      btnFusePolicy.textContent = '⚛ Fuse policies…';
-    }
+    // Fusion succeeded either way — a warning (e.g. "sources trained on
+    // different simulators") is informational, not a reason to keep the form
+    // open. fuse_policies() already baked it into the new policy's
+    // meta.json (see TrainingManager.fuse_policies()), so it's not lost —
+    // it shows up under that policy's own info popup (renderPolicyInfo()'s
+    // "Fusion" section) instead of flashing here and disappearing.
+    fusePolicyForm.hidden = true;
+    btnFusePolicy.textContent = '⚛ Fuse policies…';
   }).catch((e) => {
     showFuseError(e.message);
   }).finally(() => {
@@ -3033,6 +3031,29 @@ function renderPolicyInfo(info) {
     provenance.appendChild(cmd);
   }
   frag.appendChild(provenance);
+
+  // Only present on a fused policy (TrainingManager.fuse_policies() bakes this into
+  // meta.json) — same object shape the "Command that will run" preview builds, plus
+  // whatever `warnings` fuse_policies() returned (e.g. "sources trained on different
+  // simulators"). This is the ONLY place those warnings live once the Fuse policies
+  // panel closes — see its submit handler above for why it doesn't show them itself.
+  if (info.fusion) {
+    const fusion = infoSection('Fusion');
+    const methodLabel = trainingCatalog?.fusion_methods?.find((m) => m.id === info.fusion.method)?.label
+      || info.fusion.method;
+    fusion.appendChild(kvList([
+      ['Method', methodLabel],
+      ['Sources', (info.fusion.sources || [])
+        .map((s) => `${s.name} (${s.task}, weight ${s.weight})`).join(', ')],
+    ]));
+    if (info.fusion.warnings?.length) {
+      const warn = document.createElement('p');
+      warn.className = 'info-warn';
+      warn.textContent = info.fusion.warnings.map((w) => `⚠ ${w}`).join('\n');
+      fusion.appendChild(warn);
+    }
+    frag.appendChild(fusion);
+  }
 
   if (info.entropy_coef != null || (info.reward_scale_overrides && Object.keys(info.reward_scale_overrides).length)) {
     const tuning = infoSection('Tuning overrides (vs. task defaults)');

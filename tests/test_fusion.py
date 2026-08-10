@@ -162,6 +162,68 @@ class TestArchitecturesCompatible(unittest.TestCase):
         self.assertIsNotNone(fusion.architectures_compatible(a, b))
 
 
+class TestRebasinAlign(unittest.TestCase):
+    def test_permutation_is_a_pure_relabeling_output_is_unchanged(self):
+        ac = _tiny_actor_critic(1, hidden=(8, 8))
+        ref = _tiny_actor_critic(2, hidden=(8, 8)).state_dict()
+        aligned = fusion.rebasin_align(ref, ac.state_dict())
+
+        arch = fusion.infer_architecture(ac.state_dict())
+        rebuilt = fusion.build_actor_critic(arch, aligned)
+        obs = torch.randn(4, 6)
+        self.assertTrue(torch.allclose(rebuilt.actor(obs), ac.actor(obs), atol=1e-5))
+
+    def test_aligning_a_policy_with_itself_yields_the_identity_permutation(self):
+        ac = _tiny_actor_critic(1, hidden=(8, 8))
+        sd = ac.state_dict()
+        aligned = fusion.rebasin_align(sd, sd)
+        for key, value in sd.items():
+            self.assertTrue(torch.allclose(aligned[key], value), key)
+
+    def test_recurrent_permutation_is_a_pure_relabeling_output_is_unchanged(self):
+        torch.manual_seed(1)
+        rec = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                    actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                    rnn_type="lstm", rnn_hidden_size=8, rnn_num_layers=1)
+        torch.manual_seed(2)
+        ref = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                    actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                    rnn_type="lstm", rnn_hidden_size=8, rnn_num_layers=1).state_dict()
+
+        aligned = fusion.rebasin_align(ref, rec.state_dict())
+        arch = fusion.infer_architecture(rec.state_dict())
+        rebuilt = fusion.build_actor_critic(arch, aligned)
+
+        obs = torch.randn(3, 6)
+        self.assertTrue(torch.allclose(rebuilt.act_inference(obs), rec.act_inference(obs), atol=1e-4))
+
+    def test_recurrent_permutation_also_works_for_gru(self):
+        torch.manual_seed(1)
+        rec = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                    actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                    rnn_type="gru", rnn_hidden_size=8, rnn_num_layers=1)
+        torch.manual_seed(2)
+        ref = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                    actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                    rnn_type="gru", rnn_hidden_size=8, rnn_num_layers=1).state_dict()
+
+        aligned = fusion.rebasin_align(ref, rec.state_dict())
+        arch = fusion.infer_architecture(rec.state_dict())
+        rebuilt = fusion.build_actor_critic(arch, aligned)
+
+        obs = torch.randn(3, 6)
+        self.assertTrue(torch.allclose(rebuilt.act_inference(obs), rec.act_inference(obs), atol=1e-4))
+
+    def test_aligning_a_recurrent_policy_with_itself_yields_the_identity_permutation(self):
+        rec = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                    actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                    rnn_type="lstm", rnn_hidden_size=8, rnn_num_layers=1)
+        sd = rec.state_dict()
+        aligned = fusion.rebasin_align(sd, sd)
+        for key, value in sd.items():
+            self.assertTrue(torch.allclose(aligned[key], value), key)
+
+
 class TestFusePolicies(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -186,10 +248,16 @@ class TestFusePolicies(unittest.TestCase):
         self._orig_task_registry_attr = getattr(utils_module, "task_registry", None)
         utils_module.task_registry = fake_task_registry
 
-        from legged_gym.utils.helpers import PolicyExporter
+        from legged_gym.utils.helpers import PolicyExporter, PolicyExporterLSTM
 
         def _fake_export(actor_critic, out_dir, env_cfg, train_cfg, task_type, export_onnx=False):
-            PolicyExporter(actor_critic).export(out_dir, env_cfg, export_onnx=export_onnx, train_cfg=train_cfg)
+            # Same dispatch play.export_policy() does — a recurrent actor_critic needs
+            # PolicyExporterLSTM (bundles the LSTM in), not plain PolicyExporter (which
+            # would silently drop it and export an MLP expecting hidden-sized input).
+            if getattr(actor_critic, "is_recurrent", False):
+                PolicyExporterLSTM(actor_critic).export(out_dir, env_cfg, export_onnx=export_onnx)
+            else:
+                PolicyExporter(actor_critic).export(out_dir, env_cfg, export_onnx=export_onnx, train_cfg=train_cfg)
             produced = list(Path(out_dir).glob("*.pt"))
             return str(produced[0])
 
@@ -305,12 +373,47 @@ class TestFusePolicies(unittest.TestCase):
         with self.assertRaises(ValueError):
             mgr.fuse_policies(["a", "b"], "out", method="nope")
 
-    def test_unavailable_fusion_method_raises(self):
+    def test_git_rebasin_fuses_two_policies_into_a_loadable_checkpoint(self):
         dir_a = _write_policy(training_mod.POLICIES_DIR, "a", _tiny_actor_critic(1))
         dir_b = _write_policy(training_mod.POLICIES_DIR, "b", _tiny_actor_critic(2))
         mgr = self._mgr({"a": self._source(dir_a), "b": self._source(dir_b)})
-        with self.assertRaises(ValueError):
-            mgr.fuse_policies(["a", "b"], "out", method="git_rebasin")
+
+        result = mgr.fuse_policies(["a", "b"], "rebased", method="git_rebasin")
+
+        fused_dir = training_mod.POLICIES_DIR / "rebased"
+        loaded = torch.jit.load(str(fused_dir / "checkpoint.pt"))
+        out = loaded(torch.zeros(1, 6))
+        self.assertEqual(tuple(out.shape), (1, 2))
+        with open(fused_dir / "meta.json") as f:
+            meta = json.load(f)
+        self.assertEqual(meta["fusion"]["method"], "git_rebasin")
+        self.assertEqual(result["warnings"], [])
+
+    def test_git_rebasin_fuses_two_recurrent_policies_into_a_loadable_checkpoint(self):
+        torch.manual_seed(1)
+        rec_a = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                      actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                      rnn_type="lstm", rnn_hidden_size=8, rnn_num_layers=1)
+        torch.manual_seed(2)
+        rec_b = ActorCriticRecurrent(num_actor_obs=6, num_critic_obs=6, num_actions=2,
+                                      actor_hidden_dims=[8], critic_hidden_dims=[8],
+                                      rnn_type="lstm", rnn_hidden_size=8, rnn_num_layers=1)
+        dir_a = _write_policy(training_mod.POLICIES_DIR, "a", rec_a)
+        dir_b = _write_policy(training_mod.POLICIES_DIR, "b", rec_b)
+        mgr = self._mgr({"a": self._source(dir_a), "b": self._source(dir_b)})
+
+        result = mgr.fuse_policies(["a", "b"], "rebased_rnn", method="git_rebasin")
+
+        fused_dir = training_mod.POLICIES_DIR / "rebased_rnn"
+        loaded = torch.jit.load(str(fused_dir / "checkpoint.pt"))
+        # PolicyExporterLSTM's forward is (obs, hidden_state, cell_state) -> (action, h, c) —
+        # the exported jit module bundles the LSTM in, unlike the plain (non-recurrent) exporter.
+        out, _, _ = loaded(torch.zeros(1, 6), torch.zeros(1, 1, 8), torch.zeros(1, 1, 8))
+        self.assertEqual(tuple(out.shape), (1, 2))
+        with open(fused_dir / "meta.json") as f:
+            meta = json.load(f)
+        self.assertEqual(meta["fusion"]["method"], "git_rebasin")
+        self.assertEqual(result["warnings"], [])
 
     def test_failed_fuse_does_not_leave_a_partial_policy_folder(self):
         dir_a = _write_policy(training_mod.POLICIES_DIR, "a", _tiny_actor_critic(1))

@@ -191,7 +191,7 @@ further training. Same engine as the control web's "⚛ Fuse policies…" panel
 `TrainingManager.fuse_policies()`), driven from the CLI:
 
 ```bash
-rugiar fuse --list_fusion_methods                          # implemented vs. planned
+rugiar fuse --list_fusion_methods                          # every method this build knows about
 rugiar fuse --list_policies                                # same list as `train`'s —
                                                              # fine-tunable == fusable
 
@@ -200,15 +200,17 @@ rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended
 
 # weighted 3-way merge, favoring the first source 2:1:1
 rugiar fuse --policies base_a base_b base_c --weights 2 1 1 --name blended_v2
+
+# permutation-aligned merge instead of naive averaging (works for LSTM/GRU too)
+rugiar fuse --policies base_a base_b --method git_rebasin --name blended_rebasin
 ```
 
-`--list_fusion_methods` output shape (one line per method, available or
-not):
+`--list_fusion_methods` output shape (one line per method):
 
 ```
 Fusion methods:
   weighted_average (available): Weighted average — Elementwise weighted sum of matching weights across every source policy...
-  git_rebasin (planned, not yet implemented): Git Re-Basin (permutation alignment) — Solves for the hidden-unit permutation...
+  git_rebasin (available): Git Re-Basin (permutation alignment) — Solves for the hidden-unit permutation...
 ```
 
 The result is registered as a normal `./policies/<name>/` — fine-tunable via
@@ -221,7 +223,7 @@ obs/action dims, hidden dims, recurrent-or-not) — checked directly from each
 mismatched **task** across sources is only a warning printed to stderr, not
 a hard stop, since two different tasks can share an identical network shape.
 
-**Method today: `weighted_average`** — a.k.a. model soup / SWA-style
+**Method: `weighted_average`** (default) — a.k.a. model soup / SWA-style
 interpolation, an elementwise weighted sum of matching weights. Reasonable
 for closely related checkpoints (a fine-tune lineage, or same-seed
 variants) — no guarantee for independently-trained policies, since their
@@ -230,14 +232,18 @@ trained from different random inits can converge to functionally-equivalent
 but internally *permuted* representations, and naively averaging permuted
 weights usually lands between the two minima rather than near either).
 
-**Roadmap: Git Re-Basin** (`fusion.FUSION_METHODS["git_rebasin"]`,
-`available: False`) — solving for the hidden-unit permutation that best
-aligns two independently-trained policies before averaging, believed to be
-why naive weighted averaging sometimes collapses for policies without a
-shared training lineage. Listed so the CLI/panel propose the roadmap, but
-not yet implemented — check `fusion.py`'s `FUSION_METHODS` registry (or
-`--list_fusion_methods`) for the current state before telling a user it's
-available.
+**Method: `git_rebasin`** (`--method git_rebasin`) — solves for the
+hidden-unit permutation that best aligns every non-reference source to the
+first one *before* averaging (Ainsworth et al., 2022's weight-matching
+algorithm, `fusion.rebasin_align()`), so the merge lands inside rather than
+between the sources' loss basins. Works for both plain and recurrent
+(LSTM/GRU) actor/critic policies — an RNN's own per-gate hidden-unit
+permutation symmetry is aligned too (all gates of a layer share one
+permutation, since it's the same cell state being gated), then chained into
+the downstream MLP's own alignment. Always double-check `fusion.py`'s
+`FUSION_METHODS` registry (or `--list_fusion_methods`) for the current
+`available`/scope state before telling a user what's supported — this is a
+snapshot, not a guarantee it stays this way forever.
 
 ## How to know if a checkpoint actually walks (don't trust the numbers)
 

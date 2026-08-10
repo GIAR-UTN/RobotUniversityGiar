@@ -220,8 +220,9 @@ def _build_fuse_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
                                  "Normalized to sum to 1 internally — raw ratios are fine, e.g. "
                                  "'2 1 1' weighs the first source twice as heavily as the others")
     weighting.add_argument("--method", type=str, default="weighted_average",
-                            help="fusion method (see --list_fusion_methods for what's implemented "
-                                 "vs. planned) — only 'weighted_average' is available today")
+                            help="fusion method (see --list_fusion_methods for the full list) — "
+                                 "'weighted_average' (default) or 'git_rebasin' (permutation "
+                                 "alignment, works for both plain and recurrent policies)")
 
     disambig = p.add_argument_group(
         "Task disambiguation (only matters if --policies spans more than one task)")

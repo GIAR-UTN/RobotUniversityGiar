@@ -125,7 +125,9 @@ panel ("⚛ Fuse policies…", right under "+ New policy…") or the `rugiar` CL
 rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended
 # weighted (3:1:1 ratio), name it explicitly
 rugiar fuse --policies base_a base_b base_c --weights 3 1 1 --name blended_v2
-rugiar fuse --list_fusion_methods   # see what's implemented vs. planned
+# permutation-aligned merge instead of naive averaging (works for LSTM/GRU too)
+rugiar fuse --policies base_a base_b --method git_rebasin --name blended_rebasin
+rugiar fuse --list_fusion_methods   # see every method this build knows about
 ```
 
 The result is registered as a normal `./policies/<name>/` — fine-tunable via
@@ -145,11 +147,14 @@ converge to functionally-equivalent but internally *permuted*
 representations, and naively averaging permuted weights usually lands
 between the two minima rather than a good spot near either.
 
-**Roadmap: Git Re-Basin.** The believed fix for that — solving for the
-hidden-unit permutation that best aligns two independently-trained policies
-*before* averaging — is planned as the next fusion method
-(`legged_gym/control/fusion.py`'s `FUSION_METHODS` registry already lists it
-as `"git_rebasin"`, `available: False`), not yet implemented.
+**Method: Git Re-Basin (`--method git_rebasin`).** The fix for that —
+solving for the hidden-unit permutation that best aligns every non-
+reference source to the first one *before* averaging (Ainsworth et al.,
+2022) — so the merge lands inside, rather than between, the sources' loss
+basins. Works for both plain and recurrent (LSTM/GRU) actor/critic
+policies — an RNN's own per-gate hidden-unit permutation symmetry is
+aligned too, and chained into the downstream MLP's own alignment (see
+`legged_gym/control/fusion.py`'s `rebasin_align()`).
 
 ### Run the policy-switching demo
 
