@@ -529,6 +529,23 @@ class ViserViewer:
         with self._camera_track_lock:
             client.camera.position = self._last_base_pos + self._camera_offset
             client.camera.look_at = self._last_base_pos + self._camera_look_at_offset
+            # A fresh client's CameraHandle starts out populated from the
+            # browser's OWN first-reported camera state (viser only fires
+            # on_client_connect after that first report arrives) -- not from
+            # this scene's actual up direction (+Z, the viser default we
+            # rely on implicitly everywhere else here). That first report's
+            # up_direction is frequently still mid-stabilization on the
+            # client side, so the position/look_at set above can end up
+            # combined with a degenerate/wrong roll axis in viser's internal
+            # _update_wxyz() -- the camera lands pointed at the right SPOT
+            # but tipped near the horizon instead of looking down at it, on
+            # freshly connecting/reloading. Explicitly pinning up_direction
+            # (after position/look_at, so it's the last of the three inputs
+            # to _update_wxyz() and forces a correct final orientation)
+            # fixes this without needing a later camera event -- toggling
+            # "Track robot" only "fixed" it by re-deriving from whatever
+            # up_direction the client had *by then* self-corrected to.
+            client.camera.up_direction = (0.0, 0.0, 1.0)
             client.camera.fov = np.radians(60.0)
             self._camera_track_last_base_pos = None
 

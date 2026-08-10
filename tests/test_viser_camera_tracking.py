@@ -61,9 +61,14 @@ class _FakeCamera:
     _apply_camera_tracking() additionally added delta to .look_at itself,
     which is exactly the double-application bug this fake exists to catch."""
 
-    def __init__(self, position, look_at):
+    def __init__(self, position, look_at, up_direction=(0.0, 1.0, 0.0)):
         self._position = np.array(position, dtype=float)
         self._look_at = np.array(look_at, dtype=float)
+        # Real viser's default (before any explicit set) is the BROWSER's
+        # own reported up, which starts out three.js's Y-up -- not this
+        # scene's actual +Z-up convention. Defaulting the fake the same way
+        # lets a test catch code that forgets to set it explicitly.
+        self._up_direction = np.array(up_direction, dtype=float)
 
     @property
     def position(self):
@@ -84,10 +89,18 @@ class _FakeCamera:
     def look_at(self, value):
         self._look_at = np.array(value, dtype=float)
 
+    @property
+    def up_direction(self):
+        return self._up_direction
+
+    @up_direction.setter
+    def up_direction(self, value):
+        self._up_direction = np.array(value, dtype=float)
+
 
 class _FakeClient:
-    def __init__(self, position, look_at):
-        self.camera = _FakeCamera(position, look_at)
+    def __init__(self, position, look_at, up_direction=(0.0, 1.0, 0.0)):
+        self.camera = _FakeCamera(position, look_at, up_direction)
 
 
 class _FakeServer:
@@ -198,6 +211,30 @@ class TestCameraTracking(unittest.TestCase):
         np.testing.assert_allclose(client.camera.position, viewer._last_base_pos + viewer._camera_offset)
         np.testing.assert_allclose(client.camera.look_at, viewer._last_base_pos + viewer._camera_look_at_offset)
         self.assertIsNone(viewer._camera_track_last_base_pos)
+
+    def test_reconnecting_client_gets_scene_up_direction_not_browser_default(self):
+        """Regression for "no shaking anymore, but the camera lands badly
+        aimed after a reload -- pointed near the horizon instead of down at
+        the robot -- and still needs a Track-robot toggle to fix." Position/
+        look_at were already correct; the missing piece was up_direction.
+        A fresh client's CameraHandle starts out from the BROWSER's own
+        first-reported camera state (three.js's Y-up default, still
+        mid-stabilization right after connect) rather than this scene's
+        actual +Z-up convention, and viser's internal _update_wxyz() derives
+        the final camera orientation from position + look_at + up_direction
+        together -- a stale/wrong up_direction alone is enough to tip the
+        camera near the horizon even with the right position and target.
+        _on_client_connect must pin up_direction to +Z explicitly instead of
+        trusting whatever the client happened to report first."""
+        viewer = _make_viewer()
+        viewer._last_base_pos = np.array([12.0, -4.0, 0.8])
+
+        client = _FakeClient(
+            position=[0.0, 0.0, 0.0], look_at=[0.0, 0.0, 0.0], up_direction=[0.0, 1.0, 0.0]
+        )
+        viewer._on_client_connect(client)
+
+        np.testing.assert_allclose(client.camera.up_direction, [0.0, 0.0, 1.0])
 
     def test_multiple_clients_each_keep_their_own_offset(self):
         viewer = _make_viewer()
