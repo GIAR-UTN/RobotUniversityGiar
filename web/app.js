@@ -69,6 +69,30 @@ const episodeTimeoutS = $('#episode-timeout-s');
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
+
+// ---- transition overlay: family switch / fresh local training start ----
+// Both can make viser stall or drop its WS connection for several seconds
+// (see the module docstring reference to Genesis's global once-per-process
+// state) with otherwise zero visual cue besides the footer/console. Shown
+// eagerly by the action that triggers it; dismissed either by the user
+// (Accept button) or automatically once we have good evidence the thing
+// stabilized (see the two call sites below).
+const transitionOverlay = $('#transition-overlay');
+const transitionMessage = $('#transition-message');
+const transitionAccept = $('#transition-accept');
+let transitionAutoHideTimer = null;
+
+function showTransitionOverlay(message) {
+  transitionMessage.textContent = message;
+  transitionOverlay.hidden = false;
+}
+
+function hideTransitionOverlay() {
+  transitionOverlay.hidden = true;
+  if (transitionAutoHideTimer) { clearTimeout(transitionAutoHideTimer); transitionAutoHideTimer = null; }
+}
+
+transitionAccept.addEventListener('click', hideTransitionOverlay);
 let draggingCommand = false; // true while the user has a command HUD grabbed —
                               // suppresses syncing FROM status() pushes so the
                               // drag doesn't fight the server echo
@@ -125,6 +149,36 @@ function call(method, params = {}) {
   });
 }
 
+// Bits of /config that can differ after a family switch relaunches the
+// server for a different task — called once at boot() and again after any
+// reconnect that followed a family switch (see connect()'s ws.onopen).
+function applyRuntimeConfig(config) {
+  // Clamp the HUDs (and, via commandRanges, the arrow keys) to the exact
+  // velocity envelope this policy was trained across (env_cfg.commands.ranges
+  // — see SimAdapter.set_command), not an arbitrary UI guess.
+  if (config.command_ranges) {
+    commandRanges = config.command_ranges;
+  }
+
+  const cameraSection = $('#camera-section');
+  const cameraFeed = $('#camera-feed');
+  if (config.camera_enabled) {
+    // Cache-bust: a family switch relaunches the whole server process (see
+    // switch_family()'s docstring), which kills the old MJPEG connection
+    // this <img> was reading from. Browsers don't retry a broken
+    // multipart/x-mixed-replace stream on their own, so without a fresh
+    // src (even pointing at the same URL) the feed stays frozen/broken
+    // forever after switching families — this is what fixes that.
+    cameraFeed.src = `/camera.mjpg?t=${Date.now()}`;
+    cameraSection.hidden = false;
+  } else {
+    // The new family may not have been launched with --camera even if the
+    // old one was — hide the section rather than leave a dead <img> up.
+    cameraSection.hidden = true;
+    cameraFeed.removeAttribute('src');
+  }
+}
+
 function connect() {
   // When --token is set on the server (see swap_experiment.py --real / -h),
   // it's never served up automatically — the operator shares a link like
@@ -136,10 +190,22 @@ function connect() {
   ws = new WebSocket(url);
   ws.onopen = () => {
     footer.textContent = 'connected'; connDot.className = 'ok';
+    const wasSwitchingFamily = familySwitchInFlight;
     familySwitchInFlight = false;
     refreshTrainingCatalog();
     refreshSystemInfo();
     refreshFamilyList();
+    // A family switch relaunches the whole server process for a different
+    // task (see switch_family()'s docstring) — command ranges and camera
+    // availability can differ for it, and the camera feed needs a fresh
+    // src to reconnect (see applyRuntimeConfig()). A routine reconnect
+    // (network hiccup, same process still running) has nothing new to
+    // fetch here, so this only runs after an actual family switch.
+    if (wasSwitchingFamily) {
+      fetch('/config').then((r) => r.json()).then(applyRuntimeConfig)
+        .catch((e) => console.warn('config refresh after family switch failed:', e.message))
+        .finally(hideTransitionOverlay);
+    }
   };
   ws.onclose = () => {
     footer.textContent = 'disconnected — retrying…';
@@ -359,6 +425,8 @@ function familyButtonRow(name, current, hasPolicies) {
   btn.onclick = () => {
     familySwitchInFlight = true;
     footer.textContent = `switching to '${name}' — this page will reconnect on its own (10-20s)…`;
+    showTransitionOverlay(
+      `Cambiando a la family "${name}"… el proceso se reinicia entero, así que el visualizador se va a desconectar y puede tardar 10-20s en estabilizarse. Esta página reconecta sola.`);
     send('switch_family', { task: name });
   };
   row.appendChild(btn);
@@ -432,11 +500,14 @@ function applyStatus(status) {
 
   let color = status.ramping ? '🟡' : '🟢';
   if (status.safety_tripped) color = '🔴';
-  // Shows the current FAMILY (task), not the active policy -- which
-  // family/experiment is running is the more useful at-a-glance fact here;
-  // the active policy within it is already highlighted in the Policies
-  // list below (see policyButtonRow's `.active` class).
+  // Shows FAMILY (task) + active policy together — the family is the more
+  // useful at-a-glance fact (which family/experiment is running), and the
+  // active policy is already highlighted in the Policies list below (see
+  // policyButtonRow's `.active` class), but repeating it here removes any
+  // doubt during/after a family switch or a fresh page load, when the
+  // Policies list may take a moment to paint or be scrolled out of view.
   let text = `${color} ${status.current_task ?? '—'}`;
+  if (status.active) text += ` · ${status.active}`;
   if (status.paused) text += ' (paused)';
   activeLabel.innerHTML = `<span id="conn-dot" class="${connDot.className}"></span>${text}`;
 
@@ -2284,6 +2355,19 @@ createPolicyForm.addEventListener('submit', (e) => {
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
     backend: p.backend,
   }).then(() => {
+    // A local training run shares this same host's GPU with the running
+    // sim — starting one can make viser stutter or stall for a bit while
+    // both compete for it (Kaggle jobs run on a remote GPU and don't touch
+    // this machine at all, so they don't get this warning). p.name is
+    // already guaranteed to be a policy that doesn't exist yet — the
+    // duplicate-name check above returns early otherwise. No reconnect
+    // event to hang this on (unlike a family switch, this process never
+    // restarts), so it just auto-hides after a bit; Accept dismisses it sooner.
+    if (p.backend !== 'kaggle') {
+      showTransitionOverlay(
+        `Entrenando "${p.name}" desde cero — el simulador puede tildarse unos segundos mientras el entrenamiento arranca y compite por la GPU.`);
+      transitionAutoHideTimer = setTimeout(hideTransitionOverlay, 8000);
+    }
     // snapshot BEFORE reset() clears every field below. base: p.name (not
     // trainBase.value, the run's OWN clone-from source) so the next "New
     // policy" panel defaults to cloning from what THIS run just produced —
@@ -3172,20 +3256,7 @@ async function boot() {
   viserPort = config.viser_port;
   mountSimIframe();
 
-  // Clamp the HUDs (and, via commandRanges, the arrow keys) to the exact
-  // velocity envelope this policy was trained across (env_cfg.commands.ranges
-  // — see SimAdapter.set_command), not an arbitrary UI guess.
-  if (config.command_ranges) {
-    commandRanges = config.command_ranges;
-  }
-
-  // --camera wasn't passed: leave #camera-section hidden (its default in
-  // index.html) rather than pointing <img> at a stream that will never
-  // publish a frame.
-  if (config.camera_enabled) {
-    $('#camera-feed').src = '/camera.mjpg';
-    $('#camera-section').hidden = false;
-  }
+  applyRuntimeConfig(config);
 
   bindKeycapActions();
   initSectionDrag();

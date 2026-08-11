@@ -103,6 +103,35 @@
     color:var(--muted); text-align:center; padding:2rem;
   }
 
+  /* ---- transition overlay ----
+     Covers the simulator (never the #panel sidebar) during a family switch
+     or a fresh local training start — both can make viser stall/reconnect
+     for several seconds with no other visual cue. z-index above .drawer
+     (5) since a drawer can be open underneath when this fires. */
+  #transition-overlay{
+    position:absolute; inset:0; z-index:10;
+    display:flex; align-items:center; justify-content:center;
+    background:color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter:blur(2px);
+  }
+  #transition-overlay[hidden]{display:none;}
+  .transition-card{
+    max-width:340px; text-align:center; padding:1.5rem 1.75rem;
+    background:var(--bg-raised); border:1px solid var(--line); border-radius:10px;
+    box-shadow:0 10px 30px var(--cap-shadow);
+  }
+  .transition-spinner{
+    width:28px; height:28px; margin:0 auto .9rem;
+    border:3px solid var(--line); border-top-color:var(--accent2);
+    border-radius:50%; animation:transition-spin .8s linear infinite;
+  }
+  @keyframes transition-spin{ to{ transform:rotate(360deg); } }
+  #transition-message{margin:0 0 1rem; font-size:.85rem; color:var(--ink-soft); line-height:1.5;}
+  #transition-accept{
+    padding:.45rem 1.1rem; border-radius:6px; border:1px solid var(--accent2);
+    background:var(--accent2); color:var(--accent-ink); font:600 .82rem/1 inherit; cursor:pointer;
+  }
+
   .drawer{
     position:absolute; inset:0 auto 0 0; width:min(920px, 84vw);
     background:var(--bg); border-right:1px solid var(--line);
@@ -598,6 +627,20 @@
     <aside class="drawer" id="drawer-real">
       <div class="placeholder" id="real-placeholder">Real-robot view unavailable — see reason below.</div>
     </aside>
+
+    <!-- Shown over the simulator during a process-level transition (family
+         switch, or starting a brand-new local training run) that can make
+         viser stall or drop its connection for several seconds — see
+         showTransitionOverlay()/hideTransitionOverlay() in app.js. Not a
+         .drawer: it must sit ABOVE them (they open over the sim too) and
+         never intercepts clicks except its own Accept button. -->
+    <div id="transition-overlay" hidden>
+      <div class="transition-card">
+        <div class="transition-spinner"></div>
+        <p id="transition-message"></p>
+        <button type="button" id="transition-accept">Entendido</button>
+      </div>
+    </div>
   </div>
 
   <aside id="policy-info-dock" hidden>
