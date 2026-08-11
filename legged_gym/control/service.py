@@ -206,6 +206,8 @@ class ControlService:
             s["episode_timeout_s"] = self.adapter.episode_timeout_s
         if hasattr(self.adapter, "fall_termination"):
             s["fall_termination"] = self.adapter.fall_termination
+        if hasattr(self.adapter, "operator_speed_limit"):
+            s["operator_speed_limit"] = self.adapter.operator_speed_limit
         if self.training is not None:
             s["training_jobs"] = self.training.status()
         s["telemetry"] = self._telemetry()
@@ -508,6 +510,27 @@ class ControlService:
         if fn is None:
             raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_fall_termination")
         fn(max_projected_gravity, fail_to_terminal_time_s)
+
+    def set_operator_speed_limit(self, fraction: float) -> None:
+        """Caps every set_command() call this session to `fraction` of the
+        trained command envelope — see SimAdapter.set_operator_speed_limit's
+        docstring for the full "why" (server-side, one enforced limit
+        shared by every client: the web UI, examples/joystick_controller.py,
+        and eventually other robots/clients on their own token-gated
+        connections, instead of each reimplementing its own cap). 1.0 (no
+        extra cap beyond the trained envelope) is the default, matching
+        this repo's own — and upstream unitree_rl_gym's — community-standard
+        command range. Values above 1.0 are allowed (up to
+        adapter.OPERATOR_SPEED_LIMIT_MAX) for deliberate out-of-distribution
+        experimentation in sim — the web UI shows an explicit warning past
+        1.0 rather than silently allowing it. Raises if the current adapter
+        doesn't support it — RealAdapter does not, on purpose: asking a
+        real, physical robot to exceed its trained envelope is a separate,
+        more deliberate decision this method does not make for you."""
+        fn = getattr(self.adapter, "set_operator_speed_limit", None)
+        if fn is None:
+            raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_operator_speed_limit")
+        fn(fraction)
 
     def set_command(self, vx: float, vy: float, yaw: float) -> None:
         """Directly commands a target walking velocity (m/s, m/s, rad/s),

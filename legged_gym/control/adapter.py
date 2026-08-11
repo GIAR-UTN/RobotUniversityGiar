@@ -22,6 +22,13 @@ import torch
 
 from legged_gym.utils.math_utils import quat_rotate_inverse
 
+# See SimAdapter.set_operator_speed_limit's docstring — bounded, not
+# unbounded, so a typo (e.g. an extra zero) can't ask for a wildly
+# extreme out-of-distribution command; 3x the trained envelope is
+# generous enough for genuine "what happens past the edge" experimentation
+# in sim without that risk.
+OPERATOR_SPEED_LIMIT_MAX = 3.0
+
 
 class Lifecycle(Enum):
     """Mirrors ros2_control's controller lifecycle naming on purpose — it's a
@@ -102,7 +109,7 @@ class SimAdapter:
     backend_name = "sim"
     capabilities = {"restart": True}
 
-    def __init__(self, env):
+    def __init__(self, env, operator_speed_limit: float = 1.0):
         self.env = env
         self.num_envs = env.num_envs
         self._lifecycle = Lifecycle.READY
@@ -114,6 +121,13 @@ class SimAdapter:
         self._orig_heading_command = env.cfg.commands.heading_command
         self._auto_commands = True
         self._manual_command = (0.0, 0.0, 0.0)
+
+        # See set_operator_speed_limit()'s docstring for the full "why".
+        # 1.0 (no extra cap beyond the trained envelope itself) matches
+        # cfg.commands.ranges as trained — the same [-1, 1] m/s / [-1, 1]
+        # rad/s default this repo shares with upstream unitree_rl_gym.
+        self._operator_speed_limit = 1.0
+        self.set_operator_speed_limit(operator_speed_limit)
 
         # The live control web's Stress Stimuli panel defaults both toggles
         # to unchecked — an operator opening the viewer should see the robot
@@ -327,23 +341,83 @@ class SimAdapter:
         """Directly commands a target walking velocity, overriding whatever
         the environment's own domain-randomization command resampling would
         otherwise pick (see set_random_events). Clamped to the exact ranges
-        used during training (cfg.commands.ranges) — a manual command is
-        never allowed to ask the policy for something outside the envelope
-        it was actually trained across.
+        used during training (cfg.commands.ranges) scaled by
+        operator_speed_limit (see set_operator_speed_limit — 1.0 by
+        default, i.e. no extra cap beyond the trained envelope itself) — a
+        manual command is never allowed to ask the policy for something
+        outside the envelope it was actually trained across, or past
+        whatever narrower limit this session has chosen to operate under.
 
         Also switches off cfg.commands.heading_command for as long as a
         manual command is active: G1's default config computes yaw-RATE
         from a heading TARGET every tick (see _post_physics_step_callback in
         legged_robot.py) — with that on, a direct yaw-rate command would be
         silently overwritten within the very same tick it was set."""
-        ranges = self.env.cfg.commands.ranges
-        vx = max(min(vx, ranges.lin_vel_x[1]), ranges.lin_vel_x[0])
-        vy = max(min(vy, ranges.lin_vel_y[1]), ranges.lin_vel_y[0])
-        yaw = max(min(yaw, ranges.ang_vel_yaw[1]), ranges.ang_vel_yaw[0])
-        self._manual_command = (vx, vy, yaw)
+        self._manual_command = self._clamp_command(vx, vy, yaw)
         self._auto_commands = False
         self.env.cfg.commands.heading_command = False
         self._apply_manual_command()
+
+    def _clamp_command(self, vx: float, vy: float, yaw: float) -> tuple:
+        """Shared by set_command() and set_operator_speed_limit() so the
+        trained-range-times-limit math exists in exactly one place."""
+        ranges = self.env.cfg.commands.ranges
+        limit = self._operator_speed_limit
+        vx = max(min(vx, ranges.lin_vel_x[1] * limit), ranges.lin_vel_x[0] * limit)
+        vy = max(min(vy, ranges.lin_vel_y[1] * limit), ranges.lin_vel_y[0] * limit)
+        yaw = max(min(yaw, ranges.ang_vel_yaw[1] * limit), ranges.ang_vel_yaw[0] * limit)
+        return (vx, vy, yaw)
+
+    def set_operator_speed_limit(self, fraction: float) -> None:
+        """Scales set_command()'s own clamp to `fraction` of the trained
+        cfg.commands.ranges envelope (e.g. 0.5 caps a [-1, 1] m/s trained
+        range to [-0.5, 0.5] m/s) — 1.0 means no extra cap at all, just the
+        trained envelope itself, which is this repo's (and upstream
+        unitree_rl_gym's) own community-standard default.
+
+        Values above 1.0 (up to OPERATOR_SPEED_LIMIT_MAX) are allowed ON
+        PURPOSE — commanding a policy PAST what it was ever trained
+        across, deliberately out-of-distribution. In sim this is a safe,
+        genuinely useful thing to be able to try (worst case: it falls
+        over in Genesis, nothing is at risk) — the web UI surfaces this as
+        an explicit "beyond the trained range" warning rather than hiding
+        the option. This is NOT extended to RealAdapter, which has no
+        set_operator_speed_limit of its own (see
+        ControlService.set_operator_speed_limit's NotImplementedError path)
+        — asking a real, physical robot for a velocity it was never
+        trained to produce is a different risk category entirely and
+        deliberately requires a separate, more deliberate decision later,
+        not a side effect of this sim-side experiment knob.
+
+        This lives HERE, server-side, on purpose — not as a per-client
+        scaling constant — so every client that ever calls set_command
+        (the web UI, examples/joystick_controller.py, a future CLI driving
+        a different robot over its own token-gated connection) shares the
+        exact same enforced limit for free, set in exactly one place,
+        instead of each one duplicating (and inevitably drifting out of
+        sync with) its own local cap. A client is always free to just ask
+        for the full trained range (vx=ranges.lin_vel_x[1], etc.) and let
+        this be the one thing standing between that ask and what actually
+        reaches the robot.
+
+        Re-clamps whatever manual command is already in effect immediately
+        — so lowering this while already cruising at speed takes effect on
+        the very next tick, not just on the next set_command call — but
+        deliberately does NOT flip into manual mode or touch
+        heading_command by itself: adjusting the limit is not the same
+        gesture as issuing a command, and must not silently hijack control
+        away from auto mode."""
+        if not (0.0 < fraction <= OPERATOR_SPEED_LIMIT_MAX):
+            raise ValueError(
+                f"operator_speed_limit must be in (0.0, {OPERATOR_SPEED_LIMIT_MAX}], got {fraction}")
+        self._operator_speed_limit = fraction
+        self._manual_command = self._clamp_command(*self._manual_command)
+        if not self._auto_commands:
+            self._apply_manual_command()
+
+    @property
+    def operator_speed_limit(self) -> float:
+        return self._operator_speed_limit
 
     def set_random_events(self, push_robots: bool, auto_commands: bool,
                            push_dir: Optional[str] = None) -> None:

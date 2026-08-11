@@ -145,7 +145,7 @@ def _bare_g1_policy_specs() -> list:
     return specs
 
 
-def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
+def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -> None:
     """Self-relaunch: spawns a fresh driver process for `new_task` (no
     explicit --policy beyond legacy bare-file ones for 'g1', see
     _bare_g1_policy_specs() -- the new process auto-discovers that task's
@@ -160,11 +160,18 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
     startup, same as any fresh launch). `new_task`'s family may be a
     DIFFERENT script than this one (see _script_for_task()) -- each
     family/experiment has its own driver, deliberately not sharing this
-    file's plumbing (see this file's module docstring)."""
+    file's plumbing (see this file's module docstring).
+
+    `adapter` (the CURRENT session's, if any -- optional so a test/smoke
+    caller can omit it) is read for its LIVE operator_speed_limit -- an
+    operator who already dialed this down mid-session should stay at that
+    same limit after switching families, not silently snap back to
+    whatever --cruise_limit this process happened to be launched with."""
     script = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), _script_for_task(new_task))
+    cruise_limit = getattr(adapter, "operator_speed_limit", cli.cruise_limit)
     argv = [sys.executable, script, "--task", new_task,
             "--viser_port", str(cli.viser_port), "--speed", str(cli.speed),
-            "--ramp_ticks", str(cli.ramp_ticks)]
+            "--ramp_ticks", str(cli.ramp_ticks), "--cruise_limit", str(cruise_limit)]
     if new_task == "g1":
         argv += _bare_g1_policy_specs()
     if cli.control_port is not None:
@@ -225,6 +232,14 @@ def main():
                               "combo — viser (web viewer) is the reliable way to actually watch this run.")
     parser.add_argument('--speed', type=float, default=0.35,
                          help="playback speed multiplier (1.0 = real-time 50Hz control rate)")
+    parser.add_argument('--cruise_limit', type=float, default=1.0,
+                         help="startup default for ControlService.set_operator_speed_limit() — caps every "
+                              "set_command (web UI, examples/joystick_controller.py, any client) to this "
+                              "fraction of the trained cfg.commands.ranges envelope. 1.0 (default) is the "
+                              "full trained range, this repo's and upstream unitree_rl_gym's own "
+                              "community-standard command envelope — pass e.g. 0.7 to start a session more "
+                              "conservative than that. Live-adjustable afterward from the web UI's Command "
+                              "panel or over the wire; this flag only sets where the session STARTS.")
     parser.add_argument('--control_port', type=int, default=None,
                          help="if set, starts a networked ControlServer (JSON-over-WebSocket at /ws, see "
                               "legged_gym/control/transport.py) on this port, exposing request_switch/"
@@ -321,7 +336,7 @@ def main():
             env_cfg.sensor.add_rgb_camera = True
 
         env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
-        adapter = SimAdapter(env)
+        adapter = SimAdapter(env, operator_speed_limit=cli.cruise_limit)
 
     hidden_size = 64  # matches G1RoughCfgPPO.policy.rnn_hidden_size
 
@@ -574,7 +589,7 @@ def main():
                 viser_viewer.resync_camera_tracking()
 
         if service.family_switch_requested is not None:
-            _relaunch_for_family(cli, service.family_switch_requested)  # never returns
+            _relaunch_for_family(cli, service.family_switch_requested, adapter)  # never returns
 
         drain_finished_training()
 

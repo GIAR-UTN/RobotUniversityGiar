@@ -423,6 +423,13 @@
   }
   #look-pad.active{border-color:var(--accent2); color:var(--ink); border-style:solid;}
 
+  #speed-limit-row{margin-top:.7rem;}
+  #speed-limit-row label{
+    display:flex; justify-content:space-between; font-size:.78rem; color:var(--ink-soft);
+    margin-bottom:.3rem; text-transform:none; letter-spacing:0;
+  }
+  #speed-limit-slider{width:100%; accent-color:var(--accent2);}
+
   .toggle-row{
     display:flex; align-items:center; gap:.45rem; font-size:.85rem;
     margin-bottom:.4rem; cursor:pointer; user-select:none;
@@ -839,6 +846,12 @@
           </div>
         </div>
         <div id="look-pad">click + drag to turn <span class="hint-inline">(yaw, same as &#8592;/&#8594;)</span></div>
+        <div class="field-row" id="speed-limit-row">
+          <label for="speed-limit-slider">Max speed <span class="hud-val" id="speed-limit-val">100%</span></label>
+          <input type="range" id="speed-limit-slider" min="10" max="300" step="5" value="100">
+          <p class="field-hint">Fraction of the trained command envelope every client can reach — enforced server-side, so this caps the HUDs/keyboard here AND any other connected client (a gamepad, a future robot) the same way. 100% is the full trained range (this repo's and Unitree's own default, e.g. &#177;1.0 m/s on G1). Lower it for a more conservative session.</p>
+          <p class="field-hint field-warning" id="speed-limit-warning" hidden>&#9888; Past 100% asks the policy for a velocity it was never trained on — deliberately out-of-distribution. Expect it to behave unpredictably or fall. Sim only: this is never available against real hardware.</p>
+        </div>
       </div>
     </section>
 

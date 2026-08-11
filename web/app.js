@@ -73,6 +73,9 @@ const fallHoldTime = $('#fall-hold-time');
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
+const speedLimitSlider = $('#speed-limit-slider');
+const speedLimitVal = $('#speed-limit-val');
+const speedLimitWarning = $('#speed-limit-warning');
 
 // ---- transition overlay: family switch / fresh local training start ----
 // Both can make viser stall or drop its WS connection for several seconds
@@ -688,6 +691,24 @@ function applyStatus(status) {
     }
   }
 
+  // operator_speed_limit is absent on adapters that don't support it (e.g.
+  // RealAdapter — see ControlService.set_operator_speed_limit's docstring
+  // on why that's deliberate, not a gap to fill). speedLimitFraction (used
+  // by smoothAxis's ramp target, see there) is kept in sync here on every
+  // status push — this is a MIRROR of the server's own enforced value, not
+  // a second source of truth: set_command() re-clamps server-side
+  // regardless of what this page displays.
+  const speedLimitSupported = 'operator_speed_limit' in status;
+  speedLimitSlider.closest('.field-row').style.display = speedLimitSupported ? '' : 'none';
+  if (speedLimitSupported) {
+    speedLimitFraction = status.operator_speed_limit;
+    speedLimitWarning.hidden = speedLimitFraction <= 1.0;
+    if (document.activeElement !== speedLimitSlider) {
+      speedLimitSlider.value = Math.round(speedLimitFraction * 100);
+      speedLimitVal.textContent = `${Math.round(speedLimitFraction * 100)}%`;
+    }
+  }
+
   const realTab = document.querySelector('nav button[data-drawer="real"]');
   const realPlaceholder = $('#real-placeholder');
   if (status.backend === 'real') {
@@ -937,12 +958,44 @@ function sendFallTermination() {
   const hold = chkFallTermination.checked && fallHoldTime.value !== '' ? Number(fallHoldTime.value) : null;
   send('set_fall_termination', { max_projected_gravity: gravity, fail_to_terminal_time_s: hold });
 }
+// A reasonable starting point for "relaxed but still a real safety margin"
+// — comfortably under SafetyGovernor's own 0.7 trip threshold (enforced
+// server-side by ControlService.set_fall_termination regardless of what's
+// typed here), and a full second of sustained tilt before it counts,
+// instead of training's 0.1s (a fraction of one footstep).
+const FALL_RELAXED_MAX_GRAVITY = 0.5;
+const FALL_RELAXED_HOLD_TIME_S = 1.0;
 chkFallTermination.addEventListener('change', () => {
   fallTerminationRow.hidden = !chkFallTermination.checked;
+  // Checking the box with both fields still blank would send (null, null)
+  // — identical to unchecked, i.e. no actual override — and the very next
+  // status push would then report "not overridden" and uncheck the box
+  // right back, looking like the checkbox refuses to stay checked. Prefill
+  // with the suggested values so checking it alone does something.
+  if (chkFallTermination.checked) {
+    if (fallMaxGravity.value === '') fallMaxGravity.value = FALL_RELAXED_MAX_GRAVITY;
+    if (fallHoldTime.value === '') fallHoldTime.value = FALL_RELAXED_HOLD_TIME_S;
+  }
   sendFallTermination();
 });
 fallMaxGravity.addEventListener('change', () => { if (chkFallTermination.checked) sendFallTermination(); });
 fallHoldTime.addEventListener('change', () => { if (chkFallTermination.checked) sendFallTermination(); });
+
+// ---- speed limit (Command panel) ----
+// 'input' fires continuously while dragging (immediate visual feedback —
+// warning text and the % readout track the thumb, not just the eventual
+// value); the actual set_operator_speed_limit call is throttled to
+// 'change' (drag release, or an arrow-key nudge) so dragging through the
+// slider doesn't flood the socket the way holding a movement key would if
+// it weren't already throttled elsewhere (see frame()'s ~10Hz cap).
+speedLimitSlider.addEventListener('input', () => {
+  const fraction = Number(speedLimitSlider.value) / 100;
+  speedLimitVal.textContent = `${speedLimitSlider.value}%`;
+  speedLimitWarning.hidden = fraction <= 1.0;
+});
+speedLimitSlider.addEventListener('change', () => {
+  send('set_operator_speed_limit', { fraction: Number(speedLimitSlider.value) / 100 });
+});
 
 // ---- stimuli: random events + manual velocity command ----
 
@@ -974,6 +1027,18 @@ function heldDirection(axis) {
   return Math.max(-1, Math.min(1, unit));
 }
 
+// Holding a key ramps toward the edge of `range` scaled by
+// speedLimitFraction (kept in sync with status.operator_speed_limit — see
+// applyStatus() — the server's own enforced cap, see
+// SimAdapter.set_operator_speed_limit's docstring for why it lives there
+// and not as a client-local constant). This is a MIRROR of the server's
+// value for accurate visual feedback (the ramp/HUD should show what will
+// actually reach the robot, not overshoot past a limit the server would
+// silently clamp anyway) — set_command() re-clamps server-side
+// regardless, so a stale/out-of-sync mirror here is a display glitch, not
+// a safety gap.
+let speedLimitFraction = 1.0;
+
 function smoothAxis(current, dir, range, dt, decelRate) {
   if (dir === 0 || !range) {
     // Released — coast smoothly down to a stop, GTA-style, instead of
@@ -981,7 +1046,7 @@ function smoothAxis(current, dir, range, dt, decelRate) {
     if (Math.abs(current) < 1e-3) return 0;
     return current * Math.exp(-decelRate * dt);
   }
-  const target = dir > 0 ? range[1] : range[0];
+  const target = (dir > 0 ? range[1] : range[0]) * speedLimitFraction;
   const next = target + (current - target) * Math.exp(-ACCEL_RATE * dt);
   const snapped = Math.abs(next - target) < 1e-3 ? target : next;
   return dir > 0 ? Math.min(snapped, range[1]) : Math.max(snapped, range[0]);
@@ -1007,8 +1072,22 @@ function frame(now) {
     const nvy = smoothAxis(cruiseVy, dvy, commandRanges?.vy, dt, DECEL_RATE);
     const nyaw = smoothAxis(cruiseYaw, dyaw, commandRanges?.yaw, dt, DECEL_RATE);
     if (nvx !== cruiseVx || nvy !== cruiseVy || nyaw !== cruiseYaw) {
-      cruiseVx = nvx; cruiseVy = nvy; cruiseYaw = nyaw; cmdDirty = true;
+      cruiseVx = nvx; cruiseVy = nvy; cruiseYaw = nyaw;
     }
+    // Keep resending at the throttled ~10Hz rate for as long as any move
+    // key is actually held, even once the ramp has settled and stopped
+    // producing new values on its own. Without this, once cmdDirty had no
+    // more changes to report, set_command() simply stopped being sent —
+    // the server-side manual command is reasserted every physics tick from
+    // its OWN stored copy (see SimAdapter.send_action()), so this isn't
+    // what caused the reported "stops responding while held" bug (the
+    // range-edge saturation fixed above was), but the env's own periodic
+    // command resampling (legged_robot.py's _post_physics_step_callback,
+    // independent of manual mode) can still briefly clobber env.commands
+    // between sends — a continuous heartbeat is what keeps overriding that
+    // back to the real held command instead of leaving it to drift for up
+    // to a full resampling interval.
+    if (heldMoveKeys.size > 0) cmdDirty = true;
   }
   // Visuals stay fluid every frame; actual WS sends stay throttled to ~10Hz
   // (matching the previous fixed-interval cadence) so we don't flood the
