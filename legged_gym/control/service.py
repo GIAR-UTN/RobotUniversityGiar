@@ -204,6 +204,8 @@ class ControlService:
             s["random_events"] = self.adapter.random_events
         if hasattr(self.adapter, "episode_timeout_s"):
             s["episode_timeout_s"] = self.adapter.episode_timeout_s
+        if hasattr(self.adapter, "fall_termination"):
+            s["fall_termination"] = self.adapter.fall_termination
         if self.training is not None:
             s["training_jobs"] = self.training.status()
         s["telemetry"] = self._telemetry()
@@ -477,6 +479,35 @@ class ControlService:
         if fn is None:
             raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_episode_timeout")
         fn(seconds)
+
+    def set_fall_termination(self, max_projected_gravity: Optional[float] = None,
+                              fail_to_terminal_time_s: Optional[float] = None) -> None:
+        """Relaxes (or reverts) legged_robot.py's own fall/contact-force
+        termination for THIS live session only — see
+        SimAdapter.set_fall_termination's docstring for the full "why": left
+        at the training config's own values, a policy that's merely
+        stumbling gets silently teleported back to its default pose with no
+        signal to the UI, indistinguishable from the robot just stopping.
+
+        None (either argument) means "use the training config's own value
+        for that one" — the constructor's own default, so (None, None)
+        fully reverts. Enforces max_projected_gravity stays strictly below
+        SafetyGovernor's own trip threshold (self.safety.max_projected_gravity_z)
+        — this check lives here, not in SimAdapter, because only this class
+        holds both objects at once; moving it past that threshold would mean
+        it never fires before the real safety trip, defeating the point of
+        having two thresholds. Raises if the current adapter doesn't support
+        it (e.g. RealAdapter has no simulated fall-termination concept)."""
+        if (max_projected_gravity is not None
+                and max_projected_gravity >= self.safety.max_projected_gravity_z):
+            raise ValueError(
+                f"max_projected_gravity ({max_projected_gravity}) must be below SafetyGovernor's own "
+                f"trip threshold ({self.safety.max_projected_gravity_z}), or it would never fire before "
+                f"the real safety trip")
+        fn = getattr(self.adapter, "set_fall_termination", None)
+        if fn is None:
+            raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_fall_termination")
+        fn(max_projected_gravity, fail_to_terminal_time_s)
 
     def set_command(self, vx: float, vy: float, yaw: float) -> None:
         """Directly commands a target walking velocity (m/s, m/s, rad/s),
