@@ -12,6 +12,13 @@ class G1RoughCfg(G1Flat12DofCommonCfg):
     class sim(G1Flat12DofCommonCfg.sim):
         substeps = 4  # was 1 — raised to avoid NaN contact-force blowups on early random-policy falls (CPU/Metal backend)
 
+    class sensor(G1Flat12DofCommonCfg.sensor):
+        class rgb_camera_config(G1Flat12DofCommonCfg.sensor.rgb_camera_config):
+            # Same D435 mount pose as g1_gaze (see g1_gaze_config.py) instead of the
+            # generic "sit atop the base" placeholder in legged_robot_config.py.
+            pos = (0.0537, 0.0175, 0.4739)
+            forward = (0.6743, 0.0, -0.7385)
+
     class domain_rand(G1Flat12DofCommonCfg.domain_rand):
         randomize_friction = True
         friction_range = [0.1, 1.25]
