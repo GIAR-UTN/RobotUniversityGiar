@@ -4,7 +4,7 @@ find out, asynchronously, when it's ready to load. It owns exactly one
 thing: launching legged_gym/scripts/web_train.py as a subprocess per job and
 polling it. It never touches PolicySupervisor/ControlService/RobotAdapter —
 same boundary the rest of legged_gym/control/ keeps (see
-HANDOFF_control_web.md §5); the caller (swap_experiment.py's sim loop, via
+HANDOFF_control_web.md §5); the caller (rugiar_driver.py's sim loop, via
 ControlService — see service.py's start_training()/poll_finished_training())
 is what actually loads the resulting checkpoint and registers it as a new
 policy, exactly like restart_requested is drained there today.
@@ -12,7 +12,7 @@ policy, exactly like restart_requested is drained there today.
 Why a subprocess instead of an in-process training loop: `train.py`'s whole
 stack (Genesis/gs.init, task_registry.make_env, the PPO runner) is built to
 own a single process's global simulator state — running it would collide
-with the swap_experiment.py sim already using the same globals. A subprocess
+with the rugiar_driver.py sim already using the same globals. A subprocess
 is the natural isolation boundary, and it's also what makes this safe to
 poll cheaply (Popen.poll(), no subprocess.wait()) from a real-time control
 loop.
@@ -514,7 +514,7 @@ class TrainingManager:
         Checked BEFORE that guess: the self-contained `policies/<name>/`
         folder convention finalize_policy() itself writes — train_checkpoint.pt
         sits right next to checkpoint.pt, no guessing needed at all. This
-        matters for a policy passed via swap_experiment.py's `--policy
+        matters for a policy passed via rugiar_driver.py's `--policy
         name:policies/<name>/checkpoint.pt` (rather than picked up through
         discover_local_policies(), which already checks this directly) —
         without this check, launching a self-contained policy this way left
@@ -550,7 +550,7 @@ class TrainingManager:
         """`train_checkpoint` is the raw rsl_rl checkpoint to resume PPO
         from (see finalize_policy()'s docstring for how a fresh training
         job gets one). Pass None (the --policy CLI path, via
-        swap_experiment.py) to fall back to guessing it from `checkpoint`'s
+        rugiar_driver.py) to fall back to guessing it from `checkpoint`'s
         directory layout — the only option for a checkpoint that was never
         produced by this UI in the first place (e.g. an externally-sourced
         one with no raw training history at all, which correctly stays
@@ -573,7 +573,7 @@ class TrainingManager:
     def finalize_policy(self, name: str, task: str, checkpoint: str,
                          train_checkpoint: Optional[str],
                          job: Optional["TrainingJob"] = None) -> str:
-        """Called once a training job finishes (see swap_experiment.py's
+        """Called once a training job finishes (see rugiar_driver.py's
         drain_finished_training()) to copy its two checkpoints out of
         rsl_rl's log_dir — which is logging/TensorBoard scratch space, not
         somewhere a policy is meant to live long-term — into one
@@ -808,7 +808,7 @@ class TrainingManager:
         pick up new code, or after a crash) starts both of those empty
         again even though nothing on disk changed — finalize_policy()
         copies checkpoints out of scratch log_dir space specifically so
-        they'd survive that. This is what lets swap_experiment.py's
+        they'd survive that. This is what lets rugiar_driver.py's
         startup re-offer every previously-trained policy instead of just
         whatever --policy flags happened to be typed that time.
 

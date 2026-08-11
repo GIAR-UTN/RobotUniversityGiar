@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Headless smoke test for legged_gym/control/transport.py — mirrors the spirit
-of the existing --headless smoke test in swap_experiment.py (no browser, no
+of the existing --headless smoke test in rugiar_driver.py (no browser, no
 sim/Genesis dependency): connect a client, switch policies, estop, assert
 status transitions, all over a real WebSocket round trip.
 

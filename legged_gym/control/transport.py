@@ -13,7 +13,7 @@ exactly as it would to a bare `websockets.serve` server.
 
 Threading model (read before touching this file): uvicorn runs the FastAPI
 app on its own asyncio event loop, on its own thread, started by
-`serve_in_thread`. The sim loop (swap_experiment.py's `while True`) is
+`serve_in_thread`. The sim loop (rugiar_driver.py's `while True`) is
 synchronous and lives on the main thread, calling `service.tick(obs)` once
 per control step. These two must never call ControlService directly across
 threads. Instead:
@@ -55,6 +55,7 @@ METHODS = {
     "training_catalog", "start_training", "system_info", "estimate_training_time",
     "task_defaults", "delete_policy", "rename_policy", "policy_info",
     "refresh_local_policies", "fuse_policies",
+    "list_families", "switch_family",
 }
 
 
@@ -67,7 +68,7 @@ class ControlServer:
         # Shared-secret gate on /ws — see _ws_endpoint(). None means "no
         # auth" (fine on a machine only ever reachable from localhost, e.g.
         # the sim demo); set this whenever host is non-localhost, which is
-        # exactly the case swap_experiment.py's --real mode targets, so any
+        # exactly the case rugiar_driver.py's --real mode targets, so any
         # client on the robot's network — the web UI included — needs the
         # token to open a connection at all. There is deliberately no
         # per-method exception for estop here: the real emergency stop is
@@ -103,13 +104,13 @@ class ControlServer:
         self.app = FastAPI()
         self.app.add_api_websocket_route("/ws", self._ws_endpoint)
         # No token gate here — same precedent as /config and the web/docs
-        # StaticFiles mounts swap_experiment.py adds below: --token protects
+        # StaticFiles mounts rugiar_driver.py adds below: --token protects
         # the command surface reachable over /ws, not general content this
         # server serves. See publish_camera_frame()/get_camera_frame() (
         # adapter.py) for where the actual frames come from.
         self.app.add_api_route("/camera.mjpg", self._camera_stream_endpoint, methods=["GET"])
 
-        # StaticFiles (mounted by swap_experiment.py for web/ and docs/)
+        # StaticFiles (mounted by rugiar_driver.py for web/ and docs/)
         # sends no Cache-Control header by default, so browsers fall back to
         # heuristic caching and can keep serving a stale web/app.js or
         # index.html for a long time — even across a hard reload, since a
@@ -135,7 +136,7 @@ class ControlServer:
 
     def publish_camera_frame(self, jpeg_bytes: bytes) -> None:
         """Sim-thread -> socket-thread handoff of one already-JPEG-encoded
-        camera frame — see swap_experiment.py's control loop, which calls
+        camera frame — see rugiar_driver.py's control loop, which calls
         this every N ticks (RgbCameraCfg.decimation) with whatever
         adapter.get_camera_frame() returned, re-encoded to JPEG. Picked up
         by _mjpeg_stream() below and pushed to every client on /camera.mjpg.
@@ -274,7 +275,7 @@ class ControlServer:
         returns. uvicorn logs a bind failure (e.g. port already in use) but
         does not raise it back to the caller, so this polls `Server.started`
         with a timeout and treats "thread died without starting" or
-        "timed out" as failure, rather than letting swap_experiment.py print
+        "timed out" as failure, rather than letting rugiar_driver.py print
         a false 'listening' message and silently drop every reply."""
         config = uvicorn.Config(self.app, host=self.host, port=self.port, log_level="warning")
         self._uvicorn_server = uvicorn.Server(config)

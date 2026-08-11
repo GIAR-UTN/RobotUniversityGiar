@@ -24,7 +24,7 @@ class Selector(Protocol):
         """Return the name of the policy that should be active given this
         state, or None to mean "no opinion, leave it as is". Called once per
         tick by whoever's driving the autonomous loop (see
-        legged_gym/scripts/swap_experiment.py for the reference wiring)."""
+        legged_gym/scripts/rugiar_driver.py for the reference wiring)."""
         ...
 
 

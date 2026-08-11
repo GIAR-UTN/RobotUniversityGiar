@@ -6,7 +6,7 @@ policy, without hand-composing a `python legged_gym/scripts/web_train.py
 This is deliberately a thin wrapper around
 legged_gym.control.training.TrainingManager — the SAME engine the control
 web's "Create Policy" panel drives (see TrainingManager.start()/poll()/
-finalize_policy() and swap_experiment.py's drain_finished_training(), which
+finalize_policy() and rugiar_driver.py's drain_finished_training(), which
 this module's run_train() mirrors step for step: start() launches
 web_train.py as a subprocess, poll() checks on it non-blockingly, and
 finalize_policy() copies the result into its own self-contained

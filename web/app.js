@@ -136,8 +136,10 @@ function connect() {
   ws = new WebSocket(url);
   ws.onopen = () => {
     footer.textContent = 'connected'; connDot.className = 'ok';
+    familySwitchInFlight = false;
     refreshTrainingCatalog();
     refreshSystemInfo();
+    refreshFamilyList();
   };
   ws.onclose = () => {
     footer.textContent = 'disconnected — retrying…';
@@ -336,6 +338,71 @@ function renderPolicyList(names, active) {
   initPolicyDrag();
 }
 
+const familyList = $('#family-list');
+let familySwitchInFlight = false;
+let familyListExpanded = false; // "Show all" toggle -- see renderFamilyList()
+
+// A family switch kills THIS process and relaunches a new one for the
+// chosen task (see ControlService.switch_family()'s docstring — Genesis
+// can't rebuild its scene in-process). Row click uses send() (fire-and-
+// forget), never call(): the switch itself drops the socket, so a
+// call() awaiting a reply would hang forever (pendingCalls aren't
+// cleaned up on close).
+function familyButtonRow(name, current, hasPolicies) {
+  const row = document.createElement('div');
+  row.className = 'policy-row';
+  const btn = document.createElement('button');
+  btn.className = 'policy-btn' + (name === current ? ' active' : '');
+  btn.textContent = name;
+  btn.disabled = name === current || familySwitchInFlight || !hasPolicies;
+  if (!hasPolicies) btn.title = `No trained policies for '${name}' yet — train one first`;
+  btn.onclick = () => {
+    familySwitchInFlight = true;
+    footer.textContent = `switching to '${name}' — this page will reconnect on its own (10-20s)…`;
+    send('switch_family', { task: name });
+  };
+  row.appendChild(btn);
+  return row;
+}
+
+function renderFamilyList(families) {
+  if (!families) return;
+  familyList.innerHTML = '';
+  // Collapsed (default): only tasks with at least one trained local policy
+  // -- switch_family() itself rejects the rest server-side, and this repo
+  // registers ~20 tasks across several unrelated robot bodies (G1, Go2, K1,
+  // Tron1), so showing the full list by default is mostly noise, not
+  // options. "Show all" reveals every registered task anyway (disabled/
+  // greyed for the ones with no policy yet) -- useful for seeing what's
+  // available to train next, per the Create Policy panel's own task list.
+  const withPolicies = families.tasks.filter((name) =>
+    name === families.current || (families.policies_per_task[name] || []).length > 0);
+  const names = familyListExpanded ? families.tasks : withPolicies;
+  names.forEach((name) => {
+    const hasPolicies = name === families.current || (families.policies_per_task[name] || []).length > 0;
+    familyList.appendChild(familyButtonRow(name, families.current, hasPolicies));
+  });
+
+  const hiddenCount = families.tasks.length - withPolicies.length;
+  if (hiddenCount > 0) {
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'policy-show-all-btn';
+    toggle.textContent = familyListExpanded ? 'Show fewer' : `Show all (${families.tasks.length})`;
+    toggle.onclick = () => {
+      familyListExpanded = !familyListExpanded;
+      renderFamilyList(families);
+    };
+    familyList.appendChild(toggle);
+  }
+}
+
+function refreshFamilyList() {
+  call('list_families').then(renderFamilyList).catch((e) => {
+    console.warn('list_families unavailable:', e.message);
+  });
+}
+
 function onPolicyReorder() {
   // While collapsed, only the visible rows exist in the DOM to drag — any
   // names hidden behind "Show all" aren't part of this drag at all, so
@@ -365,8 +432,11 @@ function applyStatus(status) {
 
   let color = status.ramping ? '🟡' : '🟢';
   if (status.safety_tripped) color = '🔴';
-  let text = `${color} ${status.active}`;
-  if (status.pending) text += ` → ${status.pending}`;
+  // Shows the current FAMILY (task), not the active policy -- which
+  // family/experiment is running is the more useful at-a-glance fact here;
+  // the active policy within it is already highlighted in the Policies
+  // list below (see policyButtonRow's `.active` class).
+  let text = `${color} ${status.current_task ?? '—'}`;
   if (status.paused) text += ' (paused)';
   activeLabel.innerHTML = `<span id="conn-dot" class="${connDot.className}"></span>${text}`;
 

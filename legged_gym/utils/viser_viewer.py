@@ -402,7 +402,7 @@ class ViserViewer:
         self._props_cfg = props_cfg or []
         # play.py reads these sliders itself (see get_command()) to drive
         # velocity commands interactively. Callers that manage commands
-        # through a different path (e.g. swap_experiment.py, via
+        # through a different path (e.g. rugiar_driver.py, via
         # ControlService.set_command) can pass False here instead of ending
         # up with a second, unwired copy of the same controls.
         self._show_command_sliders = show_command_sliders

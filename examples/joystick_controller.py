@@ -5,7 +5,7 @@
 ============================================================================
 A ready-to-run gamepad controller for the robot (sim today, real G1 once
 --real is wired up). It does NOT train or load anything itself — it just
-connects to an ALREADY-RUNNING `swap_experiment.py` control server over a
+connects to an ALREADY-RUNNING `rugiar_driver.py` control server over a
 WebSocket and sends it the same kinds of messages the browser control web
 UI sends when you click its buttons. Point it at that server's
 --control_port and drive with a gamepad (or --demo, no gamepad needed).
@@ -26,7 +26,7 @@ It sends two kinds of messages:
 2) Make sure a control server is already running somewhere (this is a
    SEPARATE process/terminal — this script does not start it):
        export SIMULATOR=genesis
-       python legged_gym/scripts/swap_experiment.py \\
+       python legged_gym/scripts/rugiar_driver.py \\
            --policy stable:policies/stable/checkpoint.pt \\
            --policy other:policies/other/checkpoint.pt \\
            --control_port 9013
@@ -75,7 +75,7 @@ resume/restart/estop map to the exact same server-side calls
 use; the server doesn't care what kind of client sent them. Full wire
 protocol: docs/index.html §13.
 
-Works unmodified against swap_experiment.py running either the Genesis
+Works unmodified against rugiar_driver.py running either the Genesis
 simulator or (once wired up, --real) an actual G1 — same protocol either
 way, only what set_command/estop actually *do* underneath differs.
 

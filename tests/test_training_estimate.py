@@ -114,7 +114,7 @@ class TestTrainCheckpointFromExport(unittest.TestCase):
             self.assertEqual(result, str(log_dir / "model_1163.pt"))
 
     def test_flat_copy_with_no_sibling_log_dir_returns_none(self):
-        # Mirrors the real failure: swap_experiment.py's --policy sources
+        # Mirrors the real failure: rugiar_driver.py's --policy sources
         # point at flat copies under policies/*.pt (see docker-entrypoint.sh
         # / HANDOFF_control_web.md), not the original <log_dir>/exported/
         # structure — so there's no sibling model_*.pt to find, and this

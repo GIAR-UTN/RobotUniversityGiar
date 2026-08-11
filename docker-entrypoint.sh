@@ -7,13 +7,13 @@ set -e
 
 # If manual arguments are passed (e.g. `docker run ... bash` or
 # `docker run ... python ...`), execute them directly and skip the
-# automatic swap_experiment launch.
+# automatic rugiar_driver launch.
 if [ $# -gt 0 ]; then
     exec "$@"
 fi
 
 # ---------------------------------------------------------------------------
-# Automatic launch of swap_experiment.py
+# Automatic launch of rugiar_driver.py
 # ---------------------------------------------------------------------------
 # Policies are auto-discovered from /workspace/policies/*.pt and *.onnx.
 # Each file is registered as --policy <basename_without_ext>:<path> — .onnx
@@ -110,4 +110,4 @@ if [ -n "$SPEED" ]; then
 fi
 
 cd /workspace/RobotUniversityGiar
-exec python legged_gym/scripts/swap_experiment.py "${ARGS[@]}"
+exec python legged_gym/scripts/rugiar_driver.py "${ARGS[@]}"

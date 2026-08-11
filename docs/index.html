@@ -967,7 +967,7 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
 
         <h3>Viser: the viewer behind the web control panel</h3>
         <p>Viser exists in this fork because Genesis's own native viewer window has a rendering bug on this project's Mac/asset combination — <code>--viewer=viser --viser_port=&lt;port&gt;</code> serves the same 3D scene over a WebSocket instead. That's also exactly what a <em>headless</em> Kaggle kernel needs: no display is attached to a cloud GPU kernel at all, so Kaggle jobs always run <code>--headless</code>, with no viewer serving anything.</p>
-        <p>It's the same Viser instance powering <a href="#control-arch">§12</a>'s live policy-switching demo: <code>swap_experiment.py</code> starts Viser on one port (the raw 3D view) and, alongside it on a second port, the unified control web — Pause/Restart, policy switching, E-STOP, velocity commands — that a browser tab talks to over its own WebSocket (<code>/ws</code>, see <code>legged_gym/control/transport.py</code>). Viser only ever matters for watching a policy live on a machine with a browser pointed at it; it plays no role in a training job's speed or correctness on either simulator.</p>
+        <p>It's the same Viser instance powering <a href="#control-arch">§12</a>'s live policy-switching demo: <code>rugiar_driver.py</code> starts Viser on one port (the raw 3D view) and, alongside it on a second port, the unified control web — Pause/Restart, policy switching, E-STOP, velocity commands — that a browser tab talks to over its own WebSocket (<code>/ws</code>, see <code>legged_gym/control/transport.py</code>). Viser only ever matters for watching a policy live on a machine with a browser pointed at it; it plays no role in a training job's speed or correctness on either simulator.</p>
 
         <div class="aside">
           <div class="label">The Hardware panel</div>
@@ -1026,8 +1026,8 @@ def step(self, obs):
 
         <p>Try it yourself:</p>
         <details class="code-box">
-          <summary><span>Run the live demo</span> <span class="file">legged_gym/scripts/swap_experiment.py</span></summary>
-          <pre><code>python legged_gym/scripts/swap_experiment.py \
+          <summary><span>Run the live demo</span> <span class="file">legged_gym/scripts/rugiar_driver.py</span></summary>
+          <pre><code>python legged_gym/scripts/rugiar_driver.py \
     --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
     --policy crouch:logs/g1_crouch/&lt;run_name&gt;/exported/policy_lstm_1.pt \
     --active stable
@@ -1052,7 +1052,7 @@ def step(self, obs):
 
         <div class="aside">
           <div class="label">Sim today, real robot tomorrow — same protocol either way</div>
-          <code>swap_experiment.py --control_port 9013</code> serves this exact protocol against the Genesis simulator. Add <code>--real --net_interface eth0 --robot_config deploy_real/configs/g1.yaml</code> (once run on the robot's onboard computer, with <code>unitree_sdk2py</code> installed) and the SAME server, SAME <code>/ws</code> endpoint, SAME message shapes now drive the physical G1 over DDS instead — see §9's <code>RealAdapter</code>. Nothing on the controller side has to change.
+          <code>rugiar_driver.py --control_port 9013</code> serves this exact protocol against the Genesis simulator. Add <code>--real --net_interface eth0 --robot_config deploy_real/configs/g1.yaml</code> (once run on the robot's onboard computer, with <code>unitree_sdk2py</code> installed) and the SAME server, SAME <code>/ws</code> endpoint, SAME message shapes now drive the physical G1 over DDS instead — see §9's <code>RealAdapter</code>. Nothing on the controller side has to change.
         </div>
 
         <h3>Connecting</h3>
@@ -1349,7 +1349,7 @@ rugiar order --show   # the display order a downstream control layer offers poli
         <p><code>.claude/skills/rugiar/SKILL.md</code> is a packaged set of instructions <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> loads automatically whenever a conversation touches training, fusing, or driving a robot in this repo — the assistant doesn't have to be re-taught this system's gotchas every session. It captures things a plain <code>--help</code> output can't: that reward/episode-length numbers alone don't prove a policy walks (a real past mistake here, see §13), the exact recipe for training a crouched-but-mobile policy without it turning wobbly, how to set up Kaggle cloud training, the fusion methods (weighted average and Git Re-Basin, and which policies each one supports), and the full WebSocket control protocol for anyone building a custom client. Kept next to the code it documents, in the same repo, so it's expected to be updated alongside a feature rather than drifting into stale advice.</p>
 
         <h3>The control web</h3>
-        <p>The browser door — <code>swap_experiment.py --control_port 9013</code> serves it at <code>http://localhost:9013</code>, backed by the exact same <code>ControlService</code> the CLI and the WebSocket protocol (<a href="#control-protocol">§13</a>) talk to. A live screenshot from this fork's own development instance:</p>
+        <p>The browser door — <code>rugiar_driver.py --control_port 9013</code> serves it at <code>http://localhost:9013</code>, backed by the exact same <code>ControlService</code> the CLI and the WebSocket protocol (<a href="#control-protocol">§13</a>) talk to. A live screenshot from this fork's own development instance:</p>
 
         <div class="plate">
           <img class="tool-screenshot" src="assets/control-web-demo.png"

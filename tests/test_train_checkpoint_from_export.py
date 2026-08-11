@@ -2,7 +2,7 @@
 """
 Unit tests for TrainingManager._train_checkpoint_from_export() (legged_gym/
 control/training.py) — regression coverage for a real bug: a policy passed
-to swap_experiment.py via `--policy name:policies/<name>/checkpoint.pt`
+to rugiar_driver.py via `--policy name:policies/<name>/checkpoint.pt`
 (rather than picked up through discover_local_policies(), which already
 checks this directly) registered with train_checkpoint=None even though
 policies/<name>/train_checkpoint.pt sat right next to it on disk, because

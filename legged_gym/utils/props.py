@@ -1,4 +1,4 @@
-"""Shared prop presets for the `--ball` CLI flag (play.py, swap_experiment.py)."""
+"""Shared prop presets for the `--ball` CLI flag (play.py, rugiar_driver.py)."""
 
 
 def default_ball_prop():

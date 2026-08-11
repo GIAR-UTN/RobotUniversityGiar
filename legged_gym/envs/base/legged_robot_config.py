@@ -280,7 +280,7 @@ class LeggedRobotCfg(BaseConfig):
     # sensor configuration:
     class sensor:
         add_depth: bool = False
-        add_rgb_camera: bool = False  # [Genesis only] robot-POV RGB feed for the live control web (see swap_experiment.py --camera)
+        add_rgb_camera: bool = False  # [Genesis only] robot-POV RGB feed for the live control web (see rugiar_driver.py --camera)
         class rgb_camera_config:
             resolution: Tuple[int, int] = (320, 240)  # (width, height) -- Genesis Camera's own (w,h) convention
             fov_deg: float = 87.0  # vertical FOV; ~matches a RealSense D435's horizontal FOV

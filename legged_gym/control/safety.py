@@ -61,7 +61,7 @@ class SafetyGovernor:
         safety mechanism; (b) approving a pending switch if one is queued
         and the moment is safe. Once tripped, stays tripped (and stays on
         the damping skill) until reset() is called explicitly — see
-        legged_gym/scripts/swap_experiment.py's Restart handler."""
+        legged_gym/scripts/rugiar_driver.py's Restart handler."""
         fallen = state.projected_gravity[:, 2].max().item() >= self.max_projected_gravity_z
         nan_detected = torch.isnan(state.dof_pos).any().item() or torch.isnan(state.base_quat).any().item()
 

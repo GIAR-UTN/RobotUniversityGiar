@@ -97,7 +97,7 @@ python legged_gym/scripts/train.py --task=g1 --headless --cpu --num_envs=64 --ma
 python legged_gym/scripts/play.py --task=g1 --headless --cpu --num_envs=1 --load_run=<run_name> --export_onnx
 # play.py exports logs/g1/<run_name>/exported/policy_lstm_1.pt  (TorchScript) and
 #                  logs/g1/<run_name>/exported/policy_lstm_1.onnx (ONNX, --export_onnx only)
-# both are loadable directly by load_policy() / swap_experiment.py — see §5a for sharing across a team.
+# both are loadable directly by load_policy() / rugiar_driver.py — see §5a for sharing across a team.
 ```
 
 **Before deleting any `logs/<task>/<run>/` directory**, copy its final raw checkpoint (`model_<N>.pt` — the one with optimizer + critic state, NOT the exported inference-only `policy_lstm_1.pt`) into `./checkpoints/<task>/`, git-tracked, if there's any chance you'll want to keep training that run later:
@@ -159,7 +159,7 @@ aligned too, and chained into the downstream MLP's own alignment (see
 ### Run the policy-switching demo
 
 ```bash
-python legged_gym/scripts/swap_experiment.py \
+python legged_gym/scripts/rugiar_driver.py \
     --policy stable:./policies/stable.pt \
     --policy cautious:./policies/cautious.pt \
     --policy scratch_wobbly:./policies/scratch_wobbly.pt \
@@ -174,7 +174,7 @@ python legged_gym/scripts/swap_experiment.py \
 Add `--control_port <PORT>` to also start the unified control web (see §4a below):
 
 ```bash
-python legged_gym/scripts/swap_experiment.py \
+python legged_gym/scripts/rugiar_driver.py \
     --policy stable:./policies/stable.pt \
     --policy cautious:./policies/cautious.pt \
     --policy scratch_wobbly:./policies/scratch_wobbly.pt \
@@ -242,11 +242,11 @@ Say you have two trained policies for the same robot — say, a normal walk and 
 - **`supervisor.py`** — `PolicySupervisor` owns the loaded policies and does the actual swap: `request_switch(name)` just *records intent*; `confirm_pending_switch()` — called only by the safety governor — begins a linear cross-fade of the output action over N ticks, so the PD controller sees a gradually-moving target instead of a jump.
 - **`safety.py`** — `SafetyGovernor` is the single place that decides "is this a safe instant to act on that pending switch," using the robot's own upright/fallen signal (`projected_gravity`, the same one `legged_robot.py` already uses to end a training episode when a robot falls over). It can also unilaterally hand control to a `damping` fallback skill (holds the default pose, no learned behavior) if something looks wrong — independent of who asked for what.
 - **`selector.py`** — `Selector.propose(state) -> Optional[name]` is the pluggable seam for autonomous behavior. Today it's a simple threshold rule (`TiltRecoverySelector`). The 2025-2026 research direction for this specifically on Unitree G1 (see RPG, arXiv:2604.21355; SkillBlender, arXiv:2506.09366) is a small learned gating network doing continuous blending instead of discrete rule-based switching — that's a drop-in replacement behind the same one-method interface, not a redesign.
-- **`service.py`** — `ControlService` is the call surface. Today, `viser`'s button callbacks call it in-process (`legged_gym/scripts/swap_experiment.py`). The identical class, wrapped in a thin WebSocket/JSON-RPC layer, is what would let an external process (a real robot with no display attached, or a remote web app) drive the same thing later — the transport is a detail; the interface (`switch` / `status` / `pause` / `estop`) doesn't change.
+- **`service.py`** — `ControlService` is the call surface. Today, `viser`'s button callbacks call it in-process (`legged_gym/scripts/rugiar_driver.py`). The identical class, wrapped in a thin WebSocket/JSON-RPC layer, is what would let an external process (a real robot with no display attached, or a remote web app) drive the same thing later — the transport is a detail; the interface (`switch` / `status` / `pause` / `estop`) doesn't change.
 
 ### 4a. The unified control web
 
-`legged_gym/control/transport.py` (`ControlServer`) wraps `ControlService` in a JSON-over-WebSocket transport (FastAPI + uvicorn), exposing the exact same five methods — `request_switch` / `status` / `pause` / `resume` / `estop` — to any external client at `ws://<host>:<port>/ws`. Started via `--control_port` on `swap_experiment.py` (see above); a plain Python `websockets` client or `websocat` can drive it with no browser at all.
+`legged_gym/control/transport.py` (`ControlServer`) wraps `ControlService` in a JSON-over-WebSocket transport (FastAPI + uvicorn), exposing the exact same five methods — `request_switch` / `status` / `pause` / `resume` / `estop` — to any external client at `ws://<host>:<port>/ws`. Started via `--control_port` on `rugiar_driver.py` (see above); a plain Python `websockets` client or `websocat` can drive it with no browser at all.
 
 Unless `--headless` is also set, the same port also serves `web/index.html`: a single, build-step-free HTML/JS/CSS page (same philosophy as `docs/index.html` — no npm, no bundler, read it and run it) with three regions:
 
@@ -290,7 +290,7 @@ Recommended split for a team with Mac/Linux/Windows laptops plus occasional acce
 1. **Train** wherever the GPU is (Genesis already runs on CUDA today via `GENESIS_BACKEND=cuda`, with documented workarounds — see above). Training is the only step that needs a real GPU here.
 2. **Export both formats** from that run — `play.py --export_onnx` now produces `policy_lstm_1.pt` *and* `policy_lstm_1.onnx` side by side (§2 "Train a policy"). This mirrors Isaac Lab's own convention rather than inventing a new one.
 3. **Share the checkpoint** the way the wider community does — a shared HuggingFace model repo or a wandb artifact (this repo already logs to `wandb`, see `train.py --sync_wandb`) both work; git-lfs also works for a smaller team, but isn't required.
-4. **Anyone on any OS runs it** — drop the `.pt` or `.onnx` file into `./policies/` (auto-discovered by `docker-entrypoint.sh`) or pass it directly via `swap_experiment.py --policy <name>:<path>`. No GPU, no specific OS, and no format conversion needed on the receiving end — Genesis itself runs CPU-only on a GPU-less Mac exactly as it does today.
+4. **Anyone on any OS runs it** — drop the `.pt` or `.onnx` file into `./policies/` (auto-discovered by `docker-entrypoint.sh`) or pass it directly via `rugiar_driver.py --policy <name>:<path>`. No GPU, no specific OS, and no format conversion needed on the receiving end — Genesis itself runs CPU-only on a GPU-less Mac exactly as it does today.
 
 ### 5b. Known follow-ups (Create Policy panel / task registry)
 

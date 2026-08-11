@@ -779,6 +779,23 @@
       </div>
     </section>
 
+    <section class="panel-section" data-section="family">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Family</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>Which registered task this whole session is running (e.g. "g1" walking vs "g1_gaze" standing) &mdash;
+          different from picking a Policy below, which only switches WITHIN the current family. Switching family
+          restarts this server's process for the new task (10-20s) &mdash; the page reconnects on its own once
+          it's back. Only tasks with at least one trained local policy are shown.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <div id="family-list"></div>
+      </div>
+    </section>
+
     <section class="panel-section" data-section="policies">
       <div class="section-head">
         <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>

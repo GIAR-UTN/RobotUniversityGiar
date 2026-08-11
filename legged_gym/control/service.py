@@ -6,7 +6,7 @@ UI-less robot from an external web app would also just call this method —
 it would be a thin transport wrapper around this class, not a parallel
 implementation.
 
-Today this class is used in-process (see legged_gym/scripts/swap_experiment.py):
+Today this class is used in-process (see legged_gym/scripts/rugiar_driver.py):
 viser's GUI callbacks call straight into it, no network hop needed for a
 local sim demo. The moment you want to drive this from a *different*
 process or machine (a real robot with no local display, an external web
@@ -37,18 +37,31 @@ class ControlService:
         selector: Optional[Selector] = None,
         training: Optional[TrainingManager] = None,
         policy_loader: Optional[Callable[[str, str, str], "Policy"]] = None,  # noqa: F821 - see refresh_local_policies()
+        task_name: Optional[str] = None,
     ):
         self.adapter = adapter
         self.supervisor = supervisor
         self.safety = safety
         self.selector = selector
         self.training = training
+        # Which registered task THIS process's Genesis scene was built for —
+        # e.g. "g1" or "g1_gaze". Only used to answer list_families()'s
+        # `current` field and to validate switch_family() requests; None on a
+        # caller that doesn't pass it (e.g. RealAdapter setups, or tests)
+        # simply means family-switching isn't offered.
+        self.task_name = task_name
+        # Set by switch_family() to the requested task name, drained (and
+        # acted on) once per tick by rugiar_driver.py's main loop — same
+        # "record intent, sim loop owns the actual work" split as
+        # restart_requested below, except a family switch's "actual work" is
+        # a process self-relaunch (see switch_family()'s docstring for why).
+        self.family_switch_requested: Optional[str] = None
         # Turns a (name, checkpoint_path, task) triple into a loaded, in-process
         # Policy compatible with THIS running sim's obs/action space — see
         # refresh_local_policies() below. Lives outside ControlService/
         # TrainingManager on purpose: building a runtime Policy needs the
         # current env's obs size / hidden size / num_envs, which only
-        # swap_experiment.py's main() has in scope (same reason
+        # rugiar_driver.py's main() has in scope (same reason
         # drain_finished_training() there calls load_policy() directly
         # instead of this class doing it). None on a caller that never
         # wires one up (e.g. a future real-robot deployment with no local
@@ -59,7 +72,7 @@ class ControlService:
         # request_switch — the sim loop owns `obs` (the raw observation
         # tensor fed to policies) and must refresh it right after the reset,
         # so the actual adapter.reset()/safety.reset() calls stay in
-        # swap_experiment.py's loop rather than here. See restart()'s
+        # rugiar_driver.py's loop rather than here. See restart()'s
         # docstring.
         self.restart_requested = False
 
@@ -85,7 +98,7 @@ class ControlService:
     def refresh_local_policies(self) -> list:
         """Rescans ./policies/<name>/ for folders not yet loaded into THIS
         running process and loads/registers each one — the counterpart to
-        drain_finished_training() in swap_experiment.py, which only catches
+        drain_finished_training() in rugiar_driver.py, which only catches
         completions of jobs THIS process itself started. A policy trained
         by a separate process (e.g. the `rugiar` CLI, running independently
         of any server) writes straight to disk and is otherwise invisible
@@ -104,7 +117,7 @@ class ControlService:
             try:
                 # policy_loader is responsible for rejecting a task mismatch
                 # (a different obs/action space) itself — see
-                # swap_experiment.py's wiring; ObsSpec enforcement elsewhere
+                # rugiar_driver.py's wiring; ObsSpec enforcement elsewhere
                 # is only a warning, not a hard stop, so this can't rely on
                 # load_policy() to catch it after the fact.
                 new_policy = self.policy_loader(name, info["checkpoint"], info["task"])
@@ -172,13 +185,14 @@ class ControlService:
         s["safety_tripped"] = self.safety.tripped
         # Every user-selectable policy name — "damping" is the safety
         # fallback skill, not a switch target, so it's excluded the same
-        # way swap_experiment.py's viser panel already excludes it.
+        # way rugiar_driver.py's viser panel already excludes it.
         s["policies"] = [name for name in self.supervisor.policies if name != "damping"]
         # Adapter-declared, not UI-hardcoded — see SimAdapter/RealAdapter's
         # backend_name/capabilities class attributes. Lets a control web
         # show the same panel for sim and real, graying out what the
         # current backend can't do (e.g. "restart" on real hardware).
         s["backend"] = getattr(self.adapter, "backend_name", "sim")
+        s["current_task"] = self.task_name
         s["capabilities"] = getattr(self.adapter, "capabilities", {})
         # Optional — only SimAdapter exposes these today (see adapter.py's
         # command/random_events properties). Absent entirely for adapters
@@ -201,7 +215,7 @@ class ControlService:
         ground truth (surfaced verbatim in each field's 'source' below so
         the UI doesn't have to duplicate that knowledge). get_state() just
         reads already-populated tensors (no extra sim step), so this is
-        cheap to call every tick. Only env 0 — swap_experiment.py's live
+        cheap to call every tick. Only env 0 — rugiar_driver.py's live
         control demo always runs num_envs=1."""
         try:
             state = self.adapter.get_state()
@@ -296,7 +310,7 @@ class ControlService:
         out-of-process (see TrainingManager) — this call returns immediately,
         the job's progress shows up in status()['training_jobs'], and the
         resulting policy is hot-loaded into the supervisor automatically once
-        it finishes (see swap_experiment.py's per-tick poll_finished_training()
+        it finishes (see rugiar_driver.py's per-tick poll_finished_training()
         drain, mirroring how restart_requested is drained today).
 
         Time budget is either or both of max_iterations/max_minutes —
@@ -402,6 +416,55 @@ class ControlService:
         PolicySupervisor.request_switch) — see __init__'s note on why the
         actual reset happens in the sim loop, not here."""
         self.restart_requested = True
+
+    def list_families(self) -> dict:
+        """Every registered task ('family'), and which local policies exist
+        for each — what the control web's Family panel needs to render
+        itself and know what's actually switchable-to (a task with zero
+        local policies can't be switched to, see switch_family()). Unlike
+        training_catalog()'s task list, this is NOT filtered to tasks whose
+        obs shape matches the currently running one — the whole point here
+        is offering tasks with a DIFFERENT shape, that's what a family
+        switch is for."""
+        from legged_gym.utils import task_registry
+        policies_per_task: dict = {}
+        if self.training is not None:
+            for name, info in self.training.discover_local_policies().items():
+                policies_per_task.setdefault(info["task"], []).append(name)
+        return {
+            "tasks": sorted(task_registry.task_classes.keys()),
+            "current": self.task_name,
+            "policies_per_task": policies_per_task,
+        }
+
+    def switch_family(self, task: str) -> None:
+        """Requests switching this ENTIRE session to a different registered
+        task ('family') — e.g. from 'g1' (walking) to 'g1_gaze' (standing).
+        Unlike request_switch() (swaps the active POLICY within the current
+        task's already-built scene), this can't be done in-process: Genesis
+        owns global, once-per-process simulator state (see
+        legged_gym/control/training.py's module docstring on why training
+        itself runs in a subprocess for exactly this reason) — there is no
+        safe way to tear down one Genesis scene and build another inside
+        this same process. So a family switch is a PROCESS-LEVEL operation:
+        this only records intent (same 'sim loop owns the actual work' split
+        as restart() above); rugiar_driver.py's main loop, seeing
+        family_switch_requested set, self-relaunches a fresh process for the
+        new task and exits this one — see that loop's comment for the full
+        mechanism. Validates up front (task registered AND has at least one
+        local policy to load) so a switch that can't succeed never kills a
+        working session for nothing."""
+        from legged_gym.utils import task_registry
+        if task not in task_registry.task_classes:
+            raise ValueError(f"unknown task '{task}'")
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        has_local_policy = any(
+            info["task"] == task for info in self.training.discover_local_policies().values()
+        )
+        if not has_local_policy:
+            raise ValueError(f"no trained local policies for task '{task}' yet")
+        self.family_switch_requested = task
 
     def set_episode_timeout(self, seconds: Optional[float] = None) -> None:
         """Configures/disables legged_robot.py's own timer-based episode

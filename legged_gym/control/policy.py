@@ -98,7 +98,7 @@ class InternalStatePolicy:
 def _fixed_dim(dim, fallback: int) -> int:
     """onnxruntime reports symbolic batch dims (e.g. 'batch') as non-int —
     fall back to 1 (this whole control stack runs num_envs=1, see
-    swap_experiment.py) rather than propagate a string into torch.zeros."""
+    rugiar_driver.py) rather than propagate a string into torch.zeros."""
     return dim if isinstance(dim, int) else fallback
 
 
