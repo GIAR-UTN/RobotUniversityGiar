@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Regression test for a real bug: a policy passed to swap_experiment.py via
+Regression test for a real bug: a policy passed to rugiar_driver.py via
 `--policy name:policies/<name>/checkpoint.pt` (a self-contained folder
 finalize_policy() wrote) got registered with simulator="genesis" even when
 its own meta.json said "isaacgym" (e.g. trained on Kaggle) — because
@@ -9,13 +9,16 @@ name that was ALSO given via --policy, so the simulator lookup fell through
 to a hardcoded default instead of reading the meta.json sitting right next
 to the checkpoint. This fed a false "sources were trained on different
 simulators" warning into the Fuse policies panel for any such policy pair.
-See _sibling_meta_simulator() (legged_gym/scripts/swap_experiment.py).
+See _sibling_meta_simulator() (legged_gym/scripts/rugiar_driver.py — also
+duplicated verbatim in rugiar_driver_gaze.py, the target-aware family's
+sibling driver, since the two scripts are deliberately independent; this
+test only covers the copy in rugiar_driver.py).
 
 Needs the real module (it does `from legged_gym.envs import *` at import
 time), so this needs SIMULATOR set and a real simulator backend importable,
 same as tests/test_control_transport.py's genesis-dependent tests.
 
-Run directly: SIMULATOR=genesis python tests/test_swap_experiment_simulator_lookup.py
+Run directly: SIMULATOR=genesis python tests/test_rugiar_driver_simulator_lookup.py
 """
 import json
 import sys
@@ -25,7 +28,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from legged_gym.scripts.swap_experiment import _sibling_meta_simulator
+from legged_gym.scripts.rugiar_driver import _sibling_meta_simulator
 
 
 class TestSiblingMetaSimulator(unittest.TestCase):

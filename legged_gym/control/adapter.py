@@ -20,6 +20,8 @@ from typing import Optional, Protocol
 
 import torch
 
+from legged_gym.utils.math_utils import quat_rotate_inverse
+
 
 class Lifecycle(Enum):
     """Mirrors ros2_control's controller lifecycle naming on purpose — it's a
@@ -214,11 +216,29 @@ class SimAdapter:
         (H, W, 3) uint8 numpy array from the simulator's RGB camera (see
         GenesisSimulator.get_camera_frame(), gated by
         cfg.sensor.add_rgb_camera), or None if the current backend has no
-        camera support or it wasn't enabled — callers (swap_experiment.py's
+        camera support or it wasn't enabled — callers (rugiar_driver.py's
         control loop) must treat None as "nothing to stream this tick", not
         an error."""
         get_frame = getattr(self.env.simulator, "get_camera_frame", None)
         return get_frame() if get_frame is not None else None
+
+    def get_target_relative_pos(self) -> Optional[torch.Tensor]:
+        """Not part of RobotAdapter (same reasoning as get_camera_frame() above)
+        -- an optional, backend-specific extra. Returns the `--ball` prop's live
+        world position transformed into the robot's own base frame (x forward,
+        y left, z up), shape (num_envs, 3), or None if no ball prop exists (
+        `--ball` wasn't passed) or this backend has no prop tracking at all.
+        This is ground truth, not detection -- the real-camera equivalent
+        (RealAdapter) has no prop to read and has no get_target_relative_pos
+        at all; callers must treat a missing/absent method or a None return
+        the same way get_camera_frame()'s callers already do: 'nothing to
+        feed this tick', not an error."""
+        props = getattr(self.env.simulator, "_props", None)
+        if not props or "ball" not in props:
+            return None
+        ball_pos_world = props["ball"]["pos"]
+        offset_world = ball_pos_world - self.env.simulator.base_pos
+        return quat_rotate_inverse(self.env.simulator.base_quat, offset_world)
 
     def record(self, obs: torch.Tensor, action: torch.Tensor, state: RobotState) -> None:
         pass

@@ -12,19 +12,37 @@ real robot would call. viser here is ONLY the 3D scene renderer plus its own
 native camera controls — it has no robot-control GUI of its own; that would
 just be a second, unsynchronized copy of what the unified web already does.
 
+This is the driver for the "g1" (walking) family of tasks — a registered task
+here is treated as a separate EXPERIMENT, not a live mode to hot-swap within
+one process (see the "Family selector" plan and its follow-up discussion for
+why: Genesis can't rebuild its scene in-process, and more importantly, the
+user explicitly wants experiments kept architecturally separate, not unified
+into one policy). `legged_gym/scripts/rugiar_driver_gaze.py` is the sibling
+driver for the "target-aware" family (g1_gaze and future siblings) — same
+plumbing, plus the per-tick target-bearing injection that family's tasks
+expect. The control web's Family panel switches between them by relaunching
+the correct one for the chosen task — see _relaunch_for_family()/
+_script_for_task() below.
+
 Usage:
-    python legged_gym/scripts/swap_experiment.py \
+    python legged_gym/scripts/rugiar_driver.py \
         --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
         --policy crouch:logs/g1/<run>/exported/policy_lstm_1.pt \
         --active stable
 """
 import argparse
+import glob
 import io
 import json
+import math
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
+from typing import Optional
 
+import torch
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
@@ -82,10 +100,122 @@ def _sibling_meta_simulator(checkpoint_path: str) -> str:
         return "genesis"
 
 
+def _script_for_task(task: str) -> str:
+    """Which driver script implements `task`'s family -- rugiar_driver.py
+    (this file, the default) for ordinary tasks, or rugiar_driver_gaze.py
+    for the "target-aware" family (any task with cfg.rewards.target_aware =
+    True, e.g. g1_gaze and future siblings). Dynamic (inspects the task's
+    own cfg) rather than a hardcoded task-name list, so a new target-aware
+    sibling task works here with no change to this function."""
+    env_cfg, _ = task_registry.get_cfgs(name=task)
+    if getattr(env_cfg.rewards, "target_aware", False):
+        return "rugiar_driver_gaze.py"
+    return "rugiar_driver.py"
+
+
+def _bare_g1_policy_specs() -> list:
+    """--policy specs for legacy checkpoints sitting directly in ./policies/
+    (e.g. stable.pt, g1_crouch_stability.pt) -- NOT inside a policies/<name>/
+    folder, so discover_local_policies() (which only scans those folders'
+    meta.json) never finds them; they were only ever loadable via an
+    explicit --policy at manual launch. Same auto-pickup convention
+    docker-entrypoint.sh already uses for its own automatic launch. Only
+    offered for --task g1: these predate the multi-task system entirely (all
+    pretrained/legacy G1 checkpoints) and, unlike folder-based policies, have
+    no sibling meta.json to check a task against -- g1_gaze's obs size
+    happens to coincide with g1's (see _sibling_meta_task's docstring on why
+    that coincidence is exactly the dangerous case), so blindly offering
+    these to every family would risk a silent wrong-shape load for a
+    NON-'g1' target instead of a safe no-op.
+
+    Only *.pt, not *.onnx: unlike a self-contained torch checkpoint, an ONNX
+    export can reference an external *.onnx.data weights file by relative
+    name baked into the file itself at export time (see export_onnx()) --
+    copying just the .onnx without its sibling .data breaks it, and this
+    repo already has exactly that stale/incomplete case sitting in
+    ./policies/ (confirmed: g1_crouch_stability.onnx references a
+    policy_lstm_1.onnx.data that only exists under logs/.../exported/, not
+    alongside it). One broken auto-picked-up file would crash the entire
+    relaunch (main()'s policy-loading loop has no per-file try/except, by
+    design -- an explicitly-requested --policy failing IS supposed to be a
+    hard error). Safer to just not auto-offer the fragile format at all."""
+    specs = []
+    for path in sorted(glob.glob(os.path.join("policies", "*.pt"))):
+        specs += ["--policy", f"{Path(path).stem}:{path}"]
+    return specs
+
+
+def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
+    """Self-relaunch: spawns a fresh driver process for `new_task` (no
+    explicit --policy beyond legacy bare-file ones for 'g1', see
+    _bare_g1_policy_specs() -- the new process auto-discovers that task's
+    folder-based local policies itself, same mechanism this one used at its
+    own startup), then exits THIS process so the new one can bind the same
+    --control_port/--viser_port. See ControlService.switch_family()'s
+    docstring for why this is a process-level operation rather than an
+    in-process scene rebuild (Genesis's global, once-per-process simulator
+    state). The browser's own WS client already retries the connection
+    unconditionally every 1s on drop -- no proxy or coordination needed, it
+    just reconnects once the new process is listening (~15-20s of Genesis
+    startup, same as any fresh launch). `new_task`'s family may be a
+    DIFFERENT script than this one (see _script_for_task()) -- each
+    family/experiment has its own driver, deliberately not sharing this
+    file's plumbing (see this file's module docstring)."""
+    script = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), _script_for_task(new_task))
+    argv = [sys.executable, script, "--task", new_task,
+            "--viser_port", str(cli.viser_port), "--speed", str(cli.speed),
+            "--ramp_ticks", str(cli.ramp_ticks)]
+    if new_task == "g1":
+        argv += _bare_g1_policy_specs()
+    if cli.control_port is not None:
+        argv += ["--control_port", str(cli.control_port)]
+    if cli.ball:
+        argv.append("--ball")
+    if cli.camera:
+        argv.append("--camera")
+    if cli.real:
+        argv.append("--real")
+        argv += ["--net_interface", cli.net_interface, "--robot_config", cli.robot_config]
+    if cli.token:
+        argv += ["--token", cli.token]
+    print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
+    sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
+    sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
+    subprocess.Popen(argv, start_new_session=True)
+    os._exit(0)  # immediate -- release the port now, no cleanup needed
+
+
+def _sibling_meta_task(checkpoint_path: str) -> Optional[str]:
+    """Same sibling-meta.json lookup as _sibling_meta_simulator(), for the
+    'task' field. Unlike discover_local_policies() (only consulted for
+    policies NOT named on the command line), an explicit `--policy name:path`
+    is loaded unconditionally with no task check at all -- silently building
+    a network shaped for THIS server's task out of a checkpoint trained for
+    a DIFFERENT one whenever their obs/action sizes happen to coincide (they
+    don't have to differ just because the tasks do). Returns None if there's
+    no sibling meta.json, it doesn't parse, or it has no 'task' key -- a
+    bare checkpoint path with no policies/<name>/ folder (e.g. a raw
+    './policies/foo.pt') has nothing to check against, and that must not
+    crash startup."""
+    meta_path = os.path.join(os.path.dirname(checkpoint_path), "meta.json")
+    try:
+        with open(meta_path) as f:
+            return json.load(f).get("task")
+    except (OSError, ValueError):
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Policy-switching demo on G1 (see legged_gym/control/)")
-    parser.add_argument('--policy', action='append', required=True, dest='policy_specs',
-                         help="name:/path/to/policy_lstm_1.pt — repeatable, first one is the default active")
+    parser.add_argument('--policy', action='append', default=[], dest='policy_specs',
+                         help="name:/path/to/policy_lstm_1.pt — repeatable, first one is the default active. "
+                              "Optional: any local policies/<name>/ folder trained for --task is auto-discovered "
+                              "regardless (see discover_local_policies() below) — this is only for policies not "
+                              "already registered that way (e.g. unitree_rl_gym's own pretrained checkpoints).")
+    parser.add_argument('--task', type=str, default='g1',
+                         help="registered task this server's Genesis scene (and every --policy's "
+                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_gaze'. "
+                              "All --policy specs must have been trained on this same task.")
     parser.add_argument('--active', type=str, default=None, help="which --policy name starts active (default: first one given)")
     parser.add_argument('--ramp_ticks', type=int, default=15, help="control ticks to cross-fade over on a switch")
     parser.add_argument('--headless', action='store_true', default=False,
@@ -144,12 +274,14 @@ def main():
         raise ValueError("--real requires --robot_config (e.g. deploy_real/configs/g1.yaml)")
 
     policy_paths = parse_policy_args(cli.policy_specs)
-    active_name = cli.active or next(iter(policy_paths))
+    # active_name is resolved after local-policy discovery below (once
+    # policy_paths is known to be non-empty) -- --policy is optional now,
+    # see that argument's help text.
 
     # unitree_rl_gym's own pretrained checkpoints store hidden_state/cell_state as a fixed
     # (1, 1, 64) buffer -> batch size must be exactly 1 to use them, so num_envs=1 throughout.
     args = argparse.Namespace(
-        task="g1", headless=True, cpu=True, num_envs=1, max_iterations=None,
+        task=cli.task, headless=True, cpu=True, num_envs=1, max_iterations=None,
         resume=False, sync_wandb=False, export_onnx=False, debug=False, load_run=None,
         ckpt=-1, use_joystick=False, joystick_type='xbox', follow_robot=False,
         viewer='viser', viser_port=cli.viser_port, motion_file=None, motion_out_dir=None,
@@ -214,9 +346,26 @@ def main():
             continue  # a different task's obs/action space — loading it here would crash load_policy()
         policy_paths[name] = info["checkpoint"]
 
+    if not policy_paths:
+        raise ValueError(
+            f"no policies to load: no --policy specs given, and no local policies/<name>/ folder is "
+            f"registered for task {args.task!r} (checked ./policies/) — train one first "
+            f"(e.g. `rugiar train --task {args.task}`) or pass --policy explicitly."
+        )
+    active_name = cli.active or next(iter(policy_paths))
+
     print("Loading policies:")
     policies = {}
     for name, path in policy_paths.items():
+        checkpoint_task = _sibling_meta_task(path)
+        if checkpoint_task is not None and checkpoint_task != args.task:
+            raise ValueError(
+                f"--policy '{name}' ({path}) was trained for task '{checkpoint_task}', but this "
+                f"server is running --task {args.task!r}. Loading it anyway would silently build a "
+                f"'{args.task}' network out of '{checkpoint_task}' weights whenever their obs/action "
+                f"sizes happen to coincide -- pass --task {checkpoint_task!r} instead, or drop this "
+                f"--policy."
+            )
         policies[name] = load_policy(name, path, num_obs=env_cfg.env.num_observations,
                                       hidden_size=hidden_size, num_envs=adapter.num_envs)
         print(f"  '{name}' <- {path}{' (rediscovered from a previous run)' if name in discovered else ''}")
@@ -250,7 +399,7 @@ def main():
                             description="Rediscovered from disk (refresh — trained outside this server)")
 
     service = ControlService(adapter, supervisor, safety, selector=None, training=training,
-                              policy_loader=_load_policy_for_refresh)
+                              policy_loader=_load_policy_for_refresh, task_name=args.task)
 
     def drain_finished_training():
         """Call once per sim tick. Any job TrainingManager reports done gets
@@ -289,7 +438,7 @@ def main():
     if cli.control_port is not None:
         control_server = ControlServer(service, port=cli.control_port, token=cli.token)
         if cli.token is None and cli.real:
-            print("[swap_experiment] WARNING: --real with no --token — the control socket is reachable "
+            print("[rugiar_driver] WARNING: --real with no --token — the control socket is reachable "
                   "unauthenticated from anything on this robot's network. Pass --token to require a "
                   "shared secret (see docs/index.html §13).")
 
@@ -415,6 +564,9 @@ def main():
             adapter.reset()
             obs = adapter.get_observations()
             safety.reset()
+
+        if service.family_switch_requested is not None:
+            _relaunch_for_family(cli, service.family_switch_requested)  # never returns
 
         drain_finished_training()
 
