@@ -1867,6 +1867,176 @@ fusePolicyForm.addEventListener('submit', (e) => {
   });
 });
 
+// ---- distill policy (see legged_gym/control/distillation.py + rugiar distill) ----
+const btnDistillPolicy = $('#btn-distill-policy');
+const distillPolicyForm = $('#distill-policy-form');
+const distillTeacher = $('#distill-teacher');
+const distillName = $('#distill-name');
+const distillTask = $('#distill-task');
+const distillMethod = $('#distill-method');
+const distillMethodDescription = $('#distill-method-description');
+const distillRolloutSteps = $('#distill-rollout-steps');
+const distillBcEpochs = $('#distill-bc-epochs');
+const distillLr = $('#distill-lr');
+const distillNumEnvs = $('#distill-num-envs');
+const distillCmdPreview = $('#distill-cmd-preview');
+const distillCmdCopy = $('#distill-cmd-copy');
+distillCmdCopy.addEventListener('click', () => copyToClipboard(distillCmdPreview.textContent, distillCmdCopy));
+const distillErrorEl = $('#distill-error');
+const btnStartDistillation = $('#btn-start-distillation');
+
+function showDistillError(msg) {
+  distillErrorEl.textContent = msg;
+  distillErrorEl.classList.toggle('show', !!msg);
+}
+
+// Every local policy is a valid teacher — unlike Fuse's source list, one
+// with no train_checkpoint.pt (e.g. 'stable') is exactly the normal case
+// here, not one to exclude. Only a checkpoint.pt is required (see
+// TrainingManager.start_distillation()'s own validation).
+function refreshDistillTeachers() {
+  const prev = distillTeacher.value;
+  distillTeacher.innerHTML = '';
+  for (const p of trainingCatalog?.base_policies || []) {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = !p.checkpoint ? `${p.name} (no checkpoint on this machine)` : p.name;
+    opt.disabled = !p.checkpoint;
+    distillTeacher.appendChild(opt);
+  }
+  if ([...distillTeacher.options].some((o) => o.value === prev && !o.disabled)) {
+    distillTeacher.value = prev;
+  }
+  refreshDistillTaskDefault();
+}
+
+// Defaults the target task to the teacher's own — a real override, not just
+// a placeholder, since a teacher can be deliberately distilled into a
+// different (but obs/action-compatible) task's architecture.
+function refreshDistillTaskDefault() {
+  const prevTask = distillTask.value;
+  distillTask.innerHTML = '';
+  for (const t of trainingCatalog?.tasks || []) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    distillTask.appendChild(opt);
+  }
+  const teacherTask = trainingCatalog?.base_policies?.find((p) => p.name === distillTeacher.value)?.task;
+  if ([...distillTask.options].some((o) => o.value === prevTask)) {
+    distillTask.value = prevTask;
+  } else if (teacherTask && [...distillTask.options].some((o) => o.value === teacherTask)) {
+    distillTask.value = teacherTask;
+  }
+}
+
+function refreshDistillMethods() {
+  const prev = distillMethod.value;
+  distillMethod.innerHTML = '';
+  for (const m of trainingCatalog?.distill_methods || []) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.available ? m.label : `${m.label} (coming soon)`;
+    opt.disabled = !m.available;
+    opt.title = m.description;
+    distillMethod.appendChild(opt);
+  }
+  if ([...distillMethod.options].some((o) => o.value === prev && !o.disabled)) {
+    distillMethod.value = prev;
+  } else {
+    const firstAvailable = [...distillMethod.options].find((o) => !o.disabled);
+    if (firstAvailable) distillMethod.value = firstAvailable.value;
+  }
+  updateDistillMethodDescription();
+}
+
+function updateDistillMethodDescription() {
+  const info = trainingCatalog?.distill_methods?.find((m) => m.id === distillMethod.value);
+  distillMethodDescription.textContent = info?.description || '';
+}
+
+function updateDistillCmdPreview() {
+  const parts = ['rugiar distill'];
+  if (distillTeacher.value) parts.push(`--teacher ${distillTeacher.value}`);
+  parts.push(`--task ${distillTask.value || '<task>'}`);
+  parts.push(`--name ${distillName.value.trim() || '<policy name>'}`);
+  if (distillMethod.value && distillMethod.value !== 'behavior_cloning') parts.push(`--method ${distillMethod.value}`);
+  if (distillRolloutSteps.value.trim()) parts.push(`--rollout_steps ${distillRolloutSteps.value.trim()}`);
+  if (distillBcEpochs.value.trim()) parts.push(`--bc_epochs ${distillBcEpochs.value.trim()}`);
+  if (distillLr.value.trim()) parts.push(`--lr ${distillLr.value.trim()}`);
+  if (distillNumEnvs.value.trim()) parts.push(`--num_envs ${distillNumEnvs.value.trim()}`);
+  distillCmdPreview.textContent = parts.join(' ');
+}
+
+distillTeacher.addEventListener('change', () => { refreshDistillTaskDefault(); updateDistillCmdPreview(); });
+distillName.addEventListener('input', updateDistillCmdPreview);
+distillTask.addEventListener('change', updateDistillCmdPreview);
+distillMethod.addEventListener('change', () => { updateDistillMethodDescription(); updateDistillCmdPreview(); });
+for (const el of [distillRolloutSteps, distillBcEpochs, distillLr, distillNumEnvs]) {
+  el.addEventListener('input', updateDistillCmdPreview);
+}
+
+btnDistillPolicy.addEventListener('click', () => {
+  const opening = distillPolicyForm.hidden;
+  distillPolicyForm.hidden = !opening;
+  btnDistillPolicy.textContent = opening ? 'Cancel' : '⏳ Distill policy…';
+  if (opening) {
+    showDistillError('');
+    refreshDistillTeachers();
+    refreshDistillMethods();
+    updateDistillCmdPreview();
+  }
+});
+
+distillPolicyForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const teacher = distillTeacher.value;
+  const task = distillTask.value;
+  const name = distillName.value.trim();
+
+  if (!teacher) return showDistillError('Pick a teacher policy.');
+  if (!task) return showDistillError('Pick a target task.');
+  if (!name) return showDistillError('Output policy name is required.');
+  // Same "no silent overwrite" guard createPolicyForm/fusePolicyForm enforce.
+  if ((latestStatus?.policies || []).includes(name)) {
+    return showDistillError(
+      `'${name}' already exists — distilling into this name would overwrite its checkpoint. Pick a different name (e.g. '${name}_2').`);
+  }
+  const rolloutSteps = distillRolloutSteps.value.trim() ? parseInt(distillRolloutSteps.value, 10) : null;
+  const bcEpochs = distillBcEpochs.value.trim() ? parseInt(distillBcEpochs.value, 10) : null;
+  const lr = distillLr.value.trim() ? parseFloat(distillLr.value) : null;
+  const numEnvs = distillNumEnvs.value.trim() ? parseInt(distillNumEnvs.value, 10) : null;
+  if (rolloutSteps !== null && (!Number.isFinite(rolloutSteps) || rolloutSteps <= 0)) {
+    return showDistillError('Rollout steps must be a positive number.');
+  }
+  if (bcEpochs !== null && (!Number.isFinite(bcEpochs) || bcEpochs <= 0)) {
+    return showDistillError('BC epochs must be a positive number.');
+  }
+  if (lr !== null && (!Number.isFinite(lr) || lr <= 0)) return showDistillError('Learning rate must be a positive number.');
+  if (numEnvs !== null && (!Number.isFinite(numEnvs) || numEnvs <= 0)) {
+    return showDistillError('Parallel environments must be a positive number.');
+  }
+
+  showDistillError('');
+  btnStartDistillation.disabled = true;
+  call('start_distillation', {
+    teacher, task, out_name: name, method: distillMethod.value,
+    rollout_steps: rolloutSteps, bc_epochs: bcEpochs, lr, num_envs: numEnvs,
+  }).then(() => {
+    // Same "runs out-of-process, shows up in the training-jobs list" story
+    // as createPolicyForm's own submit handler above — not fuse's blocking
+    // one, since a BC rollout+train run takes real wall-clock time.
+    showLoadingOverlay(`Distilling "${teacher}" into "${name}" — this runs in the background, watch its progress in the Policies list.`);
+    transitionAutoHideTimer = setTimeout(hideTransitionOverlay, 8000);
+    distillPolicyForm.reset();
+    distillPolicyForm.hidden = true;
+    btnDistillPolicy.textContent = '⏳ Distill policy…';
+  }).catch((e) => {
+    showDistillError(e.message);
+  }).finally(() => {
+    btnStartDistillation.disabled = false;
+  });
+});
+
 let envsFieldTouched = false; // stop overwriting the field with the suggested
                                // default once the user has typed their own value
 trainEnvs.addEventListener('input', () => { envsFieldTouched = true; }, { once: true });
@@ -2365,6 +2535,10 @@ function refreshTrainingCatalog() {
     refreshFuseMethods();
     refreshFuseTaskDisambiguation();
     updateFuseCmdPreview();
+
+    refreshDistillTeachers();
+    refreshDistillMethods();
+    updateDistillCmdPreview();
   }).catch((e) => {
     // Not fatal — the panel just can't populate its selects yet (e.g. the
     // server doesn't have a TrainingManager configured at all). Silent:
@@ -2682,10 +2856,22 @@ function renderTrainingJobs(jobs) {
       }
       nameGroup.appendChild(badge);
     }
+    // Distillation reuses this whole panel (progress bar, ETA, command
+    // preview, everything below) unchanged — job.max_iterations is bc_epochs
+    // and job.command is the equivalent `rugiar distill ...` invocation (see
+    // TrainingManager.start_distillation()), so only the label needs to
+    // know the difference.
+    if (job.job_type === 'distill') {
+      const badge = document.createElement('span');
+      badge.className = 'job-backend-badge';
+      badge.textContent = `⏳ distilled from ${job.teacher_policy}`;
+      nameGroup.appendChild(badge);
+    }
     head.appendChild(nameGroup);
     const statusEl = document.createElement('span');
     statusEl.className = 'job-status';
-    statusEl.textContent = job.status === 'running' ? 'training…' : job.status;
+    statusEl.textContent = job.status !== 'running' ? job.status
+      : job.job_type === 'distill' ? 'distilling…' : 'training…';
     head.appendChild(statusEl);
     row.appendChild(head);
 
@@ -2705,9 +2891,10 @@ function renderTrainingJobs(jobs) {
       // TIME_BUDGET_CHUNK_ITERS iterations — see web_train.py's
       // write_progress()/TrainingManager._refresh_progress()), null until
       // the first chunk completes.
+      const unit = job.job_type === 'distill' ? 'epochs' : 'iterations';
       const doneSpan = document.createElement('span');
       doneSpan.innerHTML = job.iterations_done != null
-        ? `<strong>${job.iterations_done}</strong>${job.max_iterations ? `/${job.max_iterations}` : ''} iterations`
+        ? `<strong>${job.iterations_done}</strong>${job.max_iterations ? `/${job.max_iterations}` : ''} ${unit}`
         : (job.backend === 'kaggle' ? 'no live iteration count (Kaggle)' : 'starting…');
       meta.appendChild(doneSpan);
       const elapsedSpan = document.createElement('span');

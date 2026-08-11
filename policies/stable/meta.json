@@ -1,0 +1,7 @@
+{
+  "task": "g1",
+  "created_at": 1786480963.224511,
+  "trained_via": "external-import",
+  "simulator": "isaacgym",
+  "note": "Externally-sourced (not trained by this repo) \u2014 no train_checkpoint.pt, so not fine-tunable/fusable directly; use Distill policy to clone its behavior into a fresh, fine-tunable checkpoint instead. Normalized from a bare policies/stable.pt into this folder convention so it shows up/deletes uniformly with every other local policy."
+}

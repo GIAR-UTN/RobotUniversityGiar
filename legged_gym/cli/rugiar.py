@@ -243,6 +243,150 @@ def _build_fuse_parser(subparsers: argparse._SubParsersAction) -> argparse.Argum
     return p
 
 
+def _build_distill_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "distill",
+        formatter_class=_HelpFormatter,
+        help="Behavior-clone a teacher policy into a fresh, fine-tunable policy",
+        description=(
+            "Rolls a TEACHER policy (any local policy — crucially including ones with no "
+            "train_checkpoint.pt at all, e.g. an externally-sourced policy like 'stable') "
+            "through --task's own simulator, collects (observation, action) pairs, and "
+            "supervise-trains a fresh network to imitate it. Unlike `rugiar fuse` (which "
+            "merges WEIGHTS and requires matching architectures), this clones BEHAVIOR — "
+            "the result is an ordinary rsl_rl checkpoint, registered as ./policies/<name>/ "
+            "exactly like a trained-from-scratch run, so it's immediately usable with "
+            "`rugiar train --from_policy <name>` to keep training it with PPO."
+        ),
+        epilog=(
+            "examples:\n"
+            "  # clone 'stable' (no training history of its own) into a fine-tunable policy\n"
+            "  rugiar distill --teacher stable --task g1 --name stable_distilled\n\n"
+            "  # then keep training it normally\n"
+            "  rugiar train --task g1 --name stable_distilled_ft --from_policy stable_distilled \\\n"
+            "      --max_iterations 500\n\n"
+            "  # see what distillation methods exist (implemented and planned)\n"
+            "  rugiar distill --list_distill_methods\n"
+        ),
+    )
+    required = p.add_argument_group("Required")
+    required.add_argument("--teacher", type=str, metavar="NAME",
+                           help="local policy to clone (see `train --list_policies`) — a "
+                                "train_checkpoint.pt is NOT required, unlike `fuse`'s sources")
+    required.add_argument("--task", type=str, help="target task — determines the student's own "
+                                                     "obs/action space and network architecture")
+    required.add_argument("--name", type=str, help="output policy name — becomes ./policies/<name>/, "
+                                                     "same as a trained policy")
+
+    hyper = p.add_argument_group("Hyperparameters (optional — sane defaults if omitted)")
+    hyper.add_argument("--rollout_steps", type=int, default=None,
+                        help="env ticks to roll the teacher for while collecting data (default: 4000)")
+    hyper.add_argument("--bc_epochs", type=int, default=None,
+                        help="supervised training epochs over the collected rollout (default: 20)")
+    hyper.add_argument("--lr", type=float, default=None, help="Adam learning rate for BC training (default: 1e-3)")
+    hyper.add_argument("--num_envs", type=int, default=None,
+                        help="parallel envs for rollout collection (default: 1 — some externally-sourced "
+                             "teachers can only be stepped one at a time, see start_distillation()'s "
+                             "docstring; a locally-trained teacher can safely go higher for a faster rollout)")
+    hyper.add_argument("--method", type=str, default="behavior_cloning",
+                        help="distillation method (see --list_distill_methods) — 'behavior_cloning' (default)")
+
+    discover = p.add_argument_group("Discovery (print information and exit — no distilling)")
+    discover.add_argument("--list_distill_methods", action="store_true",
+                           help="list every distillation method this build knows about, including "
+                                "ones not implemented yet, then exit")
+    discover.add_argument("--list_policies", action="store_true",
+                           help="list every local ./policies/<name>/ available to distill from — "
+                                "same as `train --list_policies`, but here fine-tunable=no is fine too")
+
+    poll = p.add_argument_group("Polling")
+    poll.add_argument("--poll_interval", type=float, default=2.0,
+                       help="seconds between progress checks while the job runs (default: 2.0)")
+    return p
+
+
+def _list_distill_methods() -> None:
+    from legged_gym.control import distillation
+    rows = []
+    for key, info in distillation.DISTILL_METHODS.items():
+        status = "available" if info["available"] else "planned, not yet implemented"
+        rows.append(f"{key} ({status}): {info['label']} — {info['description']}")
+    _print_lines("Distillation methods:", rows)
+
+
+def run_distill(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    import legged_gym.envs  # noqa: F401 — see run_train()'s identical import for why
+    from legged_gym.control.training import TrainingManager
+
+    mgr = TrainingManager()
+    for name, info in mgr.discover_local_policies().items():
+        mgr.register_source(name, **info)
+
+    if args.list_distill_methods:
+        _list_distill_methods()
+        return 0
+    if args.list_policies:
+        _list_policies(mgr)
+        return 0
+
+    if not args.teacher or not args.task or not args.name:
+        parser.error("--teacher, --task, and --name are required to distill a policy")
+
+    try:
+        job_id = mgr.start_distillation(
+            args.teacher, args.task, args.name, rollout_steps=args.rollout_steps,
+            bc_epochs=args.bc_epochs, lr=args.lr, num_envs=args.num_envs, method=args.method,
+        )
+    except ValueError as e:
+        parser.error(str(e))
+        return 2  # unreachable, parser.error() exits — keeps type-checkers happy
+
+    job = mgr.jobs[job_id]
+    print(f"[rugiar] started job {job_id} — {job.command}")
+
+    log_path = Path(job.log_path)
+    read_so_far = 0
+
+    def flush_log() -> None:
+        nonlocal read_so_far
+        if not log_path.is_file():
+            return
+        with open(log_path) as f:
+            f.seek(read_so_far)
+            chunk = f.read()
+            read_so_far = f.tell()
+        if chunk:
+            print(chunk, end="")
+
+    try:
+        while True:
+            mgr.poll()
+            flush_log()
+            if job.status != "running":
+                break
+            time.sleep(args.poll_interval)
+    except KeyboardInterrupt:
+        proc = mgr._procs.get(job_id)  # local backend only — see TrainingManager.start()
+        if proc is not None:
+            proc.terminate()
+        print("\n[rugiar] interrupted — distillation process terminated, policy NOT registered.", file=sys.stderr)
+        return 130
+
+    flush_log()
+
+    if job.status == "failed":
+        print(f"[rugiar] job {job_id} failed: {job.error}", file=sys.stderr)
+        return 1
+
+    final_checkpoint = mgr.finalize_policy(
+        job.policy_name, task=job.task, checkpoint=job.policy_path,
+        train_checkpoint=job.train_checkpoint_path, job=job,
+    )
+    print(f"\n[rugiar] '{job.policy_name}' ready — distilled from '{args.teacher}', "
+          f"final_bc_loss={job.final_bc_loss}, checkpoint at {final_checkpoint}")
+    return 0
+
+
 def _list_fusion_methods() -> None:
     from legged_gym.control import fusion
     rows = []
@@ -297,7 +441,8 @@ def build_parser():
     train_parser = _build_train_parser(subparsers)
     order_parser = _build_order_parser(subparsers)
     fuse_parser = _build_fuse_parser(subparsers)
-    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser}
+    distill_parser = _build_distill_parser(subparsers)
+    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser, "distill": distill_parser}
 
 
 def _print_lines(title: str, rows) -> None:
@@ -460,6 +605,8 @@ def main(argv: Optional[list] = None) -> None:
         sys.exit(run_order(args, subparsers["order"]))
     elif args.command == "fuse":
         sys.exit(run_fuse(args, subparsers["fuse"]))
+    elif args.command == "distill":
+        sys.exit(run_distill(args, subparsers["distill"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)

@@ -374,6 +374,34 @@ class ControlService:
         self.refresh_local_policies()
         return result
 
+    def start_distillation(self, teacher: str, task: str, out_name: str,
+                            rollout_steps: Optional[int] = None, bc_epochs: Optional[int] = None,
+                            lr: Optional[float] = None, num_envs: Optional[int] = None,
+                            method: str = "behavior_cloning") -> str:
+        """Launches a new distillation job; returns its job id — same "runs
+        out-of-process, returns immediately, progress shows up in
+        status()['training_jobs'], hot-loaded automatically once it
+        finishes" shape as start_training() above (see
+        TrainingManager.start_distillation()'s docstring for why: a BC
+        rollout+train run takes real wall-clock time, unlike fuse_policies()
+        below). `teacher` may be ANY known local policy — crucially
+        including ones with no train_checkpoint.pt at all (fuse_policies()
+        requires one; this is the feature that doesn't), like `stable`. See
+        distillation.DISTILL_METHODS (surfaced via training_catalog()'s
+        `distill_methods` key) for the method options."""
+        if self.training is None:
+            raise NotImplementedError("no TrainingManager configured for this ControlService")
+        kwargs = {}
+        if rollout_steps is not None:
+            kwargs["rollout_steps"] = rollout_steps
+        if bc_epochs is not None:
+            kwargs["bc_epochs"] = bc_epochs
+        if lr is not None:
+            kwargs["lr"] = lr
+        if num_envs is not None:
+            kwargs["num_envs"] = num_envs
+        return self.training.start_distillation(teacher, task, out_name, method=method, **kwargs)
+
     def task_defaults(self, task: str) -> dict:
         """Reference values (e.g. the task's own default pelvis height) for
         the Create Policy panel's 'relative' target fields — see

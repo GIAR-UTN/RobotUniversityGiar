@@ -37,6 +37,7 @@ from legged_gym.control import kaggle_backend
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAIN_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_train.py"
+DISTILL_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_distill.py"
 JOBS_DIR = REPO_ROOT / "logs" / "_web_training"
 HISTORY_PATH = JOBS_DIR / "history.json"
 # One self-contained folder per policy trained through this UI — see
@@ -217,6 +218,16 @@ class TrainingJob:
                                  # `backend`) because it's what actually determines sim2sim risk
                                  # for a policy trained under it — surfaced in meta.json so the
                                  # UI can flag it (see finalize_policy()).
+    job_type: str = "train"  # "train" | "distill" — lets poll()/finalize_policy()/the web UI's
+                              # renderTrainingJobs() branch without a parallel job-tracking
+                              # structure; a distill job reuses every other TrainingJob field
+                              # (result_path/progress_path/policy_path/train_checkpoint_path all
+                              # mean the same thing) except base_policy, which distillation has
+                              # no use for — see teacher_policy below instead.
+    teacher_policy: Optional[str] = None  # "distill" jobs only — the source policy name being
+                                           # behavior-cloned (see TrainingManager.start_distillation())
+    final_bc_loss: Optional[float] = None  # "distill" jobs only — web_distill.py's result.json
+                                            # final_bc_loss, read back by poll() on success
 
     def to_dict(self) -> dict:
         return {
@@ -240,6 +251,9 @@ class TrainingJob:
             "backend": self.backend,
             "kaggle_kernel_slug": self.kaggle_kernel_slug,
             "simulator": self.simulator,
+            "job_type": self.job_type,
+            "teacher_policy": self.teacher_policy,
+            "final_bc_loss": self.final_bc_loss,
         }
 
 
@@ -613,9 +627,33 @@ class TrainingManager:
             dest_train_checkpoint = dest_dir / "train_checkpoint.pt"
             shutil.copyfile(train_checkpoint, dest_train_checkpoint)
 
-        meta = {"task": task, "created_at": time.time(), "trained_via": "control web",
+        meta = {"task": task, "created_at": time.time(),
+                "trained_via": "distillation" if job is not None and job.job_type == "distill" else "control web",
                 "simulator": job.simulator if job is not None else "genesis"}
-        if job is not None:
+        if job is not None and job.job_type == "distill":
+            # Distillation has no PPO learning-iteration log to chart
+            # (parse_training_log()'s regexes are all rsl_rl-specific) — its
+            # own result.json fields (read back via job.command/started_at/
+            # finished_at, same as a normal run) are what's meaningful here.
+            dest_log = None
+            if os.path.isfile(job.log_path):
+                dest_log = dest_dir / "train.log"
+                shutil.copyfile(job.log_path, dest_log)
+            meta.update({
+                "command": job.command,
+                "num_envs": job.num_envs,
+                "started_at": job.started_at,
+                "finished_at": job.finished_at,
+                "elapsed_s": round((job.finished_at or time.time()) - job.started_at, 1),
+                "log_path": str(dest_log) if dest_log else None,
+                "distillation": {
+                    "method": "behavior_cloning",
+                    "teacher": job.teacher_policy,
+                    "bc_epochs": job.max_iterations,
+                    "final_bc_loss": job.final_bc_loss,
+                },
+            })
+        elif job is not None:
             metrics = parse_training_log(job.log_path)
             dest_log = None
             if os.path.isfile(job.log_path):
@@ -965,7 +1003,7 @@ class TrainingManager:
             self.policy_sources[new_name] = source
 
     def catalog(self, compatible_tasks: Optional[Sequence[str]] = None) -> dict:
-        from legged_gym.control import fusion
+        from legged_gym.control import distillation, fusion
         from legged_gym.utils import task_registry
         all_tasks = sorted(task_registry.task_classes.keys())
         tasks = sorted(compatible_tasks) if compatible_tasks is not None else all_tasks
@@ -990,6 +1028,13 @@ class TrainingManager:
             # "git_rebasin") are listed too: the panel/CLI should propose the roadmap,
             # not hide it until it's implemented.
             "fusion_methods": [{"id": key, **info} for key, info in fusion.FUSION_METHODS.items()],
+            # Every distillation method this build knows about, available or not —
+            # same "propose the roadmap, don't hide it" reasoning as fusion_methods
+            # above. Unlike fusable_policies, the Distill panel's own source picker
+            # uses base_policies directly (not a filtered list) — a checkpoint-only
+            # policy with no train_checkpoint.pt (e.g. 'stable') is exactly the
+            # normal case distillation exists to handle, not one to exclude.
+            "distill_methods": [{"id": key, **info} for key, info in distillation.DISTILL_METHODS.items()],
             # Task-independent half of VARIABLE_REGISTRY (label/unit/source/
             # flag/note) — populates the 4 always-visible target fields once
             # per connection. The task-dependent half (reference, which
@@ -1262,6 +1307,105 @@ class TrainingManager:
         self._log_files[job_id] = log_f
         return job_id
 
+    def start_distillation(self, teacher: str, task: str, out_name: str,
+                            rollout_steps: Optional[int] = None, bc_epochs: Optional[int] = None,
+                            lr: Optional[float] = None, num_envs: int = 1,
+                            method: str = "behavior_cloning") -> str:
+        """Behavior-clones `teacher` — ANY known local policy, crucially
+        including ones with no train_checkpoint.pt at all (e.g. `stable` —
+        see policy.py's module docstring for the checkpoint shapes that
+        covers) — into a fresh, fine-tunable policy named `out_name`,
+        registered under `task`. Mirrors start()'s shape exactly (out-of-
+        process subprocess, job id returned immediately, progress/result
+        polled the same way via poll()) because a BC rollout+train run takes
+        real wall-clock time like a training job, unlike fuse_policies()'s
+        few-seconds blocking tensor op — see legged_gym/control/
+        distillation.py's module docstring for the actual algorithm.
+
+        num_envs defaults to 1, NOT start()'s 64 — some externally-sourced
+        teachers (e.g. unitree_rl_gym's own TorchScript exports, loaded as
+        policy.py's InternalStatePolicy) bake a fixed batch=1 into the
+        exported module's own hidden-state buffers and simply crash on a
+        larger batch (confirmed the hard way: 'stable' failing with
+        `Expected hidden[0] size (1, 64, 64), got [1, 1, 64]`). A locally-
+        trained teacher (ExplicitStatePolicy — this repo's own export
+        convention) has no such limit and can pass a higher num_envs for a
+        faster rollout, but 1 is the only value guaranteed safe for ANY
+        teacher, so it's the default."""
+        from legged_gym.control import distillation
+
+        method_info = distillation.DISTILL_METHODS.get(method)
+        if method_info is None:
+            raise ValueError(f"unknown distillation method '{method}' — see distillation.DISTILL_METHODS")
+        if not method_info["available"]:
+            raise ValueError(f"distillation method '{method}' is planned but not yet implemented")
+
+        out_name = (out_name or "").strip()
+        if not out_name:
+            raise ValueError("out_name is required")
+        if out_name == "damping":
+            raise ValueError("'damping' is reserved for the built-in safety fallback")
+        if (POLICIES_DIR / out_name).exists():
+            raise ValueError(f"'{out_name}' already exists — pick a different output name")
+        if any(j.status == "running" and j.policy_name == out_name for j in self.jobs.values()):
+            raise ValueError(f"a job for policy '{out_name}' is already running")
+
+        source = self.policy_sources.get(teacher)
+        if source is None:
+            raise ValueError(f"'{teacher}' is not a known local policy")
+        if not source.get("checkpoint"):
+            raise ValueError(f"'{teacher}' has no checkpoint.pt to distill from")
+
+        num_envs = int(num_envs)
+        if num_envs <= 0:
+            raise ValueError("num_envs must be positive")
+        rollout_steps = int(rollout_steps) if rollout_steps is not None else 4000
+        bc_epochs = int(bc_epochs) if bc_epochs is not None else 20
+        lr = float(lr) if lr is not None else 1e-3
+        if rollout_steps <= 0:
+            raise ValueError("rollout_steps must be positive")
+        if bc_epochs <= 0:
+            raise ValueError("bc_epochs must be positive")
+        if lr <= 0:
+            raise ValueError("lr must be positive")
+
+        job_id = uuid.uuid4().hex[:8]
+        result_path = JOBS_DIR / f"{job_id}.result.json"
+        progress_path = JOBS_DIR / f"{job_id}.progress.json"
+        log_path = JOBS_DIR / f"{job_id}.log"
+
+        argv = [
+            self.python_exe, "-u", str(DISTILL_SCRIPT),
+            "--task", task, "--name", out_name,
+            "--teacher_checkpoint", source["checkpoint"],
+            "--method", method,
+            "--rollout_steps", str(rollout_steps), "--bc_epochs", str(bc_epochs), "--lr", str(lr),
+            "--num_envs", str(num_envs), "--headless", "--cpu",
+            "--result_path", str(result_path), "--progress_path", str(progress_path),
+        ]
+
+        job = TrainingJob(
+            id=job_id, policy_name=out_name, task=task,
+            command=(f"rugiar distill --teacher {teacher} --task {task} --name {out_name} "
+                     f"--rollout_steps {rollout_steps} --bc_epochs {bc_epochs} --lr {lr} --num_envs {num_envs}"),
+            log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
+            started_at=time.time(),
+            max_iterations=bc_epochs, max_minutes=None, num_envs=num_envs,
+            job_type="distill", teacher_policy=teacher,
+            simulator=source.get("simulator", "genesis"),
+        )
+
+        log_f = open(log_path, "w")
+        env = dict(os.environ)
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
+        proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=log_f, stderr=subprocess.STDOUT, env=env)
+
+        self.jobs[job_id] = job
+        self._procs[job_id] = proc
+        self._log_files[job_id] = log_f
+        return job_id
+
     # ---- polling (call once per sim tick — cheap, non-blocking) ----
 
     def _refresh_progress(self, job: TrainingJob) -> None:
@@ -1351,12 +1495,16 @@ class TrainingManager:
                 job.policy_path = result["policy_path"]
                 job.train_checkpoint_path = result.get("train_checkpoint_path")
                 job.iterations_done = result.get("iterations_done")
+                job.final_bc_loss = result.get("final_bc_loss")
                 job.status = "done"
                 newly_done.append(job)
                 # Record actual iterations completed, not the requested cap —
                 # with a --max_minutes budget those can differ a lot, and
-                # estimate() needs the real throughput to be useful.
-                if job.iterations_done:
+                # estimate() needs the real throughput to be useful. Distill
+                # jobs are excluded — their "iterations" are BC epochs, not
+                # PPO learning iterations, and would skew estimate()'s
+                # per-iteration-time model for ordinary training jobs.
+                if job.iterations_done and job.job_type != "distill":
                     self._history.append({
                         "task": job.task, "max_iterations": job.iterations_done,
                         "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,

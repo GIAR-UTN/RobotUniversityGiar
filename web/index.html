@@ -560,6 +560,29 @@
     background:var(--accent2); color:var(--accent-ink); font:600 .85rem/1 inherit; cursor:pointer;
   }
   #btn-start-fusion:disabled{opacity:.5; cursor:not-allowed;}
+  /* ---- distill-policy form ---- */
+  #btn-distill-policy{
+    width:100%; margin-bottom:.6rem; padding:.5rem .6rem; border-radius:6px;
+    border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
+  }
+  #distill-policy-form[hidden]{display:none;}
+  #distill-advanced summary{cursor:pointer; margin-bottom:.4rem;}
+  #distill-cmd-row{display:flex; align-items:flex-start; gap:.35rem;}
+  #distill-cmd-preview{
+    flex:1; min-width:0;
+    display:block; white-space:pre-wrap; word-break:break-word;
+    background:var(--bg); border:1px solid var(--line); border-radius:6px;
+    padding:.5rem .55rem; font:11px/1.4 ui-monospace,monospace; color:var(--ink-soft);
+    margin:.3rem 0 .6rem;
+  }
+  #distill-error{color:var(--danger); font-size:.76rem; margin:0 0 .5rem; display:none;}
+  #distill-error.show{display:block;}
+  #btn-start-distillation{
+    width:100%; padding:.5rem .6rem; border-radius:6px; border:1px solid var(--accent2);
+    background:var(--accent2); color:var(--accent-ink); font:600 .85rem/1 inherit; cursor:pointer;
+  }
+  #btn-start-distillation:disabled{opacity:.5; cursor:not-allowed;}
+
   #policy-training-jobs{display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem;}
   .job-row{
     border:1px solid var(--line); border-radius:6px; padding:.45rem .55rem .5rem; font-size:.76rem;
@@ -922,6 +945,7 @@
       <div class="section-body">
         <button id="btn-new-policy" type="button">+ New policy&hellip;</button>
         <button id="btn-fuse-policy" type="button">&#9878; Fuse policies&hellip;</button>
+        <button id="btn-distill-policy" type="button">&#8987; Distill policy&hellip;</button>
         <form id="create-policy-form" hidden>
 
           <div class="field-group field-group-context">
@@ -1130,6 +1154,62 @@
           <p id="fuse-error"></p>
           <button type="submit" id="btn-start-fusion">Fuse policies</button>
           <p class="field-hint">Fusion runs synchronously (seconds, not minutes) — the result appears in the Policies list right after this form closes, no restart needed.</p>
+        </form>
+
+        <form id="distill-policy-form" hidden>
+          <div class="field-group field-group-context">
+            <p class="field-group-label"><span class="dot"></span>Teacher — the policy to clone the behavior of</p>
+            <p class="field-hint">Unlike Fuse, a train_checkpoint.pt is NOT required here — this is exactly how a policy with no training history of its own (e.g. an externally-sourced one like <code>stable</code>) becomes fine-tunable: its behavior gets cloned into a fresh network, not its weights.</p>
+            <div class="field-row">
+              <label for="distill-teacher">Teacher policy</label>
+              <select id="distill-teacher"></select>
+            </div>
+            <div class="field-row">
+              <label for="distill-name">Output policy name</label>
+              <input type="text" id="distill-name" placeholder="e.g. stable_distilled" autocomplete="off">
+            </div>
+            <div class="field-row">
+              <label for="distill-task">Target task <span class="hint-inline">(determines the student's own obs/action architecture — defaults to the teacher's own task)</span></label>
+              <select id="distill-task"></select>
+            </div>
+          </div>
+
+          <div class="field-group field-group-target">
+            <p class="field-group-label"><span class="dot"></span>Method</p>
+            <select id="distill-method"></select>
+            <p class="field-hint" id="distill-method-description"></p>
+
+            <details id="distill-advanced">
+              <summary class="field-hint">Advanced — behavior-cloning hyperparameters (optional, sane defaults if left blank)</summary>
+              <div class="field-row">
+                <label for="distill-rollout-steps">Rollout steps</label>
+                <input type="number" id="distill-rollout-steps" min="1" step="1" placeholder="4000">
+                <p class="field-hint">Env ticks to roll the teacher for while collecting (observation, action) pairs.</p>
+              </div>
+              <div class="field-row">
+                <label for="distill-bc-epochs">BC epochs</label>
+                <input type="number" id="distill-bc-epochs" min="1" step="1" placeholder="20">
+                <p class="field-hint">Supervised training epochs over the collected rollout.</p>
+              </div>
+              <div class="field-row">
+                <label for="distill-lr">Learning rate</label>
+                <input type="number" id="distill-lr" min="0" step="any" placeholder="0.001">
+              </div>
+              <div class="field-row">
+                <label for="distill-num-envs">Parallel environments <span class="hint-inline">(1 by default — some externally-sourced teachers can only be stepped one at a time; a locally-trained teacher can go higher for a faster rollout)</span></label>
+                <input type="number" id="distill-num-envs" min="1" step="1" placeholder="1">
+              </div>
+            </details>
+          </div>
+
+          <label class="field-row" style="font-size:.72rem; color:var(--muted);">Command that will run</label>
+          <div id="distill-cmd-row">
+            <code id="distill-cmd-preview">rugiar distill &hellip;</code>
+            <button type="button" id="distill-cmd-copy" class="job-copy-btn" title="Copy the rugiar command">Copy</button>
+          </div>
+          <p id="distill-error"></p>
+          <button type="submit" id="btn-start-distillation">Distill policy</button>
+          <p class="field-hint">A run in progress shows in the Policies list — with live progress, ETA, and its exact command, same as Create Policy.</p>
         </form>
       </div>
     </section>

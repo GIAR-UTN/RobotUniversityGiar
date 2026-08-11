@@ -1,6 +1,6 @@
 ---
 name: rugiar
-description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, fusing/merging already-trained policies' weights with `rugiar fuse`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, fuse/merge policies, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
+description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
 allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_gaze.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_gaze.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
 ---
 
@@ -274,6 +274,101 @@ the downstream MLP's own alignment. Always double-check `fusion.py`'s
 `FUSION_METHODS` registry (or `--list_fusion_methods`) for the current
 `available`/scope state before telling a user what's supported — this is a
 snapshot, not a guarantee it stays this way forever.
+
+## Distilling policies (`rugiar distill`)
+
+Behavior-clones a TEACHER policy — any local policy, crucially including one
+with NO `train_checkpoint.pt` at all (e.g. `stable`, an externally-sourced
+checkpoint with no local training history) — into a fresh, fine-tunable
+policy. Unlike `rugiar fuse` (which merges WEIGHTS and requires matching
+architectures + a `train_checkpoint.pt` on every source), this clones
+BEHAVIOR: rolls the teacher through the target task's own simulator,
+collects (observation, action) pairs, and supervise-trains a brand-new
+network via MSE (`legged_gym/control/distillation.py` +
+`TrainingManager.start_distillation()`). The result is registered as a
+normal `./policies/<name>/` with a real `train_checkpoint.pt` — fine-tunable
+via `train --from_policy` exactly like anything else, which is the whole
+point: this is the only way to make an externally-sourced, un-fine-tunable
+checkpoint like `stable` continuable with this repo's own PPO pipeline. Same
+engine as the control web's "⏳ Distill policy…" panel.
+
+```bash
+rugiar distill --list_distill_methods                      # every method this build knows about
+rugiar distill --list_policies                             # same list as `train`'s — ANY policy
+                                                             # qualifies as a teacher here (unlike fuse)
+
+# clone 'stable' into a fine-tunable policy, full defaults
+rugiar distill --teacher stable --task g1 --name stable_distilled
+
+# then keep training it normally, same as any other checkpoint
+rugiar train --task g1 --name stable_distilled_ft --from_policy stable_distilled --max_iterations 500
+```
+
+**Unlike `train`/`fuse`, this runs LOCAL ONLY — there is no Kaggle backend
+for distillation** (no `--backend` flag exists on `rugiar distill`). It's
+cheap enough (see timing below) that this hasn't mattered in practice, but
+don't tell a user it can run on Kaggle — it can't, yet.
+
+**`--num_envs` defaults to 1, not 64 (learned the hard way — don't second-guess this default).**
+Some externally-sourced teachers (e.g. unitree_rl_gym's own TorchScript
+exports, loaded as `legged_gym/control/policy.py`'s `InternalStatePolicy`)
+bake a FIXED batch size — normally 1 — into the exported module's own
+hidden-state buffers, and crash on anything else:
+
+```
+RuntimeError: Expected hidden[0] size (1, 64, 64), got [1, 1, 64]
+```
+
+`distillation.check_dimensions_compatible()` catches this before wasting a
+whole rollout (fails fast with a clear error), but the fix is just re-running
+with `--num_envs 1`. A LOCALLY-trained teacher (this repo's own
+`ExplicitStatePolicy` export convention) has no such limit and CAN safely use
+a higher `--num_envs` for a faster rollout — but there's no cheap way to tell
+which kind a given teacher is ahead of time without just trying, so 1 stays
+the universal safe default. Don't raise this default without checking the
+teacher's export convention first.
+
+**Timing (measured, CPU/Genesis, this machine, `--num_envs 1`):**
+`--rollout_steps 4000 --bc_epochs 20` (the defaults) took ~62-68s end to end,
+`--rollout_steps 1000 --bc_epochs 10` took ~21s. Distillation is cheap
+relative to real training (this is supervised learning over one rollout, not
+PPO over thousands of iterations) — a full default-budget run is a
+"seconds-to-a-minute-or-two" operation, safe to just run and wait for rather
+than backgrounding.
+
+**Quality scales with `--rollout_steps`/`--bc_epochs` — don't trust a
+low-budget test run to represent real quality.** A quick `--rollout_steps
+1000 --bc_epochs 10` smoke test (to verify the pipeline runs at all) landed
+`final_bc_loss` at 0.234 and visibly did NOT walk like its teacher. The same
+teacher re-run at the full defaults (4000/20) dropped to `final_bc_loss`
+0.0425 and matched much better. `final_bc_loss` is reported in the job's
+result and in the finalized policy's `meta.json` (`distillation.final_bc_loss`)
+— read it, don't just check the job finished; a "done" status with a high
+loss is a bad clone that technically succeeded.
+
+**A `final_bc_loss` that's low for one teacher isn't automatically low for
+another, even at identical hyperparameters — this can mean the teacher's obs
+convention doesn't perfectly line up with this task's, even though the
+dimension check passed.** At the SAME 4000/20/num_envs=1 settings,
+`g1_crouch_stability` (a checkpoint this repo itself produced) converged to
+`final_bc_loss` 0.0042; `stable` (externally-sourced, unitree_rl_gym) only
+reached 0.0425 — roughly 10x worse. `check_dimensions_compatible()` only
+verifies obs/action tensor SHAPE, not the actual meaning/ordering/scale of
+each channel (see distillation.py's module docstring on observation
+alignment) — a shape match doesn't guarantee a semantic match. If a distilled
+clone's loss is stubbornly high no matter how much you raise
+`--rollout_steps`/`--bc_epochs`, suspect an obs-convention mismatch with the
+teacher, not just "needs more training" — always **watch it walk** (same "How
+to know if a checkpoint actually walks" rule right below) before trusting a
+distilled clone, doubly so for an externally-sourced teacher.
+
+**Method: `behavior_cloning`** (default, only one currently implemented) —
+one-shot: the student never acts during data collection, so it never gets
+corrected on states it would visit on its own that diverge from the
+teacher's trajectory (the classic BC covariate-shift problem). `dagger` is
+listed in `--list_distill_methods` as planned/not yet implemented for this
+exact reason — check `distillation.DISTILL_METHODS`'s `available` field (or
+`--list_distill_methods`) before telling a user it's usable.
 
 ## How to know if a checkpoint actually walks (don't trust the numbers)
 
@@ -760,6 +855,18 @@ rugiar train --task g1 --name retrain --from_policy retrain \
   before picking a base for a local run.
 - **`no Kaggle credentials found at ~/.kaggle/kaggle.json`** → follow
   "Setting up Kaggle for cloud training" above.
+- **`rugiar distill` fails with `RuntimeError: Expected hidden[0] size (1, 64, 64), got [1, 1, 64]`**
+  (or similar) → the teacher is batch-locked to 1 (an externally-sourced,
+  unitree_rl_gym-style export) — retry with `--num_envs 1` (this is already the
+  CLI/UI default; only hits this if it was explicitly raised). See "Distilling
+  policies" above.
+- **A distilled policy doesn't walk like its teacher** → check
+  `policies/<name>/meta.json`'s `distillation.final_bc_loss` first. High
+  (>~0.1) after a low `--rollout_steps`/`--bc_epochs` test run just needs the
+  real defaults (4000/20) re-run. Still high at the full defaults → likely an
+  obs-convention mismatch with that specific teacher (dimension match ≠
+  semantic match) — see "Distilling policies" above, and always watch it walk
+  before trusting it, same as any other checkpoint.
 - Job failed with a subprocess exit code → the error message names the exact
   log file (`logs/_web_training/<job_id>.log`) — `rugiar` already streamed it
   live, but it's still there to re-read.
