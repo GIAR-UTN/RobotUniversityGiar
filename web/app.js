@@ -1061,7 +1061,8 @@ function smoothAxis(current, dir, range, dt, decelRate) {
   const target = (dir > 0 ? range[1] : range[0]) * speedLimitFraction;
   const next = target + (current - target) * Math.exp(-ACCEL_RATE * dt);
   const snapped = Math.abs(next - target) < 1e-3 ? target : next;
-  return dir > 0 ? Math.min(snapped, range[1]) : Math.max(snapped, range[0]);
+  const [lo, hi] = scaledRange(range);
+  return dir > 0 ? Math.min(snapped, hi) : Math.max(snapped, lo);
 }
 
 function isSettled() {
