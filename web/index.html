@@ -752,8 +752,7 @@
         <h2>Pause &amp; Restart</h2>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Pause/Restart affect the sim run itself, separate from driving it or switching policies. Auto-restart timer is off by default — the robot only resets when you hit Restart (or on a real fall) — turn it on to get the training-style episode timeout back.
-          Fall sensitivity below is separate from BOTH of those: it's the training config's own stumble-detection, which by default resets the robot on any wobble well short of an actual fall — training wants that (short episodes, fast curriculum), live control usually doesn't.</p>
+          <p>Pause/Restart affect the sim run itself, separate from driving it or switching policies. Auto-restart timer is off by default — the robot only resets when you hit Restart (or on a real fall) — turn it on to get the training-style episode timeout back.</p>
         </div>
       </div>
       <div class="section-body">
@@ -763,14 +762,6 @@
         <div class="field-row" id="episode-timeout-row" style="margin-left:1.5rem; margin-top:-.2rem;" hidden>
           <label for="episode-timeout-s">Interval (seconds)</label>
           <input type="number" id="episode-timeout-s" min="1" step="1" value="20">
-        </div>
-        <label class="toggle-row"><input type="checkbox" id="chk-fall-termination"> Relax fall sensitivity for this session</label>
-        <div class="field-row" id="fall-termination-row" style="margin-left:1.5rem; margin-top:-.2rem;" hidden>
-          <label for="fall-max-gravity">Max tilt before reset <span class="hint-inline">(projected gravity Z; training's own value shown as placeholder — must stay below the real safety trip)</span></label>
-          <input type="number" id="fall-max-gravity" step="0.05">
-          <label for="fall-hold-time" style="margin-top:.3rem;">Hold time before it counts (seconds)</label>
-          <input type="number" id="fall-hold-time" min="0.01" step="0.05">
-          <p class="field-hint">Training's own stumble-detection resets the robot the instant it tips past a threshold meant for curriculum learning, not live driving — separate from both Restart above and the real safety trip (the 🔴 status dot), which stays active regardless. Leave both blank to use training's own values; unchecking this reverts fully.</p>
         </div>
       </div>
     </section>

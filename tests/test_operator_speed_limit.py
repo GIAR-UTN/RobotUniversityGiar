@@ -14,9 +14,8 @@ Also covers the explicit follow-up ask: allow deliberately going PAST the
 trained envelope (values > 1.0, up to OPERATOR_SPEED_LIMIT_MAX) for
 out-of-distribution experimentation in sim.
 
-Like test_fall_termination.py, this stubs out legged_gym's package
-hierarchy so importing adapter.py doesn't eagerly pull in a real physics
-backend via legged_gym/__init__.py.
+This stubs out legged_gym's package hierarchy so importing adapter.py
+doesn't eagerly pull in a real physics backend via legged_gym/__init__.py.
 
 Run directly: python tests/test_operator_speed_limit.py
 """
@@ -71,8 +70,7 @@ class _FakeEnv:
 def _make_adapter():
     """A bare SimAdapter with only what set_command()/
     set_operator_speed_limit()/_clamp_command() touch -- bypasses __init__
-    (real env, random-events/episode-timeout/fall-termination wiring)
-    entirely, same pattern as test_fall_termination.py's _make_adapter()."""
+    (real env, random-events/episode-timeout wiring) entirely."""
     adapter = object.__new__(SimAdapter)
     adapter.env = _FakeEnv()
     adapter._orig_heading_command = adapter.env.cfg.commands.heading_command

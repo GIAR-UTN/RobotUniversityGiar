@@ -51,7 +51,7 @@ from fastapi.responses import StreamingResponse
 # ControlService/SafetyGovernor.
 METHODS = {
     "request_switch", "status", "pause", "resume", "estop",
-    "restart", "set_command", "set_random_events", "set_episode_timeout", "set_fall_termination",
+    "restart", "set_command", "set_random_events", "set_episode_timeout",
     "set_operator_speed_limit",
     "training_catalog", "start_training", "system_info", "estimate_training_time",
     "task_defaults", "delete_policy", "rename_policy", "policy_info",

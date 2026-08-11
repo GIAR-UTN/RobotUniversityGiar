@@ -66,10 +66,6 @@ const simPushDir = $('#sim-push-dir');
 const chkEpisodeTimeout = $('#chk-episode-timeout');
 const episodeTimeoutRow = $('#episode-timeout-row');
 const episodeTimeoutS = $('#episode-timeout-s');
-const chkFallTermination = $('#chk-fall-termination');
-const fallTerminationRow = $('#fall-termination-row');
-const fallMaxGravity = $('#fall-max-gravity');
-const fallHoldTime = $('#fall-hold-time');
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
@@ -667,29 +663,6 @@ function applyStatus(status) {
     }
   }
 
-  // fall_termination is absent on adapters that don't support it (e.g. a
-  // not-yet-built RealAdapter path) — same "hide, don't show a control that
-  // would just NotImplementedError" rule as episode_timeout_s above.
-  // "Enabled" (checkbox checked) means the CURRENT values differ from
-  // training's own — i.e. this session has an active override, from
-  // whichever client set it (this one, or another connected client).
-  const fallSupported = 'fall_termination' in status;
-  chkFallTermination.closest('.toggle-row').style.display = fallSupported ? '' : 'none';
-  if (fallSupported) {
-    const ft = status.fall_termination;
-    const overridden = ft.max_projected_gravity !== ft.training_max_projected_gravity
-      || ft.fail_to_terminal_time_s !== ft.training_fail_to_terminal_time_s;
-    chkFallTermination.checked = overridden;
-    fallTerminationRow.hidden = !overridden;
-    fallMaxGravity.placeholder = `training default: ${ft.training_max_projected_gravity}`;
-    fallHoldTime.placeholder = `training default: ${ft.training_fail_to_terminal_time_s}`;
-    if (document.activeElement !== fallMaxGravity) {
-      fallMaxGravity.value = overridden ? ft.max_projected_gravity : '';
-    }
-    if (document.activeElement !== fallHoldTime) {
-      fallHoldTime.value = overridden ? ft.fail_to_terminal_time_s : '';
-    }
-  }
 
   // operator_speed_limit is absent on adapters that don't support it (e.g.
   // RealAdapter — see ControlService.set_operator_speed_limit's docstring
@@ -959,39 +932,6 @@ chkEpisodeTimeout.addEventListener('change', () => {
 episodeTimeoutS.addEventListener('change', () => {
   if (chkEpisodeTimeout.checked) sendEpisodeTimeout();
 });
-
-// Blank means "use training's own value for that one" (see
-// set_fall_termination's docstring) — the empty-string check below is
-// deliberately NOT defaulted to a number client-side, so unchecking (or
-// leaving a field blank while checked) always means "training's value",
-// never a stale leftover number.
-function sendFallTermination() {
-  const gravity = chkFallTermination.checked && fallMaxGravity.value !== '' ? Number(fallMaxGravity.value) : null;
-  const hold = chkFallTermination.checked && fallHoldTime.value !== '' ? Number(fallHoldTime.value) : null;
-  send('set_fall_termination', { max_projected_gravity: gravity, fail_to_terminal_time_s: hold });
-}
-// A reasonable starting point for "relaxed but still a real safety margin"
-// — comfortably under SafetyGovernor's own 0.7 trip threshold (enforced
-// server-side by ControlService.set_fall_termination regardless of what's
-// typed here), and a full second of sustained tilt before it counts,
-// instead of training's 0.1s (a fraction of one footstep).
-const FALL_RELAXED_MAX_GRAVITY = 0.5;
-const FALL_RELAXED_HOLD_TIME_S = 1.0;
-chkFallTermination.addEventListener('change', () => {
-  fallTerminationRow.hidden = !chkFallTermination.checked;
-  // Checking the box with both fields still blank would send (null, null)
-  // — identical to unchecked, i.e. no actual override — and the very next
-  // status push would then report "not overridden" and uncheck the box
-  // right back, looking like the checkbox refuses to stay checked. Prefill
-  // with the suggested values so checking it alone does something.
-  if (chkFallTermination.checked) {
-    if (fallMaxGravity.value === '') fallMaxGravity.value = FALL_RELAXED_MAX_GRAVITY;
-    if (fallHoldTime.value === '') fallHoldTime.value = FALL_RELAXED_HOLD_TIME_S;
-  }
-  sendFallTermination();
-});
-fallMaxGravity.addEventListener('change', () => { if (chkFallTermination.checked) sendFallTermination(); });
-fallHoldTime.addEventListener('change', () => { if (chkFallTermination.checked) sendFallTermination(); });
 
 // ---- speed limit (Command panel) ----
 // 'input' fires continuously while dragging (immediate visual feedback —

@@ -149,17 +149,6 @@ class SimAdapter:
         self._episode_timeout_s: Optional[float] = None
         self.set_episode_timeout(None)
 
-        # Snapshot the TRAINING config's own fall/contact-force termination
-        # thresholds before set_fall_termination() below can touch them —
-        # None means "use whatever this env was built with" (see that
-        # method's docstring for why live control gets its own, looser
-        # values by default instead of silently inheriting training's).
-        self._training_max_projected_gravity = env.cfg.env.max_projected_gravity
-        self._training_fail_to_terminal_time_s = env.cfg.env.fail_to_terminal_time_s
-        self._fall_max_projected_gravity: Optional[float] = None
-        self._fall_to_terminal_time_s: Optional[float] = None
-        self.set_fall_termination(None, None)
-
     def set_episode_timeout(self, seconds: Optional[float]) -> None:
         """Configures/disables legged_robot.py's own timer-based episode
         reset (env.step() -> check_termination() -> reset_idx(), driven by
@@ -178,8 +167,7 @@ class SimAdapter:
         Fall/contact-force termination (fail_buf, a separate condition ORed
         into the same reset_buf in check_termination) is untouched here —
         that's a real safety trip, not a timer, and this method never
-        relaxes it. See set_fall_termination() below for that, on purpose a
-        separate call so the two are never accidentally conflated."""
+        relaxes it."""
         if seconds is not None and seconds <= 0:
             raise ValueError("episode timeout must be a positive number of seconds, or None to disable")
         self._episode_timeout_s = seconds
@@ -190,64 +178,6 @@ class SimAdapter:
             self.env.max_episode_length_s = seconds
             self.env.max_episode_length = math.ceil(seconds / self.env.dt)
         self.env.episode_length_buf[:] = 0
-
-    def set_fall_termination(self, max_projected_gravity: Optional[float],
-                              fail_to_terminal_time_s: Optional[float]) -> None:
-        """Configures legged_robot.py's own fall/contact-force termination
-        (check_termination()'s fail_buf, ORed with a separate 10N contact-
-        force check that this method does NOT touch) — the same cfg.env.
-        max_projected_gravity / fail_to_terminal_time_s the TRAINING config
-        sets for curriculum purposes. Left at the training config's own
-        values (this env's cfg.env.max_projected_gravity == -0.1 / ~84° of
-        tilt by default upstream), a policy that's merely stumbling — not
-        anywhere near an actual fall, and nothing SafetyGovernor's own much
-        stricter ~0.7/134° threshold would ever trip on — gets silently
-        teleported back to its default pose by the env itself, mid-env.step(),
-        with no signal to ControlService/the web UI: indistinguishable from
-        "the robot just stops responding," which is exactly the bug this
-        exists to fix. Training and live control read the SAME two cfg.env
-        fields, but each backs a SEPARATE env instance (training runs in its
-        own subprocess, see training.py's module docstring) — writing here
-        only ever affects THIS session's live env, never a training run's.
-
-        Each argument is independent: pass None to leave that ONE threshold
-        at the training config's own value; pass a number to override just
-        that one. Call with (None, None) to fully revert to training's
-        values (this is also the constructor's own default — this method
-        does not change the default, only what an operator explicitly
-        chooses to relax).
-
-        This adapter has no reference to the actual SafetyGovernor instance
-        (constructed separately, see rugiar_driver.py) to check
-        max_projected_gravity against its own trip threshold — that
-        cross-check belongs to, and is enforced by,
-        ControlService.set_fall_termination(), which holds both."""
-        if fail_to_terminal_time_s is not None and fail_to_terminal_time_s <= 0:
-            raise ValueError("fail_to_terminal_time_s must be a positive number of seconds, or None to "
-                              "use the training config's own value")
-        self._fall_max_projected_gravity = max_projected_gravity
-        self._fall_to_terminal_time_s = fail_to_terminal_time_s
-        self.env.cfg.env.max_projected_gravity = (
-            self._training_max_projected_gravity if max_projected_gravity is None else max_projected_gravity)
-        self.env.cfg.env.fail_to_terminal_time_s = (
-            self._training_fail_to_terminal_time_s if fail_to_terminal_time_s is None else fail_to_terminal_time_s)
-        # fail_buf counts consecutive failing ticks since whatever threshold
-        # was previously in effect — a live change must not inherit a
-        # partial count built up under the old, possibly stricter, setting.
-        self.env.fail_buf[:] = 0
-
-    @property
-    def fall_termination(self) -> dict:
-        """Effective values right now (whether inherited from training's
-        config or explicitly overridden) plus the training config's own
-        values, so a UI can show both and how far the current setting has
-        been relaxed from training's default."""
-        return {
-            "max_projected_gravity": self.env.cfg.env.max_projected_gravity,
-            "fail_to_terminal_time_s": self.env.cfg.env.fail_to_terminal_time_s,
-            "training_max_projected_gravity": self._training_max_projected_gravity,
-            "training_fail_to_terminal_time_s": self._training_fail_to_terminal_time_s,
-        }
 
     @property
     def episode_timeout_s(self) -> Optional[float]:
