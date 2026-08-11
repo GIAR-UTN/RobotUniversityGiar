@@ -582,6 +582,20 @@ class ViserViewer:
                         client.camera.position = client.camera.position + delta
             self._camera_track_last_base_pos = base_pos.copy()
 
+    def resync_camera_tracking(self) -> None:
+        """Same effect as a user toggling "Track robot" off and back on
+        (see _setup_camera_gui's on_update below) -- invalidates the
+        last-seen base position so the very next _apply_camera_tracking()
+        tick takes its "no reference yet" branch and SNAPS every client's
+        camera straight onto the robot, instead of computing a huge
+        one-tick delta from wherever it used to be (see that method's
+        docstring). Call this after anything that teleports the robot
+        server-side without a client reconnect happening on its own --
+        restart (env.reset()) is the first case -- so the camera resyncs
+        on its own instead of requiring the checkbox toggle by hand."""
+        with self._camera_track_lock:
+            self._camera_track_last_base_pos = None
+
     def _setup_camera_gui(self) -> None:
         """Add camera tracking and FOV controls."""
         self._camera_tracking_enabled = True

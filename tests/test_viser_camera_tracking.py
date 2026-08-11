@@ -185,6 +185,26 @@ class TestCameraTracking(unittest.TestCase):
 
         np.testing.assert_allclose(client.camera.position, new_base_pos + viewer._camera_offset)
 
+    def test_resync_camera_tracking_forces_snap_on_next_tick(self):
+        """resync_camera_tracking() (called after restart()/env.reset() —
+        see rugiar_driver.py) must have the same effect as toggling "Track
+        robot" off and back on: invalidate the stale last-seen base
+        position so the very next tracking tick snaps straight onto the
+        robot's new (post-reset) position instead of computing one huge
+        delta from wherever it used to be."""
+        viewer = _make_viewer()
+        client = _FakeClient(position=[0.0, 0.0, 0.0], look_at=[0.0, 0.0, 0.0])
+        viewer.server._clients[0] = client
+
+        viewer._apply_camera_tracking(np.array([50.0, 30.0, 0.0]))  # robot far from origin
+        viewer.resync_camera_tracking()  # e.g. right after restart() teleported it back
+
+        reset_base_pos = np.array([0.0, 0.0, 0.0])
+        viewer._apply_camera_tracking(reset_base_pos)
+
+        np.testing.assert_allclose(client.camera.position, reset_base_pos + viewer._camera_offset)
+        np.testing.assert_allclose(client.camera.look_at, reset_base_pos + viewer._camera_look_at_offset)
+
     def test_no_clients_is_a_noop(self):
         viewer = _make_viewer()
         # Should not raise with zero connected clients.

@@ -605,6 +605,14 @@ def main():
             adapter.reset()
             obs = adapter.get_observations()
             safety.reset()
+            # reset() teleports the robot back to its default pose — without
+            # this, viser's camera tracking computes one huge, stale delta
+            # from wherever the robot used to be (see
+            # ViserViewer.resync_camera_tracking()'s docstring), the same
+            # "camera not centered, have to toggle Track robot" bug reported
+            # after a restart.
+            if viser_viewer is not None:
+                viser_viewer.resync_camera_tracking()
 
         if service.family_switch_requested is not None:
             _relaunch_for_family(cli, service.family_switch_requested)  # never returns

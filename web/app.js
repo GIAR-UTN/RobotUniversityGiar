@@ -247,6 +247,15 @@ function connect() {
     // (network hiccup, same process still running) has nothing new to
     // fetch here, so this only runs after an actual family switch.
     if (wasSwitchingFamily) {
+      // The new process's active policy defaults to whichever local
+      // checkpoint happens to load first (see loadLastPolicy()'s docstring)
+      // and hasn't taken a single control step yet — restart() (env.reset())
+      // puts the robot at a known-good default pose/episode state instead of
+      // wherever the sim happened to spawn it, and now also resyncs viser's
+      // camera tracking on the backend (see resync_camera_tracking()) — the
+      // "have to press R / toggle Track robot after switching" reported
+      // after this same reconnect used to require both by hand.
+      send('restart');
       fetch('/config').then((r) => r.json()).then(applyRuntimeConfig)
         .catch((e) => console.warn('config refresh after family switch failed:', e.message))
         .finally(hideTransitionOverlay);
