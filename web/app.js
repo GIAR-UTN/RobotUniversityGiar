@@ -73,26 +73,71 @@ const hudYaw = $('.hud-yaw');
 // ---- transition overlay: family switch / fresh local training start ----
 // Both can make viser stall or drop its WS connection for several seconds
 // (see the module docstring reference to Genesis's global once-per-process
-// state) with otherwise zero visual cue besides the footer/console. Shown
-// eagerly by the action that triggers it; dismissed either by the user
-// (Accept button) or automatically once we have good evidence the thing
-// stabilized (see the two call sites below).
+// state) with otherwise zero visual cue besides the footer/console. Two
+// modes share this one card (see index.html's block comment on
+// #transition-overlay): showConfirmOverlay() gates an action that hasn't
+// happened yet — Switch/Cancel, nothing sent to the server until Switch —
+// used before a family switch, since that's disruptive enough (10-20s
+// reconnect) to deserve an explicit "yes, do it" rather than firing on the
+// first click. showLoadingOverlay() is purely informational for something
+// already in flight (the reconnect itself, or a training run that already
+// started) — single "Got it" dismiss, no way to undo something that
+// already happened.
 const transitionOverlay = $('#transition-overlay');
 const transitionMessage = $('#transition-message');
+const transitionSpinner = $('#transition-spinner');
 const transitionAccept = $('#transition-accept');
+const transitionCancel = $('#transition-cancel');
 let transitionAutoHideTimer = null;
+let transitionOnConfirm = null; // set only while the CONFIRM mode is up
 
-function showTransitionOverlay(message) {
+function showConfirmOverlay(message, onConfirm) {
   transitionMessage.textContent = message;
+  transitionSpinner.hidden = true;
+  transitionCancel.hidden = false;
+  transitionAccept.textContent = 'Switch';
+  transitionOnConfirm = onConfirm;
+  transitionOverlay.hidden = false;
+}
+
+function showLoadingOverlay(message) {
+  transitionMessage.textContent = message;
+  transitionSpinner.hidden = false;
+  transitionCancel.hidden = true;
+  transitionAccept.textContent = 'Got it';
+  transitionOnConfirm = null;
   transitionOverlay.hidden = false;
 }
 
 function hideTransitionOverlay() {
   transitionOverlay.hidden = true;
+  transitionOnConfirm = null;
   if (transitionAutoHideTimer) { clearTimeout(transitionAutoHideTimer); transitionAutoHideTimer = null; }
 }
 
-transitionAccept.addEventListener('click', hideTransitionOverlay);
+// Manual reconnect for the Simulator view (Family panel's ↻ button) — a
+// family switch can leave viser's own WS connection dead with no
+// automatic way to recover it (viser doesn't retry a fully-dead
+// connection on its own), but reloading it is a real WebGL
+// teardown/rebuild that competes with the sim for the SAME CPU (Genesis
+// runs on CPU here, see system_info) — doing this automatically once
+// visibly degraded the robot's control loop (steps starting, then
+// stalling) on a loaded host, so it's manual: the user decides when
+// paying that cost is safe (e.g. NOT mid-maneuver).
+$('#btn-reload-sim').addEventListener('click', () => {
+  const simIframe = document.querySelector('#view-sim iframe');
+  if (simIframe && viserPort) simIframe.src = `http://localhost:${viserPort}/?darkMode`;
+});
+
+transitionAccept.addEventListener('click', () => {
+  // In LOADING mode this is just "Got it" (transitionOnConfirm is null)
+  // — dismiss and nothing else. In CONFIRM mode, run the action THEN
+  // dismiss, rather than leaving the confirm buttons up while it runs.
+  const confirmed = transitionOnConfirm;
+  hideTransitionOverlay();
+  if (confirmed) confirmed();
+});
+transitionCancel.addEventListener('click', hideTransitionOverlay);
 let draggingCommand = false; // true while the user has a command HUD grabbed —
                               // suppresses syncing FROM status() pushes so the
                               // drag doesn't fight the server echo
@@ -340,6 +385,38 @@ function savePolicyOrder(names) {
   localStorage.setItem(POLICY_ORDER_KEY, JSON.stringify(names));
 }
 
+// ---- last-used policy per family ----
+// A family switch relaunches the whole server process, and the new one
+// always defaults its active policy to whichever local checkpoint happens
+// to come first in ITS OWN discovery order (glob/insertion order — see
+// rugiar_driver.py's `active_name = cli.active or next(iter(policy_paths))`)
+// — that has nothing to do with what was actually running last time this
+// browser was on that family. Remember it here instead and restore it the
+// first time each family's status is seen in this page load — see the
+// restoredPolicyForFamily guard in applyStatus() for why this only ever
+// fires once per family per page load, never fighting a deliberate
+// mid-session switch to something else.
+const LAST_POLICY_KEY = 'giar.lastPolicyByFamily.v1';
+
+function loadLastPolicy(family) {
+  try {
+    const map = JSON.parse(localStorage.getItem(LAST_POLICY_KEY));
+    return (map && map[family]) || null;
+  } catch { return null; }
+}
+
+function saveLastPolicy(family, policyName) {
+  let map;
+  try { map = JSON.parse(localStorage.getItem(LAST_POLICY_KEY)) || {}; } catch { map = {}; }
+  if (map[family] === policyName) return;
+  map[family] = policyName;
+  localStorage.setItem(LAST_POLICY_KEY, JSON.stringify(map));
+}
+
+let restoredPolicyForFamily = null; // which family's last-used policy we've
+                                     // already tried to restore in THIS page
+                                     // load — see loadLastPolicy() above
+
 // Renaming a policy must not silently bump it to the bottom of the drag
 // order (and therefore lose its shortcut key, which is position-based —
 // see the comment above) just because its old name no longer matches
@@ -423,11 +500,15 @@ function familyButtonRow(name, current, hasPolicies) {
   btn.disabled = name === current || familySwitchInFlight || !hasPolicies;
   if (!hasPolicies) btn.title = `No trained policies for '${name}' yet — train one first`;
   btn.onclick = () => {
-    familySwitchInFlight = true;
-    footer.textContent = `switching to '${name}' — this page will reconnect on its own (10-20s)…`;
-    showTransitionOverlay(
-      `Cambiando a la family "${name}"… el proceso se reinicia entero, así que el visualizador se va a desconectar y puede tardar 10-20s en estabilizarse. Esta página reconecta sola.`);
-    send('switch_family', { task: name });
+    showConfirmOverlay(
+      `Switch to family "${name}"? The whole process restarts, so the simulator will disconnect and can take 10-20s to settle back down.`,
+      () => {
+        familySwitchInFlight = true;
+        footer.textContent = `switching to '${name}' — this page will reconnect on its own (10-20s)…`;
+        showLoadingOverlay(
+          `Switching to family "${name}"… reconnecting (10-20s). This page reconnects on its own; if the simulator view stays frozen, use the ↻ next to "Family" to reconnect it whenever you're ready.`);
+        send('switch_family', { task: name });
+      });
   };
   row.appendChild(btn);
   return row;
@@ -497,6 +578,20 @@ function applyStatus(status) {
   // shortcut, another connected client) and follow it in the info dock.
   const previousActive = latestStatus?.active;
   latestStatus = status;
+
+  // Restore the last policy used on THIS family (if any) the first time we
+  // see its status in this page load, then keep remembering whatever ends
+  // up active — see loadLastPolicy()/saveLastPolicy()'s docstring above.
+  if (status.current_task && status.active) {
+    if (restoredPolicyForFamily !== status.current_task) {
+      restoredPolicyForFamily = status.current_task;
+      const saved = loadLastPolicy(status.current_task);
+      if (saved && saved !== status.active && (status.policies || []).includes(saved)) {
+        send('request_switch', { name: saved });
+      }
+    }
+    saveLastPolicy(status.current_task, status.active);
+  }
 
   let color = status.ramping ? '🟡' : '🟢';
   if (status.safety_tripped) color = '🔴';
@@ -2355,17 +2450,18 @@ createPolicyForm.addEventListener('submit', (e) => {
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,
     backend: p.backend,
   }).then(() => {
-    // A local training run shares this same host's GPU with the running
-    // sim — starting one can make viser stutter or stall for a bit while
-    // both compete for it (Kaggle jobs run on a remote GPU and don't touch
-    // this machine at all, so they don't get this warning). p.name is
-    // already guaranteed to be a policy that doesn't exist yet — the
-    // duplicate-name check above returns early otherwise. No reconnect
-    // event to hang this on (unlike a family switch, this process never
-    // restarts), so it just auto-hides after a bit; Accept dismisses it sooner.
+    // A local training run shares this same host's CPU with the running
+    // sim (system_info's own "local training runs CPU" note) — starting
+    // one can make viser stutter or stall for a bit while both compete for
+    // it (Kaggle jobs run on a remote GPU and don't touch this machine at
+    // all, so they don't get this warning). p.name is already guaranteed
+    // to be a policy that doesn't exist yet — the duplicate-name check
+    // above returns early otherwise. No reconnect event to hang this on
+    // (unlike a family switch, this process never restarts), so it just
+    // auto-hides after a bit; "Got it" dismisses it sooner.
     if (p.backend !== 'kaggle') {
-      showTransitionOverlay(
-        `Entrenando "${p.name}" desde cero — el simulador puede tildarse unos segundos mientras el entrenamiento arranca y compite por la GPU.`);
+      showLoadingOverlay(
+        `Training "${p.name}" from scratch — the simulator may stutter for a few seconds while training spins up and competes for CPU.`);
       transitionAutoHideTimer = setTimeout(hideTransitionOverlay, 8000);
     }
     // snapshot BEFORE reset() clears every field below. base: p.name (not
