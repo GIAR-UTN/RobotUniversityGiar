@@ -819,9 +819,21 @@ function renderTelemetry(telemetry) {
 
 // ---- HUD rendering ----
 
+// Both scaled by speedLimitFraction (kept in sync with the server's own
+// enforced operator_speed_limit — see applyStatus()) so the HUD drag
+// gesture (bindVerticalHud/bindHorizontalHud/bindDialHud below) can reach
+// the same effective max the keyboard hold-to-cruise gesture already can
+// (see smoothAxis) — before this, dragging a HUD stayed hard-capped to the
+// raw trained range even after raising the speed limit past 100%, the
+// "the readout never went past 1.0" bug reported against this exact
+// control. Server-side set_command() re-clamps regardless either way.
 function axisScale(range) {
   if (!commandRanges || !range) return 1;
-  return Math.max(Math.abs(range[0]), Math.abs(range[1])) || 1;
+  return (Math.max(Math.abs(range[0]), Math.abs(range[1])) || 1) * speedLimitFraction;
+}
+
+function scaledRange(range) {
+  return range ? [range[0] * speedLimitFraction, range[1] * speedLimitFraction] : range;
 }
 
 function setHudVx(value) {
@@ -1126,7 +1138,7 @@ function bindVerticalHud(hud, axis) {
     const centerY = rect.top + rect.height / 2;
     const t = Math.max(-1, Math.min(1, (centerY - e.clientY) / (rect.height / 2)));
     const scale = axisScale(commandRanges?.[axis]);
-    const value = clampToRange(t * scale, commandRanges?.[axis]);
+    const value = clampToRange(t * scale, scaledRange(commandRanges?.[axis]));
     if (axis === 'vx') cruiseVx = value; else if (axis === 'vy') cruiseVy = value; else cruiseYaw = value;
     engageManualIfNeeded();
     sendCruiseCommand();
@@ -1150,7 +1162,7 @@ function bindHorizontalHud(hud, axis) {
     // Pointer left of center => positive t => LEFT (matches +vy = LEFT).
     const t = Math.max(-1, Math.min(1, (centerX - e.clientX) / (rect.width / 2)));
     const scale = axisScale(commandRanges?.[axis]);
-    const value = clampToRange(t * scale, commandRanges?.[axis]);
+    const value = clampToRange(t * scale, scaledRange(commandRanges?.[axis]));
     if (axis === 'vx') cruiseVx = value; else if (axis === 'vy') cruiseVy = value; else cruiseYaw = value;
     engageManualIfNeeded();
     sendCruiseCommand();
@@ -1179,7 +1191,7 @@ function bindDialHud(hud, axis) {
     angle = Math.max(-135, Math.min(135, angle));
     const t = Math.max(-1, Math.min(1, -angle / 135));
     const scale = axisScale(commandRanges?.[axis]);
-    const value = clampToRange(t * scale, commandRanges?.[axis]);
+    const value = clampToRange(t * scale, scaledRange(commandRanges?.[axis]));
     cruiseYaw = value;
     engageManualIfNeeded();
     sendCruiseCommand();
@@ -1227,7 +1239,7 @@ lookPad.addEventListener('pointermove', (e) => {
   // Dragging right should turn right; yaw+ means "turn left" (base_ang_vel[:,2],
   // right-hand rule around z), matching keymap.json's ArrowLeft: sign +1 —
   // so drag-right subtracts.
-  cruiseYaw = clampToRange(cruiseYaw - dx * MOUSE_YAW_SENSITIVITY, commandRanges?.yaw);
+  cruiseYaw = clampToRange(cruiseYaw - dx * MOUSE_YAW_SENSITIVITY, scaledRange(commandRanges?.yaw));
   sendCruiseCommand();
 });
 function endMouseLook() {
