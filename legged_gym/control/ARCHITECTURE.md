@@ -84,7 +84,7 @@ RobotUniversityGiar (RUgiar) is a Genesis/Isaac-Gym-based fork of `unitree_rl_gy
 
 **Talks to:**
 - **Training / Policy Operations** — `ControlService` holds a `TrainingManager` instance and forwards nearly every RPC method to it 1:1; it never reaches into `training.py` internals.
-- **Web UI** — the only consumer of the WebSocket protocol today; all 30 RPC methods exist because the Web UI calls them.
+- **Web UI** — the only *built-in* consumer of the WebSocket protocol; all 30 RPC methods exist because the Web UI calls them. Any external client can speak the same protocol — `examples/joystick_controller.py` is a working reference implementation (gamepad or `--demo`) worth checking when changing anything in `transport.py`'s wire format, since it's the cheapest way to sanity-check a protocol change end to end without the Web UI.
 - **Robot Driver** — instantiates and owns `ControlService`, `ControlServer`, the adapter, `PolicySupervisor`, `SafetyGovernor`; ticks them once per frame and drains finished training jobs into the supervisor.
 - **CLI** — no path at all (see §5's confirmed-boundary section).
 
@@ -141,7 +141,13 @@ This is the cleanest boundary in the repo and worth preserving deliberately: if 
 
 ### 7. Third-Party Integrations (placeholder)
 
-No code exists in this repo for this area yet. A collaborator is developing a human motion-capture retargeting pipeline in a separate repository, intended to eventually integrate with RUgiar — most likely as a new data source or panel surfaced through the Web UI. Until that work lands, treat this area as reserved/unclaimed rather than empty-by-omission: if you find yourself building retargeting-adjacent code inside this repo, check in with that collaborator first rather than assuming the integration point.
+No code exists in this repo for this area yet, but there's real upstream work to integrate against, in a separate repository — most likely as a new data source or panel surfaced through the Web UI once it lands:
+
+- **Motion capture → G1 retargeting pipeline.** Markerless motion capture and monocular video2robot extraction, retargeted to G1 joint angles, with PPO-trained RL tracking policies per motion (ONNX-exportable, hardware-deployable). Released dataset: [exptech/g1-moves on Hugging Face](https://huggingface.co/datasets/exptech/g1-moves) — 60 clips (~30 min, dance/karate/bonus), CC-BY-4.0, multiple pipeline stages (raw mocap BVH/FBX, retargeted PKL/CSV, training-ready NPZ, trained PyTorch/ONNX policies). A prebuilt release lives at [jvillalba007/GIAR-moves](https://github.com/jvillalba007/GIAR-moves/releases/tag/1.0.0).
+- **[Motion Viewer](https://giar-mv.9zteam.pp.ua/)** — a standalone, browser-based (WebGL/Three.js) tool for previewing this motion data: drag in a URDF/MJCF + meshes, drag in an `.npz`/`.pkl` motion, get playback with scrubbing, speed control, and trajectory trails. No install, no upload — runs entirely client-side. Useful today for eyeballing a motion clip before deciding whether it's worth retargeting into a RUgiar training run.
+- **[unitreerobotics](https://github.com/unitreerobotics)** (official) — the broader ecosystem this integration will likely draw from: `unitree_rl_lab`/`unitree_rl_mjlab` (IsaacLab/MuJoCo RL frameworks with G1 mimic-task support — directly relevant to importing motion-tracking policies), `unitree_lerobot` (end-to-end embodied AI, data conversion + policy training + real-world deployment), `xr_teleoperate` (XR teleoperation with data recording — an alternative motion-data source).
+
+The concrete integration contract (how a `g1-moves`-style motion/policy gets pulled into RUgiar's own `policies/<name>/` catalog, and whether it's a `rugiar distill`-style behavior clone or a new dedicated pipeline) isn't decided yet — treat this area as reserved/unclaimed until that's settled, and check in with whoever's driving the motion-capture side before assuming an integration point. More papers/sources may get added here as that work matures.
 
 ---
 
@@ -233,7 +239,7 @@ Files below are grouped by area. "Collision risk" flags concurrency invariants, 
 **Policy Operations** — `legged_gym/control/fusion.py`, `legged_gym/control/distillation.py`. Orchestration code (`fuse_policies()`, `start_distillation()`) lives inside `training.py`, so a change here often means touching that file too — coordinate with whoever owns Training work in flight.
 - Risk: no isolated ownership of the orchestration path; a Dependency-Inversion cleanup (algorithms depend on a narrow job-lifecycle interface, not directly embedded in `TrainingManager`) would let this area evolve independently of Training's own refactors.
 
-**Control** — `legged_gym/control/service.py`, `transport.py`, `supervisor.py`, `safety.py`, `selector.py`, `adapter.py`, `policy.py`, `deploy/real_adapter.py`.
+**Control** — `legged_gym/control/service.py`, `transport.py`, `supervisor.py`, `safety.py`, `selector.py`, `adapter.py`, `policy.py`, `deploy/real_adapter.py`, plus `examples/joystick_controller.py` as the reference external client for the WebSocket protocol.
 - Hard invariant: every `ControlService` call except `request_switch`/`pause`/`resume`/`estop` must go through `ControlServer`'s command queue, drained once per sim tick. Adding a new "direct-call" shortcut without re-verifying it's a cheap flag-set (<1ms, no per-tick state) is the most likely way to introduce a race.
 - Risk: `PolicySupervisor.request_switch()` is idempotent by pending-name (second caller in the same tick gets `False`) — human and autonomous `Selector` requests can legitimately race here; this is handled, not a bug, but easy to "fix" incorrectly.
 - Risk: policy deletion currently writes directly to disk from more than one place; Training and Control both touch `policies/<name>/`. Longer-term this should be Training's exclusive responsibility (Dependency Inversion: Control should ask Training to delete, not do it itself).
