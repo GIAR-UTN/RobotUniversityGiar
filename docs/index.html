@@ -1037,6 +1037,12 @@ def step(self, obs):
 # combination, so viser is what actually works here).</code></pre>
         </details>
 
+        <div class="plate">
+          <img class="tool-screenshot" src="assets/widgets/pause-stress.png"
+               alt="Pause and Restart panel (Pause and Restart buttons, keyboard shortcuts P/R, an optional auto-restart timer) and Stress Stimuli panel (Random Pushes with a push-direction dropdown, Random Movement) from the control web.">
+          <div class="cap">Pause &amp; Restart and Stress Stimuli, next to the switching controls above — <code>pause</code>/<code>resume</code>/<code>restart</code> and the sim-only <code>set_random_events</code> RPC from §13's method table, exposed as one panel each. Stress Stimuli is exactly the domain-randomization idea from §5 (random pushes, random commands) made into something an operator can toggle live, on a policy that's already trained, to probe how it holds up outside the exact conditions it saw in training.</div>
+        </div>
+
         <div class="aside">
           <div class="label">Why not just adopt ROS 2 / <code>ros2_control</code>?</div>
           <code>ros2_control</code>'s <code>controller_manager</code> solves almost exactly this problem, and <a href="https://github.com/legubiao/quadruped_ros2_control" target="_blank" rel="noopener">legubiao/quadruped_ros2_control</a> is real prior art doing it for legged robots specifically. For a pure Python/PyTorch/Genesis project built for quick local iteration on a Mac, adopting all of ROS 2 today would add a lot of toolchain cost for the benefit — so this fork borrows the <em>pattern</em> (named, swappable, lifecycle-staged controllers behind an abstract hardware interface) without the dependency, and deliberately names its lifecycle states (<code>INACTIVE</code>/<code>READY</code>/<code>ACTIVE</code>/<code>FAULT</code>) to match <code>ros2_control</code>'s own vocabulary, in case a real bridge is worth building later.
@@ -1057,6 +1063,13 @@ def step(self, obs):
 
         <h3>Connecting</h3>
         <p><code>ws://&lt;host&gt;:&lt;control_port&gt;/ws</code>. If the server was started with <code>--token &lt;secret&gt;</code> (strongly recommended for <code>--real</code> — anything on the robot's WiFi/LAN can otherwise reach it), append <code>?token=&lt;secret&gt;</code> to the URL or the connection is rejected before it opens. The web UI does exactly this by forwarding its own page's <code>?token=...</code> query param — share <code>http://&lt;host&gt;:&lt;control_port&gt;/?token=&lt;secret&gt;</code> with anyone who needs either the UI or to build their own client against the same robot.</p>
+
+        <ol class="recipe">
+          <li>Start the server with a token: <code>python legged_gym/scripts/rugiar_driver.py --policy stable:policies/stable/checkpoint.pt --control_port 9013 --token &lt;a-shared-secret&gt;</code>. Omit <code>--token</code> only for a trusted, localhost-only sim session — never for <code>--real</code>.</li>
+          <li>Connect to <code>ws://&lt;host&gt;:9013/ws?token=&lt;a-shared-secret&gt;</code>. The handshake is rejected before it opens if the token is missing or wrong — check that first if a connection attempt fails silently.</li>
+          <li>Send a first message. Either <code>{"method": "status", "params": {}, "id": 1}</code> to pull one snapshot immediately, or nothing at all — the server starts pushing unprompted <code>status</code> messages at ~10Hz to every open connection the instant it's connected (see "Reading telemetry," below). Most clients then just start calling <code>set_command</code> on their own polling loop.</li>
+        </ol>
+        <p style="font-size:13px; color:var(--muted);">This is the same three-step handshake <code>examples/joystick_controller.py</code> performs — see "Build your own controller," below, for a working reference implementation of exactly this.</p>
 
         <h3>Sending a command</h3>
         <p>Every outgoing message is a JSON object <code>{"method": "...", "params": {...}, "id": N}</code>, calling one method on <code>ControlService</code> by name. The reply comes back as <code>{"id": N, "result": ...}</code> or <code>{"id": N, "error": "..."}</code>. The method a home-made joystick controller almost always wants:</p>
@@ -1112,8 +1125,20 @@ def step(self, obs):
         </details>
         <p>Every telemetry field is self-describing — <code>source</code> tells you whether it's a real sensor reading (available on real hardware too) or simulator-only ground truth (<code>null</code> on <code>RealAdapter</code>), so a client never has to hardcode which fields are trustworthy off-simulator.</p>
 
+        <div class="plate">
+          <img class="tool-screenshot" src="assets/widgets/live-telemetry.png"
+               alt="Live Telemetry panel from the control web, showing four real fields from a running session: Base height 0.775m tagged SIM, Orientation (gravity in body frame) [-0.039, 0.033, -0.999]g tagged SENSOR, Angular velocity (gyroscope) [-0.259, 0.003, -0.381]rad/s tagged SENSOR, and Linear velocity [0.772, 0.014, 0.061]m/s tagged SIM, each with a one-line note on where the number actually comes from.">
+          <div class="cap">The Live Telemetry panel — every field carries the same SIM/SENSOR tag as the status push's <code>source</code> key above, in plain English: "not measured by any real sensor" next to <code>base_height</code> and <code>base_lin_vel</code>, "real IMU gyroscope reading — available on both sim and real hardware" next to <code>base_ang_vel</code>. What you read in the JSON is exactly what's shown on screen.</div>
+        </div>
+
         <h3>Build your own controller</h3>
         <p><code>examples/joystick_controller.py</code> is a complete, minimal reference client — connects, authenticates with a token, reads a gamepad, and streams <code>set_command</code> at a fixed rate. It's deliberately short and dependency-light (Python's standard <code>websockets</code> or any equivalent library in any language works the same way — the protocol is just JSON text frames, nothing Python-specific).</p>
+
+        <div class="plate">
+          <img class="tool-screenshot" src="assets/widgets/command-camera-family.png"
+               alt="Command, Camera, and Family panels from the control web during an active walking+turning session: Family shows task g1 selected next to g1_gaze, Camera shows a robot-POV view of a red ball prop on a checkered floor with two raised hands, and Command shows Linear X 0.84 (FWD slider raised) and Yaw -0.39 on a turn dial, live values from the exact same set_command channel a custom client would drive.">
+          <div class="cap">The Command panel is literally the on-screen equivalent of the joystick controller described above — the FWD/BACK slider and yaw dial issue the exact same <code>set_command</code> calls a home-made gamepad client would, at the same clamped envelope. This session's live values (vx=0.84, yaw=-0.39) are a real robot mid-walk, mid-turn — next to it, the Family panel (switches which registered task/driver is running — see the <code>rugiar</code> skill's "Family panel" section) and a live robot-POV Camera feed.</div>
+        </div>
         <div class="aside">
           <div class="label">Safety note for anyone wiring up new hardware</div>
           A home-made controller only ever reaches <code>set_command</code>'s clamped envelope and the same <code>estop</code>/<code>pause</code> every other client shares — it can't ask the policy to do anything outside what it was trained across, and it can't bypass the physical remote-gated startup sequence in §9. Still, treat a first connection to real hardware the same as a first <code>--headless</code> run: harness-suspended, one person on the physical remote the whole time, nobody trusting a new client's output blind.
@@ -1183,6 +1208,39 @@ def step(self, obs):
         <h2>Training a stable policy</h2>
         <p class="lead-q">The reward curve climbed, crashed, climbed again, crashed again. Is the entropy too high?</p>
         <p>Usually no — and this section exists because that question comes up naturally the first time anyone stares at a real training curve. Two <em>completely different</em> problems both look like "the curve is going up and down," and telling them apart is the single most useful diagnostic skill for anyone using the Create Policy panel (<a href="#control-arch">§12</a>). Everything below is grounded in two things: this fork's own training history (real logs, real numbers, no hypotheticals) and what the wider legged-locomotion RL community — ETH Zürich's <code>legged_gym</code>, Unitree's own <code>unitree_rl_gym</code>, and a few research papers — has already learned the hard way, cited as we go.</p>
+
+        <div class="aside">
+          <div class="label">Quick start: train a policy right now</div>
+          <p style="margin-bottom:10px;">Skip straight to a running training job — everything below this box is how to <em>read</em> the result once you have one. Every command here is the real <code>rugiar</code> CLI (<code>legged_gym/cli/rugiar.py</code>), a thin front end onto the same <code>TrainingManager</code> the control web's Create Policy panel uses (§16) — nothing here is simplified or hypothetical.</p>
+
+          <p style="margin:14px 0 6px; font-weight:700; color:var(--ink);">0. One-time setup, every new shell</p>
+          <pre><code>export SIMULATOR=genesis   # every rugiar command refuses to import without this set
+rugiar train --list_tasks  # sanity check — should print g1, go2, g1_crouch, ...</code></pre>
+
+          <p style="margin:14px 0 6px; font-weight:700; color:var(--ink);">1. Train from scratch</p>
+          <pre><code>rugiar train --task g1 --name my_first_walk --max_minutes 15 --push_robots off</code></pre>
+          <p style="margin:6px 0 0;">Time-boxed by <code>--max_minutes</code> rather than a fixed iteration count, so it's safe to run on a laptop without knowing in advance how many PPO iterations fit — Ctrl-C at any point leaves nothing registered (safe to interrupt, no half-written policy).</p>
+
+          <p style="margin:14px 0 6px; font-weight:700; color:var(--ink);">2. Fine-tune an existing local policy</p>
+          <pre><code>rugiar train --list_policies                       # what's already local &amp; fine-tunable?
+rugiar train --task g1 --name my_first_walk_v2 \
+    --from_policy my_first_walk --max_iterations 500</code></pre>
+          <p style="margin:6px 0 0;"><code>--from_policy</code> resumes from that policy's own <code>train_checkpoint.pt</code> — same weights, same optimizer state — rather than starting over. This is exactly the "one lesson at a time" pattern the rest of §15 argues for: change one knob (a <code>--reward_scale</code>, a <code>--cmd_vx_range</code>) relative to the checkpoint you're resuming from, not several at once.</p>
+
+          <p style="margin:14px 0 6px; font-weight:700; color:var(--ink);">3. Where to check progress</p>
+          <ul style="margin-bottom:0;">
+            <li>While it's running: <code>rugiar</code> streams the live training log to the terminal — watch <strong>mean reward</strong>, <strong>mean episode length</strong>, and <strong>action noise std</strong> scroll by every iteration (see "The three vitals," right below).</li>
+            <li>The control web's Create Policy panel shows the exact same three numbers as live-updating result tiles, if a job was launched from the browser instead — same underlying <code>TrainingManager</code>, so a job started from either door shows up in the other.</li>
+            <li>Once you have any checkpoint: <strong>watch it, don't just read the numbers</strong> — <code>python legged_gym/scripts/play.py --task=g1 --load_run=&lt;run_name&gt; --ckpt=&lt;N&gt; --viewer=viser --viser_port=9006</code>, then open <code>http://localhost:9006</code>. A good-looking reward curve is not proof a policy walks — see "Watch a checkpoint before trusting it" in §14, and the anti-patterns list at the end of this section.</li>
+          </ul>
+        </div>
+
+        <div class="plate">
+          <img class="tool-screenshot" src="assets/widgets/create-policy-policies.png"
+               alt="Create Policy panel with New policy, Fuse policies, and Distill policy buttons, above a Policies list of local trained policies with numeric keyboard shortcuts."
+               style="max-width:340px;">
+          <div class="cap">The browser-side version of step 1/2 above: <strong>+ New policy…</strong> opens the same guided form <code>rugiar train</code>'s flags map onto (command envelope, push disturbances, reward weights) without composing a command by hand.</div>
+        </div>
 
         <h3>The three vitals, every run</h3>
         <p>The Create Policy panel's result tiles (<abbr class="term" title="Episode length, mean reward, and action noise std — the three numbers the result card of any finished or in-progress training job shows, pulled straight from rsl_rl's own per-iteration log lines.">EPISODE LENGTH / MEAN REWARD / ACTION NOISE STD</abbr>) are the same three numbers rsl_rl prints every iteration. Read them in this order — noise std tells you whether the other two are trustworthy at all:</p>
@@ -1359,6 +1417,14 @@ rugiar order --show   # the display order a downstream control layer offers poli
         </div>
 
         <p>Everything else in this page's earlier sections is a panel here too: <strong>policy switching</strong> with cross-fade (§12), <strong>pause/restart/E-STOP</strong> and manual velocity commands, <strong>live telemetry</strong> tagged by whether each field is a real sensor reading or simulator-only ground truth (§13), <strong>stress stimuli</strong> (random pushes/commands) for probing robustness, <strong>Create Policy</strong> for training/fine-tuning without hand-composing a command (§15), and — the newest addition — <strong>Fuse policies</strong> (§13), right under "+ New policy…", proposing every fusion method this build knows about — weighted average and Git Re-Basin are both selectable today, working for plain and recurrent policies alike, so the tradeoff between them is discoverable in the UI itself, not just in a code comment.</p>
+
+        <div class="plate">
+          <img class="tool-screenshot" src="assets/widgets/keyboard.png"
+               alt="Keyboard shortcuts panel from the control web: W/S/up/down for forward-back, A/D for strafe, left/right arrows to turn, number keys 0-9 to switch policy in top-to-bottom list order, and P/R for pause and restart.">
+          <div class="cap">The Keyboard panel — every WASD/arrow-key hold maps to the same clamped <code>set_command</code> envelope §13 describes for any client, and the number-row shortcuts (0–9) map directly onto <code>request_switch</code> against the Policies list's own top-to-bottom order (below), so a whole session can be driven without touching the mouse.</div>
+        </div>
+
+        <p style="font-size:14px; color:var(--muted);">The Create Policy panel itself — New policy / Fuse / Distill, and the Policies list they all write into — is pictured in §15's Quick start, right where the same three actions are given as <code>rugiar</code> commands.</p>
       </section>
 
       <section id="glossary">

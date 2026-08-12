@@ -32,6 +32,22 @@ Every step above is a real, separate open-source project — see [UPSTREAM_READM
 
 ---
 
+## Project areas — a map for orientation
+
+This codebase splits into seven areas along a policy's lifecycle: train it, transform it, drive a robot with it, and expose all of that to operators. This section is just a map — for the real narrative, go to [`legged_gym/control/ARCHITECTURE.md`](legged_gym/control/ARCHITECTURE.md) (module boundaries, who-calls-who, collaboration risk); for the from-zero didactic version, [`docs/index.html`](docs/index.html); for day-to-day CLI usage of any of it, the `rugiar` skill (`.claude/skills/rugiar/SKILL.md`).
+
+| Area | What it is |
+|---|---|
+| **Training** | Launches/tracks PPO training and fine-tuning jobs (local or Kaggle), owns the policy catalog. `legged_gym/control/training.py`. |
+| **Policy Operations** (fuse/distill) | Post-training weight merging (`rugiar fuse`, §2 above) and behavior cloning any policy — including ones with no `train_checkpoint.pt` — into a fresh fine-tunable one (`rugiar distill`). `legged_gym/control/fusion.py`, `distillation.py`. |
+| **Control** | The live-robot engine: policy switching, safety gating, WebSocket transport, sim/real adapters — the subject of §3–§5 below. `legged_gym/control/`. |
+| **Web UI** | The browser client: the unified control page plus the Training/Fuse/Distill forms. `web/`. |
+| **CLI** | `rugiar` — a thin, side-effect-free frontend onto Training and Policy Operations only; never touches the live-robot layer. |
+| **Robot Driver** | The process that wires Control, an adapter, and a simulator or real robot together and runs the main loop. `legged_gym/scripts/rugiar_driver.py` (and `rugiar_driver_gaze.py`). |
+| **Third-Party Integrations** | Placeholder. A collaborator is building human motion-capture work in a separate repo, expected to integrate here later — most likely into the Web UI. No integration surface exists yet. |
+
+---
+
 ## 1. The 90-second version, if you already know RL/robotics
 
 - Trained a Unitree G1 (humanoid) walking policy from scratch in Genesis on an M1 Pro Mac (no CUDA), using this fork's own `g1` task — 1800 PPO iterations total.
