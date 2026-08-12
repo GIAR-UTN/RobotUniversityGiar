@@ -29,6 +29,21 @@ Usage:
         --policy stable:/path/to/unitree_rl_gym/deploy/pre_train/g1/motion.pt \
         --policy crouch:logs/g1/<run>/exported/policy_lstm_1.pt \
         --active stable
+
+DUPLICATION WARNING: rugiar_driver_gaze.py is a largely-duplicated sibling of
+this file, not a caller of it (see above for why). Standalone helper
+functions shared verbatim between the two (_encode_camera_frame_jpeg,
+parse_policy_args, _sibling_meta_simulator, _script_for_task,
+_bare_g1_policy_specs, _relaunch_for_family, _sibling_meta_task,
+drain_finished_training) are checked for drift automatically by
+tests/test_driver_family_parity.py — if you change one of those here, that
+test will fail until you mirror the change into rugiar_driver_gaze.py too.
+main() itself is NOT covered by that test (the gaze driver legitimately
+interleaves target-aware obs injection into it) — if you change non-gaze
+control flow inside main() here (argparse setup, policy loading,
+supervisor/safety setup, ControlServer/web mount setup, the restart/
+family-switch/training-poll main loop, camera frame capture/publish), mirror
+that change into rugiar_driver_gaze.py's main() by hand.
 """
 import argparse
 import glob

@@ -30,6 +30,22 @@ Usage:
     python legged_gym/scripts/rugiar_driver_gaze.py \
         --policy gaze_smoke:policies/gaze_smoke/checkpoint.pt \
         --active gaze_smoke --ball --camera
+
+DUPLICATION WARNING: this file is a largely-duplicated sibling of
+rugiar_driver.py, not a caller of it (see above for why). Standalone helper
+functions shared verbatim between the two (_encode_camera_frame_jpeg,
+parse_policy_args, _sibling_meta_simulator, _script_for_task,
+_bare_g1_policy_specs, _relaunch_for_family, _sibling_meta_task,
+drain_finished_training) are checked for drift automatically by
+tests/test_driver_family_parity.py — if you change one of those here, that
+test will fail until you mirror the change into rugiar_driver.py too.
+main() itself is NOT covered by that test (this file legitimately interleaves
+target-aware obs injection into it via _inject_target_obs() — see the
+target_aware flag and the two call sites right before service.tick(obs)) —
+if you change non-gaze control flow inside main() here (argparse setup,
+policy loading, supervisor/safety setup, ControlServer/web mount setup, the
+restart/family-switch/training-poll main loop, camera frame capture/
+publish), mirror that change into rugiar_driver.py's main() by hand.
 """
 import argparse
 import glob

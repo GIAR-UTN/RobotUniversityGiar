@@ -49,6 +49,18 @@ from fastapi.responses import StreamingResponse
 # accepted (see dispatch()) — it must never be blocked by anything here,
 # mirroring the "estop always wins" rule already enforced inside
 # ControlService/SafetyGovernor.
+#
+# request_switch/pause/estop specifically (below) are also the three methods
+# viser's own GUI callbacks call directly on ControlService, on viser's own
+# thread, bypassing this file's queue/drain_commands() entirely — see the
+# module docstring's "Threading model" section above. That is safe ONLY
+# because all three are cheap flag-sets (they set a field/append to a queue
+# and return; no I/O, no per-tick state they race with). Before adding any
+# other method to that direct-call path (i.e. before a viser callback is
+# allowed to call it straight, without going through commands/drain_commands
+# like everything else here), re-verify it is still just a cheap flag-set —
+# if it does anything more, route it through the queue instead, the way
+# every other method in METHODS already is.
 METHODS = {
     "request_switch", "status", "pause", "resume", "estop",
     "restart", "set_command", "set_random_events", "set_episode_timeout",

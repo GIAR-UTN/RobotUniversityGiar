@@ -42,13 +42,227 @@ Design notes (why this looks the way it does):
 """
 from __future__ import annotations
 
+import ast
+import os
 import time
+import warnings
 from typing import Optional
 
 import numpy as np
 import torch
 
 from legged_gym.control.adapter import Lifecycle, RobotState
+
+# ---------------------------------------------------------------------------
+# Static observation-layout pre-flight check.
+#
+# get_observations() below builds its 47-dim vector by literally listing the
+# fields in this exact order and calling np.concatenate on them. This tuple
+# is the single source of truth for that order; validate_observation_layout()
+# cross-checks it — by statically parsing (NOT importing) g1.py's
+# compute_observations() source — against what G1Robot actually builds in
+# sim, and fails loudly at RealAdapter construction time if they've drifted
+# apart, instead of silently feeding the policy a scrambled/OOD observation.
+#
+# What this DOES catch (purely static, no hardware/robot needed):
+#   - the sim and real code building the fields in a different order
+#   - a field added/removed/renamed on either side
+#   - a config whose declared array lengths (leg_joint2motor_idx,
+#     default_angles, kps, kds, commands_scale) don't match num_actions
+#   - a config whose declared num_obs doesn't match the field layout's
+#     actual total width (9 + 3*num_actions + 2)
+#   - obs_scales/action_scale that are missing, non-numeric, non-positive,
+#     or wildly outside any plausible trained range
+#
+# What this DOES NOT catch (see the loud runtime warnings in get_state()
+# instead — these need a human with the real robot to confirm):
+#   - whether ang_vel_scale/dof_pos_scale/dof_vel_scale/commands_scale in
+#     the yaml are the *actual* values the loaded checkpoint was trained
+#     with (this file has no access to the checkpoint's training config)
+#   - whether leg_joint2motor_idx's order matches the physical robot's
+#     motor wiring (only a human on the real hardware can confirm motor 0
+#     is actually left-hip-pitch)
+#   - whether the IMU quaternion DDS field is really (w,x,y,z) as
+#     get_gravity_orientation() assumes, or whether imu_type: "pelvis" is
+#     correct for the specific unit being deployed to
+_OBS_FIELD_ORDER = ("ang_vel", "gravity", "commands", "dof_pos", "dof_vel", "action", "sin_phase", "cos_phase")
+_OBS_FIELD_DIMS = {"ang_vel": 3, "gravity": 3, "commands": 3, "sin_phase": 1, "cos_phase": 1}  # dof_* / action are num_actions-wide
+
+_FIELD_KEYWORDS = (
+    ("ang_vel", "ang_vel"),
+    ("gravity", "gravity"),
+    ("commands", "commands"),
+    ("dof_pos", "dof_pos"),
+    ("dof_vel", "dof_vel"),
+    ("actions", "action"),
+    ("sin_phase", "sin_phase"),
+    ("cos_phase", "cos_phase"),
+)
+
+
+def _extract_sim_obs_field_order(g1_py_path: Optional[str] = None) -> list:
+    """Statically parses legged_gym/envs/g1/g1.py's compute_observations()
+    (via `ast`, NOT `import` — that module chain pulls in isaacgym, which
+    isn't installed in every environment this check needs to run in) and
+    returns the field order it builds self.obs_buf from, as canonical names
+    from _OBS_FIELD_ORDER's vocabulary. Raises RuntimeError (loudly, not
+    silently) if the source has moved, been renamed, or restructured in a
+    way this parser no longer understands — a failed extraction must never
+    be mistaken for "layout confirmed matching"."""
+    if g1_py_path is None:
+        g1_py_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "legged_gym", "envs", "g1", "g1.py"))
+    if not os.path.isfile(g1_py_path):
+        raise RuntimeError(
+            f"Observation pre-flight check cannot find {g1_py_path!r} to verify field order against. "
+            "Refusing to assume the layout matches — pass g1_py_path explicitly or fix the path."
+        )
+    with open(g1_py_path, "r") as f:
+        source = f.read()
+    tree = ast.parse(source, filename=g1_py_path)
+
+    compute_obs_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "compute_observations":
+            compute_obs_fn = node
+            break
+    if compute_obs_fn is None:
+        raise RuntimeError(
+            f"Observation pre-flight check could not find compute_observations() in {g1_py_path!r}. "
+            "g1.py's structure has changed in a way this static check no longer understands — "
+            "update _extract_sim_obs_field_order() before trusting this adapter."
+        )
+
+    cat_args = None
+    for stmt in ast.walk(compute_obs_fn):
+        if (
+            isinstance(stmt, ast.Assign)
+            and isinstance(stmt.targets[0], ast.Attribute)
+            and stmt.targets[0].attr == "obs_buf"
+            and isinstance(stmt.value, ast.Call)
+            and isinstance(stmt.value.func, ast.Attribute)
+            and stmt.value.func.attr == "cat"
+        ):
+            first_arg = stmt.value.args[0]
+            if isinstance(first_arg, (ast.Tuple, ast.List)):
+                cat_args = first_arg.elts
+                break
+    if cat_args is None:
+        raise RuntimeError(
+            f"Observation pre-flight check found compute_observations() in {g1_py_path!r} but no "
+            "`self.obs_buf = torch.cat((...))` assignment inside it. g1.py's structure has changed — "
+            "update _extract_sim_obs_field_order() before trusting this adapter."
+        )
+
+    order = []
+    for expr in cat_args:
+        expr_src = ast.get_source_segment(source, expr) or ""
+        matched = None
+        for keyword, canonical in _FIELD_KEYWORDS:
+            if keyword in expr_src:
+                matched = canonical
+                break
+        if matched is None:
+            raise RuntimeError(
+                f"Observation pre-flight check found an obs_buf field it doesn't recognize: {expr_src!r}. "
+                "This means g1.py added/renamed a field that real_adapter.py's get_observations() doesn't "
+                "know about — update _FIELD_KEYWORDS/_OBS_FIELD_ORDER (and get_observations() itself) "
+                "before trusting this adapter, do not silently ignore this."
+            )
+        order.append(matched)
+    return order
+
+
+def validate_observation_layout(cfg, g1_py_path: Optional[str] = None) -> None:
+    """Loud, fail-fast pre-flight check: does everything this process can
+    verify WITHOUT live hardware to confirm RealAdapter.get_observations()
+    will build the same 47-dim vector, in the same field order and with the
+    same per-field width, that G1Robot.compute_observations() built during
+    training. Raises AssertionError/ValueError with a specific, actionable
+    message on the first mismatch found — never returns a silently-partial
+    "probably fine"."""
+    errors = []
+
+    # --- field order: cross-checked against the actual sim source, not just
+    # asserted to equal itself ---
+    try:
+        sim_order = _extract_sim_obs_field_order(g1_py_path)
+    except RuntimeError as e:
+        errors.append(str(e))
+        sim_order = None
+    if sim_order is not None and list(sim_order) != list(_OBS_FIELD_ORDER):
+        errors.append(
+            f"Observation field order mismatch: get_observations() builds {_OBS_FIELD_ORDER}, "
+            f"but G1Robot.compute_observations() (g1.py) builds {tuple(sim_order)}. "
+            "These MUST match exactly or the policy is fed a scrambled observation."
+        )
+
+    # --- config shape/count consistency ---
+    num_actions = getattr(cfg, "num_actions", None)
+    if not isinstance(num_actions, int) or num_actions <= 0:
+        errors.append(f"cfg.num_actions must be a positive int, got {num_actions!r}")
+        num_actions = None
+
+    def _check_len(name, expected_len):
+        val = getattr(cfg, name, None)
+        if val is None:
+            errors.append(f"cfg.{name} is missing")
+            return
+        n = len(val)
+        if expected_len is not None and n != expected_len:
+            errors.append(f"cfg.{name} has length {n}, expected {expected_len} (== num_actions)")
+
+    if num_actions is not None:
+        _check_len("leg_joint2motor_idx", num_actions)
+        _check_len("default_angles", num_actions)
+        _check_len("kps", num_actions)
+        _check_len("kds", num_actions)
+
+        idx = list(getattr(cfg, "leg_joint2motor_idx", []) or [])
+        if len(set(idx)) != len(idx):
+            errors.append(f"cfg.leg_joint2motor_idx has duplicate entries: {idx}")
+        if any((not isinstance(i, int)) or i < 0 for i in idx):
+            errors.append(f"cfg.leg_joint2motor_idx must be non-negative ints, got {idx}")
+
+    commands_scale = getattr(cfg, "commands_scale", None)
+    if commands_scale is None or len(commands_scale) != 3:
+        errors.append(f"cfg.commands_scale must have length 3, got {commands_scale!r}")
+
+    # --- total width: derived from the field layout (3+3+3+N+N+N+1+1), not
+    # just trusted from the yaml ---
+    if num_actions is not None:
+        expected_num_obs = 9 + 2 + 3 * num_actions
+        num_obs = getattr(cfg, "num_obs", None)
+        if num_obs != expected_num_obs:
+            errors.append(
+                f"cfg.num_obs={num_obs!r} doesn't match the field layout's actual width "
+                f"9 + 2 + 3*num_actions = {expected_num_obs} (num_actions={num_actions}). "
+                "get_observations() will build a vector of a different length than declared."
+            )
+
+    # --- scale plausibility (Tier 2: sanity, not proof of correctness) ---
+    def _check_positive_scalar(name, lo, hi):
+        val = getattr(cfg, name, None)
+        if not isinstance(val, (int, float)):
+            errors.append(f"cfg.{name} must be a numeric scalar, got {val!r}")
+            return
+        if not (lo <= val <= hi):
+            errors.append(
+                f"cfg.{name}={val!r} is outside the plausible range [{lo}, {hi}] for this repo's trained "
+                "configs — if this is intentional (a genuinely different training run), this check's "
+                "range is the thing to update, not silently ignore."
+            )
+
+    _check_positive_scalar("ang_vel_scale", 0.01, 2.0)
+    _check_positive_scalar("dof_pos_scale", 0.01, 5.0)
+    _check_positive_scalar("dof_vel_scale", 0.001, 1.0)
+    _check_positive_scalar("action_scale", 0.01, 2.0)
+    _check_positive_scalar("control_dt", 0.001, 0.1)
+
+    if errors:
+        raise AssertionError(
+            "RealAdapter observation pre-flight check FAILED — refusing to construct an adapter that "
+            "would silently feed the policy a mismatched observation:\n  - " + "\n  - ".join(errors)
+        )
 
 
 def get_gravity_orientation(quaternion):
@@ -107,6 +321,12 @@ class RealAdapter:
             low_state_default = unitree_go_msg_dds__LowState_()
         else:
             raise ValueError(f"Unsupported msg_type '{config.msg_type}' — expected 'hg' or 'go'")
+
+        # Fail fast, before touching DDS/hardware at all, if the observation
+        # this adapter would build can't possibly match what the policy was
+        # trained on. See validate_observation_layout()'s docstring for
+        # exactly what is and isn't checked here.
+        validate_observation_layout(config)
 
         self.config = config
         self.low_state = low_state_default
@@ -178,8 +398,36 @@ class RealAdapter:
         self._lifecycle = Lifecycle.READY
         return self.get_state()
 
+    _hw_semantics_warning_logged = False
+
+    def _warn_unverified_hw_semantics_once(self) -> None:
+        """Loud, one-time (not per-tick-spammy) runtime warning for the risks
+        this file CANNOT check statically without a physical robot: motor
+        index -> physical joint mapping, IMU mount frame, and DDS quaternion
+        component order. See the module docstring and
+        validate_observation_layout()'s docstring for the full breakdown of
+        static vs. runtime-only checks."""
+        if RealAdapter._hw_semantics_warning_logged:
+            return
+        RealAdapter._hw_semantics_warning_logged = True
+        warnings.warn(
+            "[RealAdapter] UNVERIFIED HARDWARE SEMANTICS — this build was never confirmed against a "
+            "physical robot in this dev environment. Before trusting sensor/action data past this point, "
+            "a human WITH THE REAL ROBOT must confirm: (1) leg_joint2motor_idx's order actually matches "
+            "the physical motor wiring (motor 0 really is left-hip-pitch, etc — moving one joint at low "
+            "gain and watching which index changes is the standard way to check this); "
+            f"(2) imu_type={self.config.imu_type!r} is correct for this specific unit (pelvis-mounted "
+            "IMU needs no transform, torso-mounted does — get_gravity_orientation()/transform_imu_data() "
+            "assume this is right and cannot check it themselves); (3) low_state.imu_state.quaternion is "
+            "really ordered (w, x, y, z) as get_gravity_orientation() assumes, not (x, y, z, w) — printing "
+            "the quaternion at a known static pose (robot upright) and checking it's close to identity "
+            "is the standard way to check this. This warning fires once per process, not per tick.",
+            stacklevel=2,
+        )
+
     def get_state(self) -> RobotState:
         cfg = self.config
+        self._warn_unverified_hw_semantics_once()
 
         qj = np.array([self.low_state.motor_state[i].q for i in cfg.leg_joint2motor_idx], dtype=np.float32)
         dqj = np.array([self.low_state.motor_state[i].dq for i in cfg.leg_joint2motor_idx], dtype=np.float32)
@@ -260,6 +508,16 @@ class RealAdapter:
         obs = np.concatenate([
             ang_vel, gravity, commands, dof_pos, dof_vel, self._last_action, sin_phase, cos_phase,
         ]).astype(np.float32)
+        # Runtime backstop for the static pre-flight check above: even if
+        # validate_observation_layout() passed at construction time, catch
+        # any drift between it and this actual concatenation (e.g. someone
+        # edits this line without updating _OBS_FIELD_ORDER) before it ever
+        # reaches the policy.
+        assert obs.shape == (cfg.num_obs,), (
+            f"get_observations() built a {obs.shape} vector but cfg.num_obs={cfg.num_obs}. "
+            "This should have been caught at construction by validate_observation_layout() — "
+            "if you're seeing this, the pre-flight check and this function have drifted apart."
+        )
         return torch.from_numpy(obs).unsqueeze(0)
 
     def record(self, obs: torch.Tensor, action: torch.Tensor, state: RobotState) -> None:

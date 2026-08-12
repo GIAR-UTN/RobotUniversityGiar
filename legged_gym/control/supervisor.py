@@ -142,7 +142,17 @@ class PolicySupervisor:
         # this to be safe.
         self._check_obs_spec(self._ramp_from, obs)
         old_action = self._ramp_from.backend.step(obs)
-        alpha = 1.0 - (self._ramp_remaining / self.ramp_ticks)  # 0 -> 1 across the ramp
+        # 0 -> 1 inclusive across the ramp: the first blended step is pure old
+        # (steps_done == 0) and the last is pure new (steps_done == ramp_ticks - 1),
+        # so the cross-fade actually reaches alpha=1.0 before this branch stops
+        # being taken, instead of snapping from a partial blend straight to
+        # new_action on the following call. ramp_ticks <= 1 has no room to
+        # interpolate, so it's an immediate cut to the new policy.
+        if self.ramp_ticks <= 1:
+            alpha = 1.0
+        else:
+            steps_done = self.ramp_ticks - self._ramp_remaining
+            alpha = steps_done / (self.ramp_ticks - 1)
         action = (1.0 - alpha) * old_action + alpha * new_action
 
         self._ramp_remaining -= 1
