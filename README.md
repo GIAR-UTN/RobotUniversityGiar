@@ -72,6 +72,8 @@ pip install -e .
 export SIMULATOR=genesis   # required — legged_gym refuses to import without this set
 ```
 
+Or run `./install.sh` (macOS/Linux) instead of the `pip install` lines above — same steps, one command (`./install.sh --with-kaggle` also pulls in the Kaggle cloud-training extra — see the `rugiar` skill's "Setting up Kaggle for cloud training" for the account/token side of that).
+
 No GPU required. On Apple Silicon, Genesis will report `Running on [Apple M1/M2/...] with backend gs.metal` — if it silently falls back to CPU, training still works, just slower (this fork's own G1 training ran entirely on CPU; Genesis's Metal path was, at time of writing, inconsistent enough on macOS that we didn't depend on it).
 
 ### Docker Compose (recommended for reproducible runs)
