@@ -1132,13 +1132,26 @@ def step(self, obs):
         </div>
 
         <h3>Build your own controller</h3>
-        <p><code>examples/joystick_controller.py</code> is a complete, minimal reference client — connects, authenticates with a token, reads a gamepad, and streams <code>set_command</code> at a fixed rate. It's deliberately short and dependency-light (Python's standard <code>websockets</code> or any equivalent library in any language works the same way — the protocol is just JSON text frames, nothing Python-specific).</p>
+        <p>The Command panel pictured above is just one client of the protocol described in this section — a home-made joystick (a USB gamepad, a phone app, a physical box with real potentiometers, a robot-to-robot bridge) is exactly as capable a client, going through the exact same door. Nothing below is web-UI-specific.</p>
 
         <div class="plate">
           <img class="tool-screenshot" src="assets/widgets/command-camera-family.png"
                alt="Command, Camera, and Family panels from the control web during an active walking+turning session: Family shows task g1 selected next to g1_gaze, Camera shows a robot-POV view of a red ball prop on a checkered floor with two raised hands, and Command shows Linear X 0.84 (FWD slider raised) and Yaw -0.39 on a turn dial, live values from the exact same set_command channel a custom client would drive.">
-          <div class="cap">The Command panel is literally the on-screen equivalent of the joystick controller described above — the FWD/BACK slider and yaw dial issue the exact same <code>set_command</code> calls a home-made gamepad client would, at the same clamped envelope. This session's live values (vx=0.84, yaw=-0.39) are a real robot mid-walk, mid-turn — next to it, the Family panel (switches which registered task/driver is running — see the <code>rugiar</code> skill's "Family panel" section) and a live robot-POV Camera feed.</div>
+          <div class="cap">The Command panel is literally the on-screen equivalent of the joystick described below — the FWD/BACK slider and yaw dial issue the exact same <code>set_command</code> calls a home-made gamepad client would, at the same clamped envelope. This session's live values (vx=0.84, yaw=-0.39) are a real robot mid-walk, mid-turn — next to it, the Family panel (switches which registered task/driver is running — see the <code>rugiar</code> skill's "Family panel" section) and a live robot-POV Camera feed.</div>
         </div>
+
+        <h4 style="margin:22px 0 8px;">The reference implementation</h4>
+        <p><code>examples/joystick_controller.py</code> is a complete, working client — connects, authenticates with a token, reads a USB gamepad via <code>pygame</code>, and streams <code>set_command</code> at a fixed rate (<code>--hz</code>, default matches the control loop). Run it with no gamepad at all via <code>--demo</code> to prove the connection works before wiring up hardware — it drives a scripted forward/turn loop instead. It's deliberately short and dependency-light: Python's standard <code>websockets</code> library, nothing else required for <code>--demo</code>. The protocol itself is just JSON text frames over a plain WebSocket — any language with a WebSocket client (JavaScript, C++, an ESP32's Arduino stack, Unity, whatever a phone app is built in) speaks it identically.</p>
+
+        <table>
+          <thead><tr><th>what your controller needs to send</th><th>message</th><th>notes</th></tr></thead>
+          <tbody>
+            <tr><td>a steady velocity stream</td><td><code>set_command</code> (<code>vx, vy, yaw</code>)</td><td>call this at whatever rate your input device polls — a gamepad stick, a physical joystick's ADC read, touchscreen drag deltas. No client-side throttling needed, the server clamps and doesn't mind being called often.</td></tr>
+            <tr><td>discrete button presses</td><td><code>request_switch</code>, <code>pause</code>/<code>resume</code>, <code>restart</code>, <code>estop</code></td><td>one-shot, sent once per press — not repeated while held. <code>examples/joystick_controller.py</code>'s button map (A=ESTOP, B=pause/resume, X=restart, bumpers=cycle policy) is a reasonable default layout to copy for a physical build; remap freely, nothing about the protocol assumes that layout.</td></tr>
+            <tr><td>(optional) what to show the operator</td><td>listen for the unprompted <code>status</code> push (~10Hz)</td><td>drive an LED, a small screen, haptic feedback — <code>backend</code> tells you sim vs. real, <code>safety_tripped</code> is worth surfacing loudly on any physical build.</td></tr>
+          </tbody>
+        </table>
+
         <div class="aside">
           <div class="label">Safety note for anyone wiring up new hardware</div>
           A home-made controller only ever reaches <code>set_command</code>'s clamped envelope and the same <code>estop</code>/<code>pause</code> every other client shares — it can't ask the policy to do anything outside what it was trained across, and it can't bypass the physical remote-gated startup sequence in §9. Still, treat a first connection to real hardware the same as a first <code>--headless</code> run: harness-suspended, one person on the physical remote the whole time, nobody trusting a new client's output blind.

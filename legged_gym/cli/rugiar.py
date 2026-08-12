@@ -436,6 +436,15 @@ def build_parser():
         prog=PROG,
         formatter_class=_HelpFormatter,
         description="rugiar — command-line interface for RobotUniversityGiar policy creation.",
+        epilog=(
+            "Scope: rugiar only trains, fine-tunes, fuses, and distills policies — it has\n"
+            "no path into the live-robot layer (no policy switching, no driving, no joystick\n"
+            "control). For that, see 'python legged_gym/scripts/rugiar_driver.py --help'\n"
+            "(--control_port serves both a browser control web and a WebSocket protocol any\n"
+            "custom client, e.g. a home-made joystick, can speak — docs/index.html's\n"
+            "'Talking to the robot' section has the full wire format). For the system-wide\n"
+            "area map, see legged_gym/control/ARCHITECTURE.md."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     train_parser = _build_train_parser(subparsers)

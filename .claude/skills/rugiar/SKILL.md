@@ -14,6 +14,14 @@ robot," "switch policies live," "let me drive it with a gamepad," or
 anything about the WebSocket control protocol, that's the second section —
 don't assume it's a training question.
 
+For the system-wide picture beyond this skill's CLI/driver scope — how
+Training, Policy Operations, Control, the Web UI, the CLI, the Robot Driver,
+and Third-Party Integrations fit together, and which files a change in one
+area is likely to collide with in another — see
+**`legged_gym/control/ARCHITECTURE.md`**, not this file. This skill stays
+focused on day-to-day CLI/driver usage; that doc stays focused on module
+boundaries and cross-area calls. Don't duplicate one into the other.
+
 ## rugiar_driver.py — running / controlling a robot (sim today, real G1 once wired up)
 
 This is the process behind the control web: it loads one or more trained

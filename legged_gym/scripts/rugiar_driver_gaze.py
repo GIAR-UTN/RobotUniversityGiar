@@ -1,7 +1,8 @@
 """
 Policy-switching demo, built on legged_gym/control/ (SimAdapter, PolicySupervisor,
-SafetyGovernor, ControlService — see that package's README for the full
-design writeup).
+SafetyGovernor, ControlService — see legged_gym/control/ARCHITECTURE.md for the
+full area map, entry points, and the Collaboration Boundaries section on what's
+safe to touch here without coordinating with other areas).
 
 This script is the "supervised from a web UI, in simulation" corner of the
 control architecture. All robot control (policy switching, pause/restart,
@@ -11,6 +12,12 @@ methods an autonomous Selector loop or, eventually, a networked bridge to a
 real robot would call. viser here is ONLY the 3D scene renderer plus its own
 native camera controls — it has no robot-control GUI of its own; that would
 just be a second, unsynchronized copy of what the unified web already does.
+
+Building a custom controller (gamepad, custom hardware, a phone app) against
+--control_port's WebSocket protocol instead of using the web UI? See
+docs/index.html's "Talking to the robot: the control protocol" section
+(id=control-protocol) for the full wire format, and examples/joystick_controller.py
+for a working reference client.
 
 This is the driver for the "target-aware" family of tasks (g1_gaze and future
 siblings that set cfg.rewards.target_aware = True) — same plumbing as
