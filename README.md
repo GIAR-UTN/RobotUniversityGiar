@@ -50,13 +50,12 @@ This codebase splits into seven areas along a policy's lifecycle: train it, tran
 
 ## 1. The 90-second version, if you already know RL/robotics
 
-- Trained a Unitree G1 (humanoid) walking policy from scratch in Genesis on an M1 Pro Mac (no CUDA), using this fork's own `g1` task — 1800 PPO iterations total.
-- Also confirmed unitree_rl_gym's own **shipped pretrained G1 checkpoint** (`deploy/pre_train/g1/motion.pt`) is drop-in compatible with this fork's Genesis env (same URDF, same joint order, same PD gains) — it's dramatically more stable (~0.77-0.78m base height held for hundreds of steps) than anything trainable in a few minutes locally, and is used as the "stable" reference policy.
-- Fine-tuned a second policy ("cautious") from that trained checkpoint under a reward that penalizes torque/joint-velocity much more heavily — a genuine derivative of the first policy, not an independent training run.
-- Trained a fourth, genuinely new skill from scratch ("crouch"): a static squat instead of a walk — zero velocity commands, no gait to learn, so it converged in 1000 PPO iterations (~15 min on this Mac's CPU) vs. the 1800 iterations the from-scratch walk needed, and survived the demo's default random pushes without tripping the safety governor.
-- Built `legged_gym/control/`: a small, backend-agnostic package (`RobotAdapter` / `PolicySupervisor` / `SafetyGovernor` / `Selector` / `ControlService`) that lets you load N policies, switch between them live with a smooth cross-fade instead of a hard cut, gate switches through a safety check, and drive all of it from either a human clicking a button or an autonomous rule/network — same call, same code path.
-- Wired that up to a live demo: a `viser` (web-based 3D viewer) page with Restart / Pause / per-policy switch buttons and a live "active policy" label, running against Genesis.
-- Left `deploy_real/real_adapter.py` as a carefully-ported but **explicitly untested** real-hardware adapter — this repo was built with no unitree_sdk2py installed and no physical robot attached, so real-hardware verification is the natural next step for whoever picks this up on actual hardware.
+- G1 walking policies train from scratch in Genesis on a GPU-less Mac (M1 Pro tested, CPU-only, no CUDA) using this fork's own `g1` task.
+- unitree_rl_gym's own **shipped pretrained G1 checkpoint** (`deploy/pre_train/g1/motion.pt`) is drop-in compatible with this fork's Genesis env (same URDF, joint order, PD gains) and is used as the "stable" reference policy — noticeably more stable (~0.77-0.78m base height held for hundreds of steps) than anything trainable locally in a few minutes.
+- Fine-tuning a new policy from an existing checkpoint under a different reward — e.g. penalizing torque/joint-velocity harder for a more cautious gait — is a first-class path (`train --from_policy`), not a separate pipeline.
+- `legged_gym/control/`: a small, backend-agnostic package (`RobotAdapter` / `PolicySupervisor` / `SafetyGovernor` / `Selector` / `ControlService`) that lets you load N policies, switch between them live with a smooth cross-fade instead of a hard cut, gate switches through a safety check, and drive all of it from either a human clicking a button or an autonomous rule/network — same call, same code path.
+- A `viser` (web-based 3D viewer) demo — Restart / Pause / per-policy switch buttons, live "active policy" label — runs against Genesis out of the box (§2).
+- `deploy_real/real_adapter.py` is a carefully-ported real-hardware adapter, but **explicitly untested** — this repo was built with no `unitree_sdk2py` installed and no physical robot attached, so real-hardware verification is the natural next step for whoever picks this up with access to one.
 
 ---
 
@@ -107,6 +106,38 @@ Key environment variables (set in `.env`):
 | `VISER_PORT` | `9006` | Port for the viser 3D viewer |
 
 The compose file mounts `./policies:/workspace/policies:ro` so checkpoint files are available inside the container without copying them into the image.
+
+### Windows
+
+No native PowerShell installer — untested, and Docker already covers this case with no friction. Two real options:
+
+- **Simplest: [Docker Desktop](https://www.docker.com/products/docker-desktop/).** It runs on WSL2 under the hood with nothing to configure by hand — follow "Docker Compose" above as-is.
+- **Want native Python instead?** Install [WSL2 with Ubuntu](https://learn.microsoft.com/en-us/windows/wsl/install) (`wsl --install` in an admin PowerShell, then reboot), open an Ubuntu terminal, and follow this section from the top — it's a real Linux terminal, same commands, same `install.sh`.
+
+### Kaggle (cloud GPU training)
+
+Training (see the project-areas table above) can launch RL jobs on a Kaggle kernel instead of your own machine — one-time setup, then every `--backend kaggle` job (`rugiar train --backend kaggle`) just works.
+
+1. **Create a free account** at [kaggle.com](https://www.kaggle.com/) if you don't have one.
+2. **Verify your phone number** — [kaggle.com/settings](https://www.kaggle.com/settings) → *Phone Verification*. Required to unlock GPU quota (free tier gives ~30 GPU-hours/week); without it, kernels run CPU-only or fail to start.
+3. **Create an API token** — [kaggle.com/settings](https://www.kaggle.com/settings) → *API* section → **Create New Token**. Downloads a `kaggle.json` file.
+4. **Install it locally:**
+   ```bash
+   mkdir -p ~/.kaggle
+   mv ~/Downloads/kaggle.json ~/.kaggle/kaggle.json
+   chmod 600 ~/.kaggle/kaggle.json
+   ```
+5. **Install the `kaggle` package** (skip if you already ran `./install.sh --with-kaggle`):
+   ```bash
+   pip install -e .[cloud]
+   ```
+6. **Verify it's picked up:**
+   ```bash
+   python3 -c "from legged_gym.control.kaggle_backend import kaggle_credentials_available; print(kaggle_credentials_available())"
+   # should print True
+   ```
+
+Kaggle jobs always run on Isaac Gym, not Genesis — the free tier's Pascal (P100) GPU can't run Genesis's GPU backend (see `HANDOFF_kaggle_cloud_gpu.md`). Doesn't affect local runs: `--backend local` still uses whatever `SIMULATOR` you have exported. Full walkthrough, including troubleshooting: the `rugiar` skill's "Setting up Kaggle for cloud training".
 
 ### Train a policy
 
@@ -266,6 +297,22 @@ Say you have two trained policies for the same robot — say, a normal walk and 
 
 `legged_gym/control/transport.py` (`ControlServer`) wraps `ControlService` in a JSON-over-WebSocket transport (FastAPI + uvicorn), exposing the exact same five methods — `request_switch` / `status` / `pause` / `resume` / `estop` — to any external client at `ws://<host>:<port>/ws`. Started via `--control_port` on `rugiar_driver.py` (see above); a plain Python `websockets` client or `websocat` can drive it with no browser at all.
 
+**Securing it with a token:** by default that socket accepts anyone who can open a connection — fine for a trusted, localhost-only sim session, never for `--real` (the robot's own WiFi/LAN can reach it). A token is just a shared secret you generate yourself, no external service involved:
+
+```bash
+openssl rand -hex 16                                            # or:
+python3 -c "import secrets; print(secrets.token_hex(16))"
+
+python legged_gym/scripts/rugiar_driver.py \
+    --policy stable:./policies/stable.pt \
+    --control_port 9013 --real --token <your-secret>            # required with --real
+
+# connect with the token as a query param — rejected before the handshake opens otherwise:
+ws://<host>:9013/ws?token=<your-secret>
+# the web UI does the same via http://<host>:9013/?token=<your-secret> — share that
+# full URL with anyone who needs the UI or is building their own controller.
+```
+
 Unless `--headless` is also set, the same port also serves `web/index.html`: a single, build-step-free HTML/JS/CSS page (same philosophy as `docs/index.html` — no npm, no bundler, read it and run it) with three regions:
 
 - **A tabbed view area** — Docs (this repo's didactic write-up, iframed), Simulator (the `viser` 3D viewer, iframed), and a Real-robot tab that's present but disabled until `ControlService.status()["backend"]` reports `"real"` instead of `"sim"` — the same panel and controls are meant to keep working once real hardware exists (see §5), only the view and backend change.
@@ -295,9 +342,9 @@ For *this* fork, adopting full ROS 2 today would mean bolting a colcon workspace
   - **[hardware-pathon-ai/unitree-g1-phase1-locomotion](https://huggingface.co/hardware-pathon-ai/unitree-g1-phase1-locomotion)** — real MIT-licensed `.pt` weights, but only 15/29 DOF active (arms frozen) — action space still doesn't match.
   - **[mujocolab/g1_spinkick_example](https://github.com/mujocolab/g1_spinkick_example)** — real ONNX checkpoint, loadable format-wise, but it's a **full-body** (legs + arms + torso) policy against our **legs-only (12 DOF)** action space — this is a genuine action-space mismatch an adapter can't paper over. Reproducing this trick means extending `G1RoughCfg` to full-body DOF and retraining with trick-specific (motion-imitation) reward shaping in our own pipeline, not loading their checkpoint.
   - **ExBody2 / OmniH2O / HumanPlus / HOVER** — G1-relevant motion-imitation research with public code, but no confirmed public checkpoint release was found (verify each repo directly; this may change).
-- **Reward-curve summaries aren't enough to trust a checkpoint — watch it.** A real incident: a crouch retrain (lower `base_height_target` + re-enabled commands/pushes, all in one fine-tune step, on a now-removed `g1_crouch` task) looked plausible enough from the training log to consider done, but measured directly in sim it was actually falling roughly once a second — the per-iteration summary didn't make that obvious, only stepping through it and counting real resets did. See `.claude/skills/rugiar/SKILL.md` ("Training a crouched-but-mobile policy") for the current, `g1`-only recipe that avoids this. Before trusting a new checkpoint (and especially before deleting the `logs/<task>/<run>/` directory it lives in — see below), watch it: `python legged_gym/scripts/play.py --task=<task> --load_run=<run> --ckpt=<N> --viewer=viser --viser_port=9006` opens any single checkpoint live in the browser, not just the final one (docs/index.html §14 has the full recipe and a gotcha about `exported/` getting overwritten on every review).
-- **Never delete a `logs/<task>/<run>/` directory without archiving its final raw checkpoint first.** Lost one this way once — `rm -rf`'d a training run's log directory that held the only raw checkpoint (optimizer + critic state) worth resuming from, and the exported inference-only `.pt` in `policies/` wasn't a substitute. Convention now: copy anything worth keeping to `./checkpoints/<task>/` (git-tracked, unlike gitignored `logs/`) before any cleanup — see §2 "Train a policy".
-- **`g1`'s survival time plateaus around ~73/1000 episode steps in short curriculum runs, unresolved.** Uncapped `entropy_coef` used to cause outright PPO exploration-noise runaway (`Mean action noise std` climbing monotonically the whole run instead of settling — watch that metric first in any job's log, it should trend down); lowering `entropy_coef` (now a real Create Policy field, not just a CLI flag) fixes the runaway, but two successive short runs at a low value (0.002 → 0.001) held `Mean episode length` essentially flat (73.28 → 72.88) even as noise fell and reward rose. Untried next steps, cheapest first: (1) nudge `entropy_coef` back up slightly (0.003–0.005) — a value chased too low can strand training in a local optimum instead of exploring past whatever causes the fall; (2) read the per-term `Mean episode rew_*` breakdown already sitting in the job logs for what's actually driving early termination, before spending more compute; (3) just budget more raw iterations (`G1RoughCfgPPO.runner.max_iterations=10000` is the task's real target — recent runs are ~37% of that).
+- **A reward-curve summary isn't proof a checkpoint actually walks — watch it before trusting it.** Per-iteration reward can trend up while the policy is still falling every second or two in practice; only stepping through it live catches that reliably (a multi-reward-term fine-tune, changing several things in one step, is the easiest way to end up here — change one thing at a time when you can). `python legged_gym/scripts/play.py --task=<task> --load_run=<run> --ckpt=<N> --viewer=viser --viser_port=9006` opens any single checkpoint live in the browser, not just the final one (docs/index.html §14 has the full recipe and a gotcha about `exported/` getting overwritten on every review; `.claude/skills/rugiar/SKILL.md`'s "Training a crouched-but-mobile policy" has a worked recipe for a case that's easy to get subtly wrong). Do this before deleting the `logs/<task>/<run>/` directory it lives in — see below.
+- **Archive a run's final raw checkpoint before ever deleting its `logs/<task>/<run>/` directory.** The exported inference-only `.pt` in `policies/` isn't a substitute for the raw checkpoint (optimizer + critic state) if you ever want to resume training that run — and once the `logs/` directory is gone, that state is gone with it. Convention: copy anything worth keeping to `./checkpoints/<task>/` (git-tracked, unlike gitignored `logs/`) before any cleanup — see §2 "Train a policy".
+- **`g1`'s survival time plateaus around ~73/1000 episode steps in short curriculum runs, unresolved.** Watch `Mean action noise std` in any job's log first — it should trend down; if it climbs monotonically instead, `entropy_coef` is uncapped and PPO's exploration noise is running away (a real Create Policy field now, not just a CLI flag, so it's easy to lower). But lowering it too far can strand training in a local optimum rather than exploring past whatever causes the fall — if survival time stays flat even as noise drops, that's the likely cause. Cheapest next steps: (1) nudge `entropy_coef` back up slightly (0.003–0.005); (2) read the per-term `Mean episode rew_*` breakdown already in the job logs for what's actually driving early termination, before spending more compute; (3) budget more raw iterations (`G1RoughCfgPPO.runner.max_iterations=10000` is the task's real target).
 
 ### 5a. Team workflow: mixed OS, mixed hardware, shared training compute
 
