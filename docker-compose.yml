@@ -20,7 +20,9 @@
 #
 # GPU host (Linux + NVIDIA + nvidia-container-runtime installed):
 #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
-#   (also set GENESIS_BACKEND=cuda, in .env or on the command line)
+#
+# Training inside the container (uses NUM_ENVS from .env):
+#   docker compose run --rm leggedgym python -m legged_gym.scripts.train --task go2 --num_envs $NUM_ENVS
 #
 # NOTE: the NVIDIA `deploy.resources.reservations.devices` block is NOT safe
 # to leave in this base file — unlike the Swarm-only `deploy` keys Compose V2
@@ -40,11 +42,11 @@ services:
     image: robotuniversitygiar:genesis
     container_name: leggedgym-swap-experiment
 
-    # Mount the repo live so edits on the host are reflected immediately.
-    # Also mount a read-only policies/ directory for your .pt checkpoints.
+    # Mount the policies directory into the repo path expected by
+    # TrainingManager.discover_local_policies() (POLICIES_DIR = REPO_ROOT / "policies").
+    # Read-only is safe: the driver never writes here.
     volumes:
-      # - .:/workspace/RobotUniversityGiar
-      - ./policies:/workspace/policies:ro
+      - ./policies:/workspace/RobotUniversityGiar/policies:ro
 
     working_dir: /workspace/RobotUniversityGiar
 
@@ -65,6 +67,12 @@ services:
       HEADLESS: ${HEADLESS:-0}
       # Playback speed multiplier (1.0 = real-time 50 Hz).
       SPEED: ${SPEED:-0.35}
+      # GPU selection — restricts which host GPU(s) the container sees.
+      # Only effective when the GPU overlay is applied (docker-compose.gpu.yml).
+      NVIDIA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      # Default number of parallel envs for manual training commands inside
+      # the container (e.g. docker compose run --rm leggedgym python -m ...).
+      NUM_ENVS: ${NUM_ENVS:-2048}
 
     ports:
       - "${VISER_PORT:-9006}:${VISER_PORT:-9006}"   # viser 3-D viewer
