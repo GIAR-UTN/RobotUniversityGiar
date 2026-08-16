@@ -15,14 +15,14 @@ fi
 # ---------------------------------------------------------------------------
 # Automatic launch of rugiar_driver.py
 # ---------------------------------------------------------------------------
-# Policies are auto-discovered from /workspace/policies/*.pt and *.onnx.
-# Each file is registered as --policy <basename_without_ext>:<path> — .onnx
-# checkpoints (e.g. community releases that only ship ONNX) work exactly like
-# .pt ones, see legged_gym/control/policy.py.
+# Policies are discovered at runtime by TrainingManager.discover_local_policies()
+# inside rugiar_driver.py itself — it scans ./policies/<name>/ folders for
+# checkpoint.pt + meta.json.  No shell-level discovery here; that avoids
+# duplicating the logic and keeps the Python side as the single source of truth.
 #
 # Configure via environment variables in docker-compose.yml or a .env file:
 #
-#   ACTIVE_POLICY=<name>   (must match a discovered .pt filename without ext)
+#   ACTIVE_POLICY=<name>   (must match a policies/<name>/ folder)
 #   CONTROL_PORT=<int>     (default: 9013)
 #   VISER_PORT=<int>       (default: 9006)
 #   HEADLESS=1|0           (default: 0)
@@ -34,57 +34,11 @@ export GENESIS_BACKEND=${GENESIS_BACKEND:-cpu}
 ARGS=()
 
 # ---------------------------------------------------------------------------
-# Auto-discover policies
+# Active policy
 # ---------------------------------------------------------------------------
-POLICIES_DIR="/workspace/policies"
-POLICY_NAMES=()
-
-if [ -d "$POLICIES_DIR" ]; then
-    for pt_file in "$POLICIES_DIR"/*.pt "$POLICIES_DIR"/*.onnx; do
-        [ -f "$pt_file" ] || continue
-        name=$(basename "$pt_file")
-        name="${name%.*}"
-        POLICY_NAMES+=("$name")
-        ARGS+=("--policy" "${name}:${pt_file}")
-    done
-fi
-
-if [ "${#POLICY_NAMES[@]}" -eq 0 ]; then
-    echo "ERROR: No policies found in ${POLICIES_DIR}/"
-    echo "Mount a policies/ directory containing one or more .pt checkpoint files."
-    echo "Each file will be registered as a policy named after its filename (without .pt)."
-    exit 1
-fi
-
-echo "Discovered ${#POLICY_NAMES[@]} policy(ies): ${POLICY_NAMES[*]}"
-
-# ---------------------------------------------------------------------------
-# Validate and set active policy
-# ---------------------------------------------------------------------------
-active_name=""
-
 if [ -n "$ACTIVE_POLICY" ]; then
-    # Validate that ACTIVE_POLICY matches a discovered name
-    found=0
-    for n in "${POLICY_NAMES[@]}"; do
-        if [ "$n" = "$ACTIVE_POLICY" ]; then
-            found=1
-            break
-        fi
-    done
-    if [ "$found" -eq 0 ]; then
-        echo "ERROR: ACTIVE_POLICY='${ACTIVE_POLICY}' does not match any discovered policy."
-        echo "Available policies: ${POLICY_NAMES[*]}"
-        exit 1
-    fi
-    active_name="$ACTIVE_POLICY"
-else
-    # Default to the first policy alphabetically
-    active_name="${POLICY_NAMES[0]}"
-    echo "ACTIVE_POLICY not set; defaulting to '${active_name}'."
+    ARGS+=("--active" "$ACTIVE_POLICY")
 fi
-
-ARGS+=("--active" "$active_name")
 
 # ---------------------------------------------------------------------------
 # Optional arguments

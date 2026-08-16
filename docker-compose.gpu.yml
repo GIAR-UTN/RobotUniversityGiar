@@ -13,6 +13,10 @@
 #
 # Also set GENESIS_BACKEND=cuda (in .env or on the command line) so
 # swap_experiment.py actually requests the CUDA backend from Genesis.
+#
+# GPU selection is controlled by CUDA_VISIBLE_DEVICES in your .env file.
+# The default is GPU 0.  Change it to e.g. 2 if GPU 0/1 are occupied by
+# another process.
 # =============================================================================
 
 services:
@@ -22,5 +26,5 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['${CUDA_VISIBLE_DEVICES:-0}']
               capabilities: [gpu]
