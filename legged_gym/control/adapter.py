@@ -55,15 +55,17 @@ class RobotState:
                                       # upright/fallen signal legged_robot.py uses for episode
                                       # termination (projected_gravity[:,2] > threshold = fallen)
     base_height: Optional[torch.Tensor]  # (num_envs,) — world-frame base z, i.e. what
-                                          # rewards.base_height_target tracks (legged_robot.py's
-                                          # _reward_base_height). This is SIMULATOR GROUND TRUTH, not
-                                          # a sensor reading — no IMU or other real sensor measures
-                                          # height directly, so this is None on real hardware (mirrors
-                                          # base_lin_vel's same real-hardware caveat above). Still a
-                                          # legitimate training-time target: training only ever runs
-                                          # in sim, so "ground truth exists" is all that's required
-                                          # there — the caveat only matters for what real-robot
-                                          # *inference* could ever condition on.
+                                           # rewards.base_height_target tracks (legged_robot.py's
+                                           # _reward_base_height). This is SIMULATOR GROUND TRUTH, not
+                                           # a sensor reading — no IMU or other real sensor measures
+                                           # height directly, so this is None on real hardware (mirrors
+                                           # base_lin_vel's same real-hardware caveat above). Still a
+                                           # legitimate training-time target: training only ever runs
+                                           # in sim, so "ground truth exists" is all that's required
+                                           # there — the caveat only matters for what real-robot
+                                           # *inference* could ever condition on.
+    base_pos_xy: Optional[torch.Tensor]  # (num_envs, 2) — world-frame x,y. Simulator ground truth.
+                                         # None on real hardware (not directly sensed).
     commands: torch.Tensor         # (num_envs, 3) — requested lin_x, lin_y, ang_yaw
     action_scale: float
     lifecycle: Lifecycle
@@ -199,6 +201,7 @@ class SimAdapter:
             base_lin_vel=sim.base_lin_vel,
             projected_gravity=sim.projected_gravity,
             base_height=sim.base_pos[:, 2],
+            base_pos_xy=sim.base_pos[:, :2],
             commands=self.env.commands[:, :3],
             action_scale=self.env.cfg.control.action_scale,
             lifecycle=self._lifecycle,

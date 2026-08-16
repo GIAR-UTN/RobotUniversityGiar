@@ -93,7 +93,7 @@ COPY pyproject.toml ./
 # Genesis on CPU (or Metal, outside Docker) via the GENESIS_BACKEND=cpu path.
 RUN uv venv --python 3.12 .venv \
  && . .venv/bin/activate \
- && uv pip install -r pyproject.toml --extra genesis \
+ && uv pip install -r pyproject.toml --extra genesis,mcp \
  && if [ "$(uname -m)" = "x86_64" ]; then \
         echo "x86_64 host: installing CUDA-enabled PyTorch (cu128, sm_120 support)"; \
         uv pip install "torch==2.9.0+cu128" "torchvision==0.24.0+cu128" \

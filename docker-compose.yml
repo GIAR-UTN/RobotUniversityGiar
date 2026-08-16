@@ -80,3 +80,25 @@ services:
 
     stdin_open: true
     tty: true
+  
+  mcp:
+    image: robotuniversitygiar:genesis
+    container_name: leggedgym-mcp
+    depends_on:
+      - leggedgym
+    environment:
+      - SIMULATOR=genesis
+      - CONTROL_HOST=leggedgym
+      - CONTROL_PORT=${CONTROL_PORT:-9013}
+      - CONTROL_TOKEN=${CONTROL_TOKEN:-}
+      - MCP_TRANSPORT=streamable-http
+      - MCP_PORT=9014
+      - PYTHONPATH=/workspace/RobotUniversityGiar
+    working_dir: /workspace/RobotUniversityGiar
+    command: >
+      bash -c ". .venv/bin/activate &&
+               python -m rugiar_mcp.server"
+    ports:
+      - "${MCP_PORT:-9014}:${MCP_PORT:-9014}"
+    networks:
+      - default
