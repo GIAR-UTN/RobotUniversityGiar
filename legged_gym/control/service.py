@@ -396,6 +396,39 @@ class ControlService:
             "average_speed": round(avg_speed, 3),
         }
 
+    def get_odometry(self) -> Optional[dict]:
+        """Return cumulative distance traveled, elapsed time and average speed
+        since the first call (or since the last detected reset). Computed from
+        simulator ground-truth base position deltas — not available on real
+        hardware where base_pos_xy is None."""
+        state = self.adapter.get_state()
+        pos = getattr(state, "base_pos_xy", None)
+        if pos is None:
+            return None
+        now = time.time()
+        if self._odometry_start_time is None:
+            self._odometry_start_time = now
+            self._last_odometry_pos = pos.clone()
+            self._odometry_distance = 0.0
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        delta = pos[0] - self._last_odometry_pos[0]
+        step_dist = float(torch.norm(delta))
+        # Detect reset: if the base jumps >1.0 m in one tick, assume teleport
+        if step_dist > 1.0:
+            self._odometry_start_time = now
+            self._last_odometry_pos = pos.clone()
+            self._odometry_distance = 0.0
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        self._odometry_distance += step_dist
+        self._last_odometry_pos = pos.clone()
+        elapsed = now - self._odometry_start_time
+        avg_speed = self._odometry_distance / elapsed if elapsed > 0 else 0.0
+        return {
+            "distance_traveled": round(self._odometry_distance, 3),
+            "time_elapsed": round(elapsed, 3),
+            "average_speed": round(avg_speed, 3),
+        }
+
     # ---- training a new policy (see legged_gym/control/training.py) ----
 
     def _compatible_training_tasks(self) -> Optional[list]:
