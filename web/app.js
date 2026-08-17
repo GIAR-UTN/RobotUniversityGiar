@@ -1722,7 +1722,12 @@ function refreshFuseSources() {
 
     const task = document.createElement('span');
     task.className = 'fuse-source-task';
-    task.textContent = p.task;
+    // category is a free-form, purely-cosmetic label some sources carry
+    // (e.g. an externally-imported full-body G1 policy vs one this repo
+    // trained itself under the same task) — see TrainingManager.
+    // register_source()'s docstring. Absent for most sources; falls back
+    // to just the task name, same as before this field existed.
+    task.textContent = p.category ? `${p.task} · ${p.category}` : p.task;
 
     const weight = document.createElement('input');
     weight.type = 'number';
@@ -2538,9 +2543,10 @@ function refreshTrainingCatalog() {
       // TrainingManager._train_checkpoint_from_export()'s docstring for
       // why those are different files. A policy can have one without the
       // other, so these are two distinct reasons "Clone from" is disabled.
-      opt.textContent = !p.checkpoint ? `${p.name} (no checkpoint on this machine)`
-        : !p.train_checkpoint ? `${p.name} (no training checkpoint to fine-tune from)`
-        : p.name;
+      const label = p.category ? `${p.name} [${p.category}]` : p.name;
+      opt.textContent = !p.checkpoint ? `${label} (no checkpoint on this machine)`
+        : !p.train_checkpoint ? `${label} (no training checkpoint to fine-tune from)`
+        : label;
       opt.disabled = !p.train_checkpoint;
       trainBase.appendChild(opt);
     }

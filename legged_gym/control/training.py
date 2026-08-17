@@ -576,7 +576,8 @@ class TrainingManager:
 
     def register_source(self, name: str, task: str, checkpoint: Optional[str],
                          train_checkpoint: Optional[str] = None,
-                         simulator: str = "genesis") -> None:
+                         simulator: str = "genesis",
+                         category: Optional[str] = None) -> None:
         """`train_checkpoint` is the raw rsl_rl checkpoint to resume PPO
         from (see finalize_policy()'s docstring for how a fresh training
         job gets one). Pass None (the --policy CLI path, via
@@ -593,11 +594,22 @@ class TrainingManager:
         Genesis run, or vice versa) is a sim2sim transfer, not a guaranteed-
         compatible continuation. Surfaced in catalog() so the Create Policy
         panel can flag a mismatch instead of silently fine-tuning across
-        engines."""
+        engines.
+
+        `category` is a free-form, purely-cosmetic label (e.g. "g1-legs",
+        "g1-full-body", "go2") — NOT used for any obs/action-space
+        compatibility check (that's `task`'s job). It exists so the Family/
+        Policy panels can group/label sources that share a `task` but come
+        from meaningfully different places — e.g. an externally-imported
+        full-body G1 policy vs one this repo trained itself under the same
+        `g1_deepmimic` task. None (the default) means "no opinion" — the UI
+        falls back to showing `task` alone, same as before this field
+        existed."""
         self.policy_sources[name] = {
             "task": task, "checkpoint": checkpoint,
             "train_checkpoint": train_checkpoint or self._train_checkpoint_from_export(checkpoint),
             "simulator": simulator,
+            "category": category,
         }
 
     def finalize_policy(self, name: str, task: str, checkpoint: str,
@@ -871,7 +883,7 @@ class TrainingManager:
         startup re-offer every previously-trained policy instead of just
         whatever --policy flags happened to be typed that time.
 
-        Returns name -> {"task", "checkpoint", "train_checkpoint"} for
+        Returns name -> {"task", "checkpoint", "train_checkpoint", "category"} for
         every folder with a checkpoint.pt, skipping names in `exclude`
         (already loaded a different way, e.g. via --policy) and skipping
         (with nothing raised — this must never crash startup) anything
@@ -900,6 +912,7 @@ class TrainingManager:
                 "checkpoint": str(checkpoint),
                 "train_checkpoint": str(train_checkpoint) if train_checkpoint.is_file() else None,
                 "simulator": meta.get("simulator", "genesis"),
+                "category": meta.get("category"),
             }
         return found
 
@@ -1137,6 +1150,7 @@ class TrainingManager:
                push_dir: Optional[str] = None,
                entropy_coef: Optional[float] = None,
                reward_scale_overrides: Optional[Dict[str, float]] = None,
+               motion_file: Optional[str] = None,
                backend: str = "local") -> str:
         if backend not in ("local", "kaggle"):
             raise ValueError(f"unknown backend '{backend}' — must be 'local' or 'kaggle'")
@@ -1248,6 +1262,8 @@ class TrainingManager:
         if reward_scale_overrides:
             for name, value in sorted(reward_scale_overrides.items()):
                 shared_flags += ["--reward_scale", name, str(value)]
+        if motion_file is not None:
+            shared_flags += ["--motion_file", motion_file]
 
         train_flags = list(shared_flags)
         if from_checkpoint and backend == "local":

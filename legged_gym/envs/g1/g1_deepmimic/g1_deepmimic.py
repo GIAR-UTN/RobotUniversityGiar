@@ -187,7 +187,7 @@ class G1DeepMimic(LeggedRobot):
         super()._init_buffers()
         self.motion_loader = MotionLoader(
             self.num_envs,
-            self.dt,
+            len(self.simulator.key_body_indices),
             self.cfg.env.motion_file,
             self.device
         )

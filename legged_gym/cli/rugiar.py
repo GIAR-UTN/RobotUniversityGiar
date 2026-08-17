@@ -129,6 +129,12 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
                               "one flag per term (see --list_reward_scales for valid NAMEs and current "
                               "defaults for --task). Positive rewards more of that term, negative penalizes "
                               "it; magnitude is relative to the other terms, not absolute.")
+    reward.add_argument("--motion_file", type=str, default=None, metavar="PATH",
+                         help="reference-motion .pkl to train against, relative to "
+                              "resources/reference_motion/ (e.g. 'unitree_g1/genesis_run/"
+                              "C1_-_stand_to_run_stageii_genesis.pkl') — only valid for a motion-imitation "
+                              "task whose env cfg has its own 'motion_file' default (e.g. g1_deepmimic); "
+                              "errors on any other task")
     reward.add_argument("--entropy_coef", type=float, default=None,
                          help="PPO's exploration-noise bonus weight (default: the task's own). Lower this "
                               "if 'Mean action noise std' trends up instead of down over training.")
@@ -568,6 +574,7 @@ def run_train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             push_robots=push_robots, max_push_vel_xy=args.max_push_vel_xy,
             push_interval_s=args.push_interval_s, push_dir=args.push_dir,
             entropy_coef=args.entropy_coef, reward_scale_overrides=reward_scale_overrides,
+            motion_file=args.motion_file,
             backend=args.backend,
         )
     except ValueError as e:

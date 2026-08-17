@@ -118,6 +118,12 @@ def main():
                               "instead of shrink over training — an unstable run gets MORE erratic the longer "
                               "it goes, not less (watch 'Mean action noise std' in the log; it should trend "
                               "down, never up). Lower this if that happens.")
+    parser.add_argument('--motion_file', type=str, default=None,
+                         help="reference-motion .pkl to train against, path relative to "
+                              "resources/reference_motion/ (e.g. 'unitree_g1/genesis_run/C1_-_stand_to_run_"
+                              "stageii_genesis.pkl') — only meaningful for a task whose env cfg has a "
+                              "'motion_file' attribute (e.g. g1_deepmimic; see MotionLoader's own docstring "
+                              "for the required .pkl schema). Errors if the task doesn't use one.")
     parser.add_argument('--result_path', type=str, required=True,
                          help="JSON {policy_path, task, name, iterations_done, stopped_reason} written here on success — the parent process polls for this file rather than parsing stdout")
     parser.add_argument('--progress_path', type=str, default=None,
@@ -167,6 +173,11 @@ def main():
             setattr(env_cfg.rewards.scales, name, float(value))
     if cli.entropy_coef is not None:
         train_cfg.algorithm.entropy_coef = cli.entropy_coef
+    if cli.motion_file is not None:
+        if not hasattr(env_cfg.env, "motion_file"):
+            parser.error(f"task '{cli.task}' has no reference-motion clip to override "
+                         f"(--motion_file only applies to motion-imitation tasks, e.g. g1_deepmimic)")
+        env_cfg.env.motion_file = cli.motion_file
 
     args = argparse.Namespace(
         task=cli.task, headless=cli.headless, cpu=cli.cpu, num_envs=cli.num_envs,
@@ -238,6 +249,19 @@ def main():
     # Mirrors play.py's own task-type parsing (first underscore-part is the
     # robot name, the rest selects the exporter — see play.py:export_policy).
     task_type = "_".join(cli.task.split("_")[1:])
+    # train_cfg.runner.load_run stays the unresolved -1 ("latest") sentinel
+    # for a fresh training run — nothing in this script's resume-free path
+    # ever resolves it to a string (unlike play.py, which sets
+    # train_cfg.runner.resume=True and lets make_alg_runner() do that
+    # resolution as a side effect before exporting). Some exporters (e.g.
+    # helpers.py's plain PolicyExporter, hit by any task with a non-recurrent
+    # actor_critic and no dedicated task_type branch below — first surfaced
+    # by g1_deepmimic, which had never been trained end-to-end through this
+    # script before) string-concat it directly (`load_run + "_ite" + ...`)
+    # and crash on the raw int. We already know the exact run dir this
+    # training just used (log_dir, from ppo_runner.log_dir), so set it
+    # explicitly instead of re-deriving it via play.py's get_load_path().
+    train_cfg.runner.load_run = os.path.basename(log_dir)
     export_dir = os.path.join(log_dir, 'exported')
     export_policy(ppo_runner, export_dir, argparse.Namespace(export_onnx=False), env_cfg, train_cfg, task_type)
 

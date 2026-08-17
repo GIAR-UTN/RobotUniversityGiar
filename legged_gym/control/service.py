@@ -128,6 +128,7 @@ class ControlService:
                 name, task=info["task"], checkpoint=info["checkpoint"],
                 train_checkpoint=info.get("train_checkpoint"),
                 simulator=info.get("simulator", "genesis"),
+                category=info.get("category"),
             )
             added.append(name)
         return added
