@@ -1025,7 +1025,14 @@ function frame(now) {
     const nvy = smoothAxis(cruiseVy, dvy, commandRanges?.vy, dt, DECEL_RATE);
     const nyaw = smoothAxis(cruiseYaw, dyaw, commandRanges?.yaw, dt, DECEL_RATE);
     if (nvx !== cruiseVx || nvy !== cruiseVy || nyaw !== cruiseYaw) {
+      // Must set cmdDirty here too, not just in the heldMoveKeys heartbeat
+      // below: this branch is what fires the decel-to-zero coast AFTER a
+      // key is released (heldMoveKeys is already empty by then). Dropping
+      // this left the ramped-down value computed locally but never sent —
+      // the robot kept executing the last real command (full cruise)
+      // forever, reading as "stuck in the direction I last pressed."
       cruiseVx = nvx; cruiseVy = nvy; cruiseYaw = nyaw;
+      cmdDirty = true;
     }
     // Keep resending at the throttled ~10Hz rate for as long as any move
     // key is actually held, even once the ramp has settled and stopped
@@ -1091,7 +1098,15 @@ function bindVerticalHud(hud, axis) {
     setFromEvent(e);
   });
   track.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
-  track.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+  const endDrag = (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } };
+  track.addEventListener('pointerup', endDrag);
+  // Without these, a drag interrupted mid-gesture (alt-tab, releasing the
+  // button outside the window, an OS dialog stealing the pointer) leaves
+  // draggingCommand stuck true forever — the server's status sync then
+  // never overwrites the HUD (see activelyDriving above), so it reads as
+  // permanently "stuck pressed" at whatever value it last had.
+  track.addEventListener('pointercancel', endDrag);
+  track.addEventListener('lostpointercapture', endDrag);
 }
 
 function bindHorizontalHud(hud, axis) {
@@ -1115,7 +1130,10 @@ function bindHorizontalHud(hud, axis) {
     setFromEvent(e);
   });
   track.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
-  track.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+  const endDrag = (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } };
+  track.addEventListener('pointerup', endDrag);
+  track.addEventListener('pointercancel', endDrag);
+  track.addEventListener('lostpointercapture', endDrag);
 }
 
 function bindDialHud(hud, axis) {
@@ -1144,7 +1162,10 @@ function bindDialHud(hud, axis) {
     setFromEvent(e);
   });
   svg.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
-  svg.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+  const endDrag = (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } };
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+  svg.addEventListener('lostpointercapture', endDrag);
 }
 
 bindVerticalHud(hudVx, 'vx');
@@ -1215,7 +1236,8 @@ window.addEventListener('blur', () => {
     // currently-held key would be missed and the normal decel-on-release
     // (see frame()/smoothAxis) would never kick in. Zero out immediately
     // instead of leaving it stuck at speed with nothing to stop it.
-    if (keysArmed && !document.hasFocus() && heldMoveKeys.size > 0) {
+    if (!document.hasFocus() && (draggingCommand || (keysArmed && heldMoveKeys.size > 0))) {
+      draggingCommand = false;
       heldMoveKeys.forEach((key) => setKeycapActive(key, false));
       heldMoveKeys.clear();
       cruiseVx = 0;
