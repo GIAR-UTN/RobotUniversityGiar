@@ -244,7 +244,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
                                                     actor_hidden_dims=[8], critic_hidden_dims=[8]))
         env = _FakeEnv(num_envs=2, num_obs=6)
         student = distillation.build_student(6, 6, 3, _policy_cfg(rnn_hidden_size=8), is_recurrent=False)
-        final_loss, obs_buf, action_buf, dones_buf, ground_truth = distillation.dagger_train(
+        final_loss, obs_buf, action_buf, dones_buf, ground_truth, loss_curve, round_diagnostics = distillation.dagger_train(
             env, teacher, student, num_rounds=3, round_steps=5, bc_epochs=2, lr=1e-2)
         # 3 rounds x 5 steps each, aggregated (not just the latest round) — see this
         # function's own docstring on why vanilla DAgger keeps every round's data.
@@ -253,6 +253,17 @@ class TestDistillationAlgorithm(unittest.TestCase):
         self.assertEqual(tuple(dones_buf.shape), (15, 2))
         self.assertEqual(tuple(ground_truth["commands"].shape), (15, 2, 3))
         self.assertIsInstance(final_loss, float)
+        # loss_curve: one point per (round, epoch) — 3 rounds x 2 epochs each.
+        self.assertEqual(len(loss_curve), 6)
+        self.assertEqual([p["round"] for p in loss_curve], [0, 0, 1, 1, 2, 2])
+        self.assertEqual([p["epoch"] for p in loss_curve], [0, 1, 0, 1, 0, 1])
+        # round_diagnostics: one summary per round, computed from THAT round's own
+        # (obs, teacher-relabeled action) pairs, not the aggregate.
+        self.assertEqual(len(round_diagnostics), 3)
+        self.assertEqual([r["round"] for r in round_diagnostics], [0, 1, 2])
+        for r in round_diagnostics:
+            self.assertIn("action_abs_mean", r)
+            self.assertIn("commanded_lin_vel_x", r)
 
     def test_dagger_train_marks_round_boundaries_as_done(self):
         # Round boundaries reset both backends' hidden state but env.step() itself never
@@ -264,7 +275,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
                                                     actor_hidden_dims=[8], critic_hidden_dims=[8]))
         env = _FakeEnv(num_envs=1, num_obs=6)  # never reports done on its own
         student = distillation.build_student(6, 6, 3, _policy_cfg(), is_recurrent=False)
-        _, _, _, dones_buf, _ = distillation.dagger_train(
+        _, _, _, dones_buf, _, _, _ = distillation.dagger_train(
             env, teacher, student, num_rounds=3, round_steps=4, bc_epochs=1, lr=1e-2)
         self.assertTrue(bool(dones_buf[0, 0]))    # round 0 boundary
         self.assertTrue(bool(dones_buf[4, 0]))    # round 1 boundary
@@ -296,7 +307,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
         # the SAME obs sequence dagger_train() recorded (obs_buf) through the (unmoved)
         # student afterward reproduces exactly what should have been fed to env.step() if
         # (and only if) the mix picked the student's action at every one of these steps.
-        _, obs_buf, _, _, _ = distillation.dagger_train(
+        _, obs_buf, _, _, _, _, _ = distillation.dagger_train(
             env, teacher, student, num_rounds=1, round_steps=6, bc_epochs=1, lr=0.0, beta0=0.0)
 
         self.assertEqual(len(env.seen_actions), 6)

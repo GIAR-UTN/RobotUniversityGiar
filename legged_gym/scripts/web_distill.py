@@ -161,11 +161,12 @@ def main():
                 print(f"round {round_idx + 1}/{cli.dagger_rounds} epoch {i + 1}/{cli.bc_epochs}: "
                       f"mse_loss={loss:.6f}")
 
-        final_loss, obs_buf, action_buf, dones_buf, ground_truth = distillation.dagger_train(
+        final_loss, obs_buf, action_buf, dones_buf, ground_truth, loss_curve, round_diagnostics = distillation.dagger_train(
             env, teacher_backend, student, num_rounds=cli.dagger_rounds, round_steps=cli.rollout_steps,
             bc_epochs=cli.bc_epochs, lr=cli.lr, beta0=cli.dagger_beta0, beta_decay=cli.dagger_beta_decay,
             callback=dagger_callback)
     else:
+        loss_curve, round_diagnostics = None, None
         print(f"Rolling out teacher for {cli.rollout_steps} steps ({cli.num_envs} envs)...")
         obs_buf, action_buf, dones_buf, ground_truth = distillation.collect_rollout(
             env, teacher_backend, cli.rollout_steps,
@@ -232,6 +233,7 @@ def main():
             "dagger_beta_decay": cli.dagger_beta_decay if cli.method == "dagger" else None,
             "teacher_checkpoint": cli.teacher_checkpoint,
             "rollout_diagnostics": rollout_diagnostics,
+            "loss_curve": loss_curve, "round_diagnostics": round_diagnostics,
         }, f)
     print(f"Done. final_bc_loss={final_loss:.6f}. Exported to {policy_path}")
 

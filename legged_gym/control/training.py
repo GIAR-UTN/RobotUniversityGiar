@@ -235,6 +235,13 @@ class TrainingJob:
         # actual/commanded lin_vel/ang_vel coverage of the teacher rollout the student was
         # trained on — a narrow-range commanded_ang_vel_yaw here explains a clone that doesn't
         # turn like its teacher without needing to re-run/re-diagnose anything
+    distill_loss_curve: Optional[List[dict]] = None  # "distill" jobs with method="dagger" only —
+        # distillation.dagger_train()'s own loss_curve: one {"round","epoch","loss"} point per
+        # (round, epoch) — None for "behavior_cloning" (nothing round-based to chart there)
+    distill_round_diagnostics: Optional[List[dict]] = None  # "dagger" jobs only — one
+        # {"round","beta","final_loss",**summarize_rollout(...)} entry per round, computed from
+        # THAT round's own data — see dagger_train()'s docstring for why a single final_bc_loss
+        # is misleading for dagger (loss trends UP round-over-round by design, not a regression)
 
     def to_dict(self) -> dict:
         return {
@@ -661,6 +668,10 @@ class TrainingManager:
                     "bc_epochs": job.max_iterations,
                     "final_bc_loss": job.final_bc_loss,
                     "rollout_diagnostics": job.rollout_diagnostics,
+                    # dagger only — None for behavior_cloning, see dagger_train()'s docstring
+                    # on why the round trend matters more than the bare final_bc_loss above.
+                    "loss_curve": job.distill_loss_curve,
+                    "round_diagnostics": job.distill_round_diagnostics,
                 },
             })
         elif job is not None:
@@ -1531,6 +1542,8 @@ class TrainingManager:
                 job.iterations_done = result.get("iterations_done")
                 job.final_bc_loss = result.get("final_bc_loss")
                 job.rollout_diagnostics = result.get("rollout_diagnostics")
+                job.distill_loss_curve = result.get("loss_curve")
+                job.distill_round_diagnostics = result.get("round_diagnostics")
                 job.status = "done"
                 newly_done.append(job)
                 # Record actual iterations completed, not the requested cap —

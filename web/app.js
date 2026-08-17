@@ -3578,6 +3578,64 @@ function renderPolicyInfo(info) {
     frag.appendChild(fusion);
   }
 
+  // Only present on a distilled policy (TrainingManager.finalize_policy() bakes this
+  // into meta.json from the job's own result.json — see distillation.py/web_distill.py).
+  // `loss_curve`/`round_diagnostics` only exist for method="dagger" — behavior_cloning
+  // has nothing round-based to chart, so both render as plain text instead below.
+  if (info.distillation) {
+    const d = info.distillation;
+    const methodLabel = trainingCatalog?.distill_methods?.find((m) => m.id === d.method)?.label || d.method;
+    const distill = infoSection('Distillation');
+    distill.appendChild(kvList([
+      ['Method', methodLabel],
+      ['Teacher', d.teacher],
+      ['BC epochs', d.bc_epochs],
+      ['Final BC loss', d.final_bc_loss != null ? d.final_bc_loss.toFixed(4) : null],
+    ]));
+
+    // dagger's loss is expected to trend UP round-over-round by design — each round's
+    // training set is a strict superset of the last, MORE, and HARDER (the student's
+    // own drifted states, not just the teacher's clean trajectory) — see
+    // distillation.dagger_train()'s docstring. Without this chart, `final_bc_loss`
+    // alone looks like a regression when it's actually the expected shape.
+    if (d.loss_curve?.length > 1) {
+      const series = d.loss_curve.map((p, i) => ({ iteration: i, loss: p.loss }));
+      const numRounds = new Set(d.loss_curve.map((p) => p.round)).size;
+      const chartWrap = document.createElement('div');
+      chartWrap.appendChild(renderSeriesChart(series, [{ key: 'loss', color: 'var(--danger, #d9534f)' }]));
+      distill.appendChild(chartWrap);
+      const caption = document.createElement('div');
+      caption.className = 'info-chart-caption';
+      caption.textContent = `MSE loss vs. teacher across ${numRounds} dagger round${numRounds === 1 ? '' : 's'} — `
+        + `expected to trend UP round-to-round (each round's dataset grows harder, not worse-fit)`;
+      distill.appendChild(caption);
+    }
+
+    if (d.round_diagnostics?.length) {
+      const table = document.createElement('pre');
+      table.className = 'info-cmd';
+      table.textContent = d.round_diagnostics.map((r) => {
+        const vx = r.actual_lin_vel_x, yaw = r.commanded_ang_vel_yaw;
+        return `round ${r.round + 1}  beta=${r.beta.toFixed(2)}  loss=${r.final_loss.toFixed(4)}  `
+          + `actual_vx std=${vx.std.toFixed(3)}  cmd_yaw range=[${yaw.min.toFixed(2)}, ${yaw.max.toFixed(2)}]  `
+          + `|action|=${r.action_abs_mean.toFixed(3)}`;
+      }).join('\n');
+      distill.appendChild(table);
+    } else if (d.rollout_diagnostics) {
+      // behavior_cloning (or a dagger run predating round_diagnostics) — only the
+      // single aggregate rollout's coverage is available, same fields, one line.
+      const rd = d.rollout_diagnostics;
+      const table = document.createElement('pre');
+      table.className = 'info-cmd';
+      table.textContent = `actual_vx std=${rd.actual_lin_vel_x.std.toFixed(3)}  `
+        + `cmd_yaw range=[${rd.commanded_ang_vel_yaw.min.toFixed(2)}, ${rd.commanded_ang_vel_yaw.max.toFixed(2)}]  `
+        + `|action|=${rd.action_abs_mean.toFixed(3)}`;
+      distill.appendChild(table);
+    }
+
+    frag.appendChild(distill);
+  }
+
   if (info.entropy_coef != null || (info.reward_scale_overrides && Object.keys(info.reward_scale_overrides).length)) {
     const tuning = infoSection('Tuning overrides (vs. task defaults)');
     const pairs = [['entropy_coef', info.entropy_coef]];

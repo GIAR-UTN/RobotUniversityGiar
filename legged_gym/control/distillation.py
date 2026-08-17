@@ -353,17 +353,33 @@ def dagger_train(env, teacher_backend, student: nn.Module, num_rounds: int, roun
     OR'd into `True` in the returned/aggregated dones buffer, same as a real
     episode boundary.
 
-    Returns `(final_loss, obs_buf, action_buf, dones_buf, ground_truth)` —
-    same shapes as `collect_rollout()` plus the final round's BC loss, so
-    callers (web_distill.py) can feed `(ground_truth, action_buf)` into
-    `summarize_rollout()` exactly as they already do for `behavior_cloning`.
-    `callback(phase, round_idx, i, total, loss)` fires with
-    phase="rollout" (i=step, total=round_steps, loss=None) during collection
-    and phase="bc_train" (i=epoch, total=bc_epochs, loss=mean_loss) during
-    each round's retrain."""
+    Returns `(final_loss, obs_buf, action_buf, dones_buf, ground_truth, loss_curve,
+    round_diagnostics)`. The first five match `collect_rollout()`'s own return shape
+    (plus the final round's BC loss) so callers (web_distill.py) can feed
+    `(ground_truth, action_buf)` into `summarize_rollout()` exactly as they already do
+    for `behavior_cloning`. The last two exist because a single `final_bc_loss` number
+    is actively misleading for dagger — see this function's own module-level context:
+    each round's dataset is a strict superset of the last, MORE, and progressively
+    HARDER (the student's own drifted/mistake states, not just the teacher's clean
+    trajectory), so the loss is expected to trend UP round-over-round even as the
+    student's real closed-loop competence improves — a bare final number can't be told
+    apart from an actual regression without the per-round trend.
+    - `loss_curve`: one entry per (round, epoch) — `{"round", "epoch", "loss"}` — the
+      full curve, for a UI to chart the within-round convergence AND the round-to-round
+      resets in one series.
+    - `round_diagnostics`: one entry per round — `{"round", "beta", "final_loss",
+      **summarize_rollout(...)}` computed from THAT round's own (obs, teacher-relabeled
+      action) pairs only, not the aggregate — so behavioral coverage (commanded/actual
+      velocity ranges, action magnitude) can be tracked trending toward the teacher's
+      own numbers round over round, independent of the loss number.
+
+    `callback(phase, round_idx, i, total, loss)` fires with phase="rollout" (i=step,
+    total=round_steps, loss=None) during collection and phase="bc_train" (i=epoch,
+    total=bc_epochs, loss=mean_loss) during each round's retrain."""
     device = next(student.parameters()).device
     all_obs, all_actions, all_dones = [], [], []
     all_cmd, all_lin_vel, all_ang_vel = [], [], []
+    loss_curve, round_diagnostics = [], []
     final_loss = 0.0
 
     for round_idx in range(num_rounds):
@@ -409,15 +425,30 @@ def dagger_train(env, teacher_backend, student: nn.Module, num_rounds: int, roun
         agg_actions = torch.cat(all_actions, dim=0)
         agg_dones = torch.cat(all_dones, dim=0)
 
+        def _epoch_callback(epoch, loss, _round_idx=round_idx):
+            loss_curve.append({"round": _round_idx, "epoch": epoch, "loss": loss})
+            if callback is not None:
+                callback("bc_train", _round_idx, epoch, bc_epochs, loss)
+
         final_loss = bc_train(
             student, agg_obs, agg_actions, epochs=bc_epochs, lr=lr,
             num_mini_batches=num_mini_batches, chunk_len=chunk_len, dones_buf=agg_dones,
-            callback=(lambda epoch, loss: callback("bc_train", round_idx, epoch, bc_epochs, loss))
-            if callback is not None else None)
+            callback=_epoch_callback)
+
+        round_gt = {
+            "commands": torch.stack(cmd_list),
+            "base_lin_vel": torch.stack(lin_vel_list),
+            "base_ang_vel": torch.stack(ang_vel_list),
+        }
+        round_diagnostics.append({
+            "round": round_idx, "beta": beta, "final_loss": final_loss,
+            **summarize_rollout(round_gt, torch.stack(label_list)),
+        })
 
     ground_truth = {
         "commands": torch.cat(all_cmd, dim=0),
         "base_lin_vel": torch.cat(all_lin_vel, dim=0),
         "base_ang_vel": torch.cat(all_ang_vel, dim=0),
     }
-    return final_loss, torch.cat(all_obs, dim=0), torch.cat(all_actions, dim=0), torch.cat(all_dones, dim=0), ground_truth
+    return (final_loss, torch.cat(all_obs, dim=0), torch.cat(all_actions, dim=0),
+            torch.cat(all_dones, dim=0), ground_truth, loss_curve, round_diagnostics)
