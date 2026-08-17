@@ -1025,7 +1025,14 @@ function frame(now) {
     const nvy = smoothAxis(cruiseVy, dvy, commandRanges?.vy, dt, DECEL_RATE);
     const nyaw = smoothAxis(cruiseYaw, dyaw, commandRanges?.yaw, dt, DECEL_RATE);
     if (nvx !== cruiseVx || nvy !== cruiseVy || nyaw !== cruiseYaw) {
+      // Must set cmdDirty here too, not just in the heldMoveKeys heartbeat
+      // below: this branch is what fires the decel-to-zero coast AFTER a
+      // key is released (heldMoveKeys is already empty by then). Dropping
+      // this left the ramped-down value computed locally but never sent —
+      // the robot kept executing the last real command (full cruise)
+      // forever, reading as "stuck in the direction I last pressed."
       cruiseVx = nvx; cruiseVy = nvy; cruiseYaw = nyaw;
+      cmdDirty = true;
     }
     // Keep resending at the throttled ~10Hz rate for as long as any move
     // key is actually held, even once the ramp has settled and stopped
@@ -1091,7 +1098,15 @@ function bindVerticalHud(hud, axis) {
     setFromEvent(e);
   });
   track.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
-  track.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+  const endDrag = (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } };
+  track.addEventListener('pointerup', endDrag);
+  // Without these, a drag interrupted mid-gesture (alt-tab, releasing the
+  // button outside the window, an OS dialog stealing the pointer) leaves
+  // draggingCommand stuck true forever — the server's status sync then
+  // never overwrites the HUD (see activelyDriving above), so it reads as
+  // permanently "stuck pressed" at whatever value it last had.
+  track.addEventListener('pointercancel', endDrag);
+  track.addEventListener('lostpointercapture', endDrag);
 }
 
 function bindHorizontalHud(hud, axis) {
@@ -1115,7 +1130,10 @@ function bindHorizontalHud(hud, axis) {
     setFromEvent(e);
   });
   track.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
-  track.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+  const endDrag = (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } };
+  track.addEventListener('pointerup', endDrag);
+  track.addEventListener('pointercancel', endDrag);
+  track.addEventListener('lostpointercapture', endDrag);
 }
 
 function bindDialHud(hud, axis) {
@@ -1144,7 +1162,10 @@ function bindDialHud(hud, axis) {
     setFromEvent(e);
   });
   svg.addEventListener('pointermove', (e) => { if (draggingCommand && e.pointerId === pointerId) setFromEvent(e); });
-  svg.addEventListener('pointerup', (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } });
+  const endDrag = (e) => { if (e.pointerId === pointerId) { draggingCommand = false; pointerId = null; } };
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+  svg.addEventListener('lostpointercapture', endDrag);
 }
 
 bindVerticalHud(hudVx, 'vx');
@@ -1215,7 +1236,8 @@ window.addEventListener('blur', () => {
     // currently-held key would be missed and the normal decel-on-release
     // (see frame()/smoothAxis) would never kick in. Zero out immediately
     // instead of leaving it stuck at speed with nothing to stop it.
-    if (keysArmed && !document.hasFocus() && heldMoveKeys.size > 0) {
+    if (!document.hasFocus() && (draggingCommand || (keysArmed && heldMoveKeys.size > 0))) {
+      draggingCommand = false;
       heldMoveKeys.forEach((key) => setKeycapActive(key, false));
       heldMoveKeys.clear();
       cruiseVx = 0;
@@ -3576,6 +3598,64 @@ function renderPolicyInfo(info) {
       fusion.appendChild(warn);
     }
     frag.appendChild(fusion);
+  }
+
+  // Only present on a distilled policy (TrainingManager.finalize_policy() bakes this
+  // into meta.json from the job's own result.json — see distillation.py/web_distill.py).
+  // `loss_curve`/`round_diagnostics` only exist for method="dagger" — behavior_cloning
+  // has nothing round-based to chart, so both render as plain text instead below.
+  if (info.distillation) {
+    const d = info.distillation;
+    const methodLabel = trainingCatalog?.distill_methods?.find((m) => m.id === d.method)?.label || d.method;
+    const distill = infoSection('Distillation');
+    distill.appendChild(kvList([
+      ['Method', methodLabel],
+      ['Teacher', d.teacher],
+      ['BC epochs', d.bc_epochs],
+      ['Final BC loss', d.final_bc_loss != null ? d.final_bc_loss.toFixed(4) : null],
+    ]));
+
+    // dagger's loss is expected to trend UP round-over-round by design — each round's
+    // training set is a strict superset of the last, MORE, and HARDER (the student's
+    // own drifted states, not just the teacher's clean trajectory) — see
+    // distillation.dagger_train()'s docstring. Without this chart, `final_bc_loss`
+    // alone looks like a regression when it's actually the expected shape.
+    if (d.loss_curve?.length > 1) {
+      const series = d.loss_curve.map((p, i) => ({ iteration: i, loss: p.loss }));
+      const numRounds = new Set(d.loss_curve.map((p) => p.round)).size;
+      const chartWrap = document.createElement('div');
+      chartWrap.appendChild(renderSeriesChart(series, [{ key: 'loss', color: 'var(--danger, #d9534f)' }]));
+      distill.appendChild(chartWrap);
+      const caption = document.createElement('div');
+      caption.className = 'info-chart-caption';
+      caption.textContent = `MSE loss vs. teacher across ${numRounds} dagger round${numRounds === 1 ? '' : 's'} — `
+        + `expected to trend UP round-to-round (each round's dataset grows harder, not worse-fit)`;
+      distill.appendChild(caption);
+    }
+
+    if (d.round_diagnostics?.length) {
+      const table = document.createElement('pre');
+      table.className = 'info-cmd';
+      table.textContent = d.round_diagnostics.map((r) => {
+        const vx = r.actual_lin_vel_x, yaw = r.commanded_ang_vel_yaw;
+        return `round ${r.round + 1}  beta=${r.beta.toFixed(2)}  loss=${r.final_loss.toFixed(4)}  `
+          + `actual_vx std=${vx.std.toFixed(3)}  cmd_yaw range=[${yaw.min.toFixed(2)}, ${yaw.max.toFixed(2)}]  `
+          + `|action|=${r.action_abs_mean.toFixed(3)}`;
+      }).join('\n');
+      distill.appendChild(table);
+    } else if (d.rollout_diagnostics) {
+      // behavior_cloning (or a dagger run predating round_diagnostics) — only the
+      // single aggregate rollout's coverage is available, same fields, one line.
+      const rd = d.rollout_diagnostics;
+      const table = document.createElement('pre');
+      table.className = 'info-cmd';
+      table.textContent = `actual_vx std=${rd.actual_lin_vel_x.std.toFixed(3)}  `
+        + `cmd_yaw range=[${rd.commanded_ang_vel_yaw.min.toFixed(2)}, ${rd.commanded_ang_vel_yaw.max.toFixed(2)}]  `
+        + `|action|=${rd.action_abs_mean.toFixed(3)}`;
+      distill.appendChild(table);
+    }
+
+    frag.appendChild(distill);
   }
 
   if (info.entropy_coef != null || (info.reward_scale_overrides && Object.keys(info.reward_scale_overrides).length)) {

@@ -60,6 +60,16 @@ def main():
     parser.add_argument('--bc_epochs', type=int, default=20,
                          help="supervised training epochs over the collected rollout")
     parser.add_argument('--lr', type=float, default=1e-3, help="Adam learning rate for BC training")
+    parser.add_argument('--dagger_rounds', type=int, default=5,
+                         help="'dagger' method only — number of rollout+relabel+retrain rounds. "
+                              "--rollout_steps/--bc_epochs become PER-ROUND values under dagger "
+                              "(see distillation.dagger_train()'s docstring). Ignored for behavior_cloning.")
+    parser.add_argument('--dagger_beta0', type=float, default=1.0,
+                         help="'dagger' method only — fraction of actions taken by the TEACHER in "
+                              "round 0 (1.0 = round 0 is a plain teacher rollout, same as behavior_cloning's).")
+    parser.add_argument('--dagger_beta_decay', type=float, default=0.5,
+                         help="'dagger' method only — per-round multiplicative decay on the teacher "
+                              "fraction (beta_round = dagger_beta0 * dagger_beta_decay**round).")
     parser.add_argument('--num_envs', type=int, default=1,
                          help="parallel envs for rollout collection. Defaults to 1 (not 64, unlike "
                               "training) because some externally-sourced teachers (e.g. unitree_rl_gym's "
@@ -132,23 +142,58 @@ def main():
         except OSError:
             pass  # best-effort — see web_train.py's identical write_progress() docstring
 
-    print(f"Rolling out teacher for {cli.rollout_steps} steps ({cli.num_envs} envs)...")
-    obs_buf, action_buf, dones_buf = distillation.collect_rollout(
-        env, teacher_backend, cli.rollout_steps,
-        callback=lambda step, total: write_progress("rollout", 0))
-
     is_recurrent = train_cfg.runner.policy_class_name == "ActorCriticRecurrent"
     num_critic_obs = env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs
     student = distillation.build_student(
         env.num_obs, num_critic_obs, env.num_actions, train_cfg.policy, is_recurrent)
 
-    print(f"Behavior-cloning student for {cli.bc_epochs} epochs...")
-    final_loss = distillation.bc_train(
-        student, obs_buf, action_buf, epochs=cli.bc_epochs, lr=cli.lr, dones_buf=dones_buf,
-        callback=lambda epoch, loss: (
-            write_progress("bc_train", epoch + 1),
-            print(f"epoch {epoch + 1}/{cli.bc_epochs}: mse_loss={loss:.6f}"),
-        ))
+    if cli.method == "dagger":
+        total_bc_epochs = cli.dagger_rounds * cli.bc_epochs
+        print(f"DAgger: {cli.dagger_rounds} rounds x {cli.rollout_steps} rollout steps, "
+              f"{cli.bc_epochs} BC epochs/round (beta0={cli.dagger_beta0}, decay={cli.dagger_beta_decay})...")
+
+        def dagger_callback(phase, round_idx, i, total, loss):
+            if phase == "rollout":
+                write_progress("rollout", round_idx * cli.bc_epochs)
+            else:
+                done = round_idx * cli.bc_epochs + i + 1
+                write_progress("bc_train", done)
+                print(f"round {round_idx + 1}/{cli.dagger_rounds} epoch {i + 1}/{cli.bc_epochs}: "
+                      f"mse_loss={loss:.6f}")
+
+        final_loss, obs_buf, action_buf, dones_buf, ground_truth, loss_curve, round_diagnostics = distillation.dagger_train(
+            env, teacher_backend, student, num_rounds=cli.dagger_rounds, round_steps=cli.rollout_steps,
+            bc_epochs=cli.bc_epochs, lr=cli.lr, beta0=cli.dagger_beta0, beta_decay=cli.dagger_beta_decay,
+            callback=dagger_callback)
+    else:
+        loss_curve, round_diagnostics = None, None
+        print(f"Rolling out teacher for {cli.rollout_steps} steps ({cli.num_envs} envs)...")
+        obs_buf, action_buf, dones_buf, ground_truth = distillation.collect_rollout(
+            env, teacher_backend, cli.rollout_steps,
+            callback=lambda step, total: write_progress("rollout", 0))
+
+        print(f"Behavior-cloning student for {cli.bc_epochs} epochs...")
+        final_loss = distillation.bc_train(
+            student, obs_buf, action_buf, epochs=cli.bc_epochs, lr=cli.lr, dones_buf=dones_buf,
+            callback=lambda epoch, loss: (
+                write_progress("bc_train", epoch + 1),
+                print(f"epoch {epoch + 1}/{cli.bc_epochs}: mse_loss={loss:.6f}"),
+            ))
+
+    # Diagnostic-only: what did the rollout(s) actually cover, command-wise and
+    # behavior-wise? A single-trajectory (--num_envs 1) dataset can silently miss
+    # whole chunks of the teacher's command envelope (e.g. never turning) — this
+    # tells you before final_bc_loss gets a chance to hide it. See summarize_rollout()'s
+    # docstring. For dagger, action_buf is the TEACHER's relabeled actions (dagger_train()'s
+    # own label_list), same convention collect_rollout() uses.
+    rollout_diagnostics = distillation.summarize_rollout(ground_truth, action_buf)
+    print("Rollout coverage (physical units):")
+    for key, s in rollout_diagnostics.items():
+        if isinstance(s, dict):
+            print(f"  {key}: mean={s['mean']:.4f} std={s['std']:.4f} "
+                  f"range=[{s['min']:.4f}, {s['max']:.4f}]")
+        else:
+            print(f"  {key}: {s:.4f}")
 
     # Mirrors web_train.py's own task_type parsing (first underscore-part is
     # the robot name, the rest selects the exporter — see play.py:export_policy).
@@ -176,13 +221,19 @@ def main():
         {"model_state_dict": student.state_dict(), "optimizer_state_dict": {}, "iter": 0, "infos": {}},
         train_checkpoint_path)
 
+    iterations_done = cli.dagger_rounds * cli.bc_epochs if cli.method == "dagger" else cli.bc_epochs
     with open(cli.result_path, 'w') as f:
         json.dump({
             "policy_path": policy_path, "task": cli.task, "name": cli.name,
-            "iterations_done": cli.bc_epochs, "train_checkpoint_path": train_checkpoint_path,
+            "iterations_done": iterations_done, "train_checkpoint_path": train_checkpoint_path,
             "final_bc_loss": final_loss, "method": cli.method,
             "rollout_steps": cli.rollout_steps, "bc_epochs": cli.bc_epochs,
+            "dagger_rounds": cli.dagger_rounds if cli.method == "dagger" else None,
+            "dagger_beta0": cli.dagger_beta0 if cli.method == "dagger" else None,
+            "dagger_beta_decay": cli.dagger_beta_decay if cli.method == "dagger" else None,
             "teacher_checkpoint": cli.teacher_checkpoint,
+            "rollout_diagnostics": rollout_diagnostics,
+            "loss_curve": loss_curve, "round_diagnostics": round_diagnostics,
         }, f)
     print(f"Done. final_bc_loss={final_loss:.6f}. Exported to {policy_path}")
 

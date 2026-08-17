@@ -226,8 +226,22 @@ class TrainingJob:
                               # no use for — see teacher_policy below instead.
     teacher_policy: Optional[str] = None  # "distill" jobs only — the source policy name being
                                            # behavior-cloned (see TrainingManager.start_distillation())
+    distill_method: Optional[str] = None  # "distill" jobs only — "behavior_cloning" | "dagger"
+                                           # (distillation.DISTILL_METHODS key actually used)
     final_bc_loss: Optional[float] = None  # "distill" jobs only — web_distill.py's result.json
                                             # final_bc_loss, read back by poll() on success
+    rollout_diagnostics: Optional[Dict[str, Dict[str, float]]] = None  # "distill" jobs only —
+        # web_distill.py's result.json rollout_diagnostics (distillation.summarize_rollout()):
+        # actual/commanded lin_vel/ang_vel coverage of the teacher rollout the student was
+        # trained on — a narrow-range commanded_ang_vel_yaw here explains a clone that doesn't
+        # turn like its teacher without needing to re-run/re-diagnose anything
+    distill_loss_curve: Optional[List[dict]] = None  # "distill" jobs with method="dagger" only —
+        # distillation.dagger_train()'s own loss_curve: one {"round","epoch","loss"} point per
+        # (round, epoch) — None for "behavior_cloning" (nothing round-based to chart there)
+    distill_round_diagnostics: Optional[List[dict]] = None  # "dagger" jobs only — one
+        # {"round","beta","final_loss",**summarize_rollout(...)} entry per round, computed from
+        # THAT round's own data — see dagger_train()'s docstring for why a single final_bc_loss
+        # is misleading for dagger (loss trends UP round-over-round by design, not a regression)
 
     def to_dict(self) -> dict:
         return {
@@ -253,7 +267,9 @@ class TrainingJob:
             "simulator": self.simulator,
             "job_type": self.job_type,
             "teacher_policy": self.teacher_policy,
+            "distill_method": self.distill_method,
             "final_bc_loss": self.final_bc_loss,
+            "rollout_diagnostics": self.rollout_diagnostics,
         }
 
 
@@ -647,10 +663,15 @@ class TrainingManager:
                 "elapsed_s": round((job.finished_at or time.time()) - job.started_at, 1),
                 "log_path": str(dest_log) if dest_log else None,
                 "distillation": {
-                    "method": "behavior_cloning",
+                    "method": job.distill_method or "behavior_cloning",
                     "teacher": job.teacher_policy,
                     "bc_epochs": job.max_iterations,
                     "final_bc_loss": job.final_bc_loss,
+                    "rollout_diagnostics": job.rollout_diagnostics,
+                    # dagger only — None for behavior_cloning, see dagger_train()'s docstring
+                    # on why the round trend matters more than the bare final_bc_loss above.
+                    "loss_curve": job.distill_loss_curve,
+                    "round_diagnostics": job.distill_round_diagnostics,
                 },
             })
         elif job is not None:
@@ -1310,7 +1331,10 @@ class TrainingManager:
     def start_distillation(self, teacher: str, task: str, out_name: str,
                             rollout_steps: Optional[int] = None, bc_epochs: Optional[int] = None,
                             lr: Optional[float] = None, num_envs: int = 1,
-                            method: str = "behavior_cloning") -> str:
+                            method: str = "behavior_cloning",
+                            dagger_rounds: Optional[int] = None,
+                            dagger_beta0: Optional[float] = None,
+                            dagger_beta_decay: Optional[float] = None) -> str:
         """Behavior-clones `teacher` — ANY known local policy, crucially
         including ones with no train_checkpoint.pt at all (e.g. `stable` —
         see policy.py's module docstring for the checkpoint shapes that
@@ -1369,6 +1393,19 @@ class TrainingManager:
         if lr <= 0:
             raise ValueError("lr must be positive")
 
+        # dagger-only knobs — rollout_steps/bc_epochs above become PER-ROUND
+        # values when method == "dagger" (see distillation.dagger_train()'s
+        # docstring); ignored entirely for "behavior_cloning".
+        dagger_rounds = int(dagger_rounds) if dagger_rounds is not None else 5
+        dagger_beta0 = float(dagger_beta0) if dagger_beta0 is not None else 1.0
+        dagger_beta_decay = float(dagger_beta_decay) if dagger_beta_decay is not None else 0.5
+        if dagger_rounds <= 0:
+            raise ValueError("dagger_rounds must be positive")
+        if not (0.0 <= dagger_beta0 <= 1.0):
+            raise ValueError("dagger_beta0 must be in [0, 1]")
+        if not (0.0 <= dagger_beta_decay <= 1.0):
+            raise ValueError("dagger_beta_decay must be in [0, 1]")
+
         job_id = uuid.uuid4().hex[:8]
         result_path = JOBS_DIR / f"{job_id}.result.json"
         progress_path = JOBS_DIR / f"{job_id}.progress.json"
@@ -1381,17 +1418,25 @@ class TrainingManager:
             "--method", method,
             "--rollout_steps", str(rollout_steps), "--bc_epochs", str(bc_epochs), "--lr", str(lr),
             "--num_envs", str(num_envs), "--headless", "--cpu",
+            "--dagger_rounds", str(dagger_rounds), "--dagger_beta0", str(dagger_beta0),
+            "--dagger_beta_decay", str(dagger_beta_decay),
             "--result_path", str(result_path), "--progress_path", str(progress_path),
         ]
 
+        # dagger runs dagger_rounds * bc_epochs total BC epochs (one bc_train()
+        # pass per round) — max_iterations must reflect that total, not the
+        # per-round bc_epochs, or jobProgress()'s %/ETA math (which divides
+        # iterations_done by this) would overshoot 100% partway through.
+        total_bc_epochs = dagger_rounds * bc_epochs if method == "dagger" else bc_epochs
         job = TrainingJob(
             id=job_id, policy_name=out_name, task=task,
             command=(f"rugiar distill --teacher {teacher} --task {task} --name {out_name} "
-                     f"--rollout_steps {rollout_steps} --bc_epochs {bc_epochs} --lr {lr} --num_envs {num_envs}"),
+                     f"--rollout_steps {rollout_steps} --bc_epochs {bc_epochs} --lr {lr} --num_envs {num_envs}"
+                     + (f" --dagger_rounds {dagger_rounds}" if method == "dagger" else "")),
             log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
             started_at=time.time(),
-            max_iterations=bc_epochs, max_minutes=None, num_envs=num_envs,
-            job_type="distill", teacher_policy=teacher,
+            max_iterations=total_bc_epochs, max_minutes=None, num_envs=num_envs,
+            job_type="distill", teacher_policy=teacher, distill_method=method,
             simulator=source.get("simulator", "genesis"),
         )
 
@@ -1496,6 +1541,9 @@ class TrainingManager:
                 job.train_checkpoint_path = result.get("train_checkpoint_path")
                 job.iterations_done = result.get("iterations_done")
                 job.final_bc_loss = result.get("final_bc_loss")
+                job.rollout_diagnostics = result.get("rollout_diagnostics")
+                job.distill_loss_curve = result.get("loss_curve")
+                job.distill_round_diagnostics = result.get("round_diagnostics")
                 job.status = "done"
                 newly_done.append(job)
                 # Record actual iterations completed, not the requested cap —

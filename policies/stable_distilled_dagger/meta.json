@@ -1,0 +1,560 @@
+{
+  "task": "g1",
+  "created_at": 1786992881.6800141,
+  "trained_via": "distillation",
+  "simulator": "isaacgym",
+  "command": "rugiar distill --teacher stable --task g1 --name stable_distilled_dagger --rollout_steps 4000 --bc_epochs 20 --lr 0.001 --num_envs 1 --dagger_rounds 5",
+  "num_envs": 1,
+  "started_at": 1786992510.828019,
+  "finished_at": 1786992881.676351,
+  "elapsed_s": 370.8,
+  "log_path": "/Users/josetabuyo/Development/GIAR/RobotUniversityGiar/policies/stable_distilled_dagger/train.log",
+  "distillation": {
+    "method": "dagger",
+    "teacher": "stable",
+    "bc_epochs": 100,
+    "final_bc_loss": 0.06413389061635826,
+    "rollout_diagnostics": {
+      "actual_lin_vel_x": {
+        "mean": 0.08211749792098999,
+        "std": 0.5526182651519775,
+        "min": -2.8261313438415527,
+        "max": 3.3081181049346924
+      },
+      "actual_lin_vel_y": {
+        "mean": 0.011111617088317871,
+        "std": 0.5771211385726929,
+        "min": -3.787928581237793,
+        "max": 3.477247714996338
+      },
+      "actual_ang_vel_yaw": {
+        "mean": -0.03666377067565918,
+        "std": 0.9087437391281128,
+        "min": -11.419673919677734,
+        "max": 8.768777847290039
+      },
+      "commanded_lin_vel_x": {
+        "mean": 0.016825495287775993,
+        "std": 0.37181738018989563,
+        "min": -0.8749324083328247,
+        "max": 0.9720607995986938
+      },
+      "commanded_lin_vel_y": {
+        "mean": -0.06806378811597824,
+        "std": 0.3651275336742401,
+        "min": -0.9959148168563843,
+        "max": 0.9432814121246338
+      },
+      "commanded_ang_vel_yaw": {
+        "mean": -0.0012538583250716329,
+        "std": 0.4434039890766144,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "action_abs_mean": 0.8216335773468018
+    },
+    "loss_curve": [
+      {
+        "round": 0,
+        "epoch": 0,
+        "loss": 0.323125
+      },
+      {
+        "round": 0,
+        "epoch": 1,
+        "loss": 0.15345
+      },
+      {
+        "round": 0,
+        "epoch": 2,
+        "loss": 0.109367
+      },
+      {
+        "round": 0,
+        "epoch": 3,
+        "loss": 0.085925
+      },
+      {
+        "round": 0,
+        "epoch": 4,
+        "loss": 0.07029
+      },
+      {
+        "round": 0,
+        "epoch": 5,
+        "loss": 0.059376
+      },
+      {
+        "round": 0,
+        "epoch": 6,
+        "loss": 0.050886
+      },
+      {
+        "round": 0,
+        "epoch": 7,
+        "loss": 0.04497
+      },
+      {
+        "round": 0,
+        "epoch": 8,
+        "loss": 0.040842
+      },
+      {
+        "round": 0,
+        "epoch": 9,
+        "loss": 0.037626
+      },
+      {
+        "round": 0,
+        "epoch": 10,
+        "loss": 0.035443
+      },
+      {
+        "round": 0,
+        "epoch": 11,
+        "loss": 0.033182
+      },
+      {
+        "round": 0,
+        "epoch": 12,
+        "loss": 0.031216
+      },
+      {
+        "round": 0,
+        "epoch": 13,
+        "loss": 0.029141
+      },
+      {
+        "round": 0,
+        "epoch": 14,
+        "loss": 0.0277
+      },
+      {
+        "round": 0,
+        "epoch": 15,
+        "loss": 0.026328
+      },
+      {
+        "round": 0,
+        "epoch": 16,
+        "loss": 0.025189
+      },
+      {
+        "round": 0,
+        "epoch": 17,
+        "loss": 0.024469
+      },
+      {
+        "round": 0,
+        "epoch": 18,
+        "loss": 0.024453
+      },
+      {
+        "round": 0,
+        "epoch": 19,
+        "loss": 0.0223
+      },
+      {
+        "round": 1,
+        "epoch": 0,
+        "loss": 0.135572
+      },
+      {
+        "round": 1,
+        "epoch": 1,
+        "loss": 0.113184
+      },
+      {
+        "round": 1,
+        "epoch": 2,
+        "loss": 0.101588
+      },
+      {
+        "round": 1,
+        "epoch": 3,
+        "loss": 0.092557
+      },
+      {
+        "round": 1,
+        "epoch": 4,
+        "loss": 0.085645
+      },
+      {
+        "round": 1,
+        "epoch": 5,
+        "loss": 0.080344
+      },
+      {
+        "round": 1,
+        "epoch": 6,
+        "loss": 0.073491
+      },
+      {
+        "round": 1,
+        "epoch": 7,
+        "loss": 0.068975
+      },
+      {
+        "round": 1,
+        "epoch": 8,
+        "loss": 0.065175
+      },
+      {
+        "round": 1,
+        "epoch": 9,
+        "loss": 0.063819
+      },
+      {
+        "round": 1,
+        "epoch": 10,
+        "loss": 0.064525
+      },
+      {
+        "round": 1,
+        "epoch": 11,
+        "loss": 0.059664
+      },
+      {
+        "round": 1,
+        "epoch": 12,
+        "loss": 0.057491
+      },
+      {
+        "round": 1,
+        "epoch": 13,
+        "loss": 0.056834
+      },
+      {
+        "round": 1,
+        "epoch": 14,
+        "loss": 0.055256
+      },
+      {
+        "round": 1,
+        "epoch": 15,
+        "loss": 0.050228
+      },
+      {
+        "round": 1,
+        "epoch": 16,
+        "loss": 0.047264
+      },
+      {
+        "round": 1,
+        "epoch": 17,
+        "loss": 0.045886
+      },
+      {
+        "round": 1,
+        "epoch": 18,
+        "loss": 0.047535
+      },
+      {
+        "round": 1,
+        "epoch": 19,
+        "loss": 0.049942
+      },
+      {
+        "round": 2,
+        "epoch": 0,
+        "loss": 0.121202
+      },
+      {
+        "round": 2,
+        "epoch": 1,
+        "loss": 0.108027
+      },
+      {
+        "round": 2,
+        "epoch": 2,
+        "loss": 0.094404
+      },
+      {
+        "round": 2,
+        "epoch": 3,
+        "loss": 0.086233
+      },
+      {
+        "round": 2,
+        "epoch": 4,
+        "loss": 0.080744
+      },
+      {
+        "round": 2,
+        "epoch": 5,
+        "loss": 0.076581
+      },
+      {
+        "round": 2,
+        "epoch": 6,
+        "loss": 0.073595
+      },
+      {
+        "round": 2,
+        "epoch": 7,
+        "loss": 0.078056
+      },
+      {
+        "round": 2,
+        "epoch": 8,
+        "loss": 0.070105
+      },
+      {
+        "round": 2,
+        "epoch": 9,
+        "loss": 0.066312
+      },
+      {
+        "round": 2,
+        "epoch": 10,
+        "loss": 0.062615
+      },
+      {
+        "round": 2,
+        "epoch": 11,
+        "loss": 0.062623
+      },
+      {
+        "round": 2,
+        "epoch": 12,
+        "loss": 0.061108
+      },
+      {
+        "round": 2,
+        "epoch": 13,
+        "loss": 0.058198
+      },
+      {
+        "round": 2,
+        "epoch": 14,
+        "loss": 0.056761
+      },
+      {
+        "round": 2,
+        "epoch": 15,
+        "loss": 0.055787
+      },
+      {
+        "round": 2,
+        "epoch": 16,
+        "loss": 0.058427
+      },
+      {
+        "round": 2,
+        "epoch": 17,
+        "loss": 0.056024
+      },
+      {
+        "round": 2,
+        "epoch": 18,
+        "loss": 0.051593
+      },
+      {
+        "round": 2,
+        "epoch": 19,
+        "loss": 0.051035
+      },
+      {
+        "round": 3,
+        "epoch": 0,
+        "loss": 0.120812
+      },
+      {
+        "round": 3,
+        "epoch": 1,
+        "loss": 0.103133
+      },
+      {
+        "round": 3,
+        "epoch": 2,
+        "loss": 0.090584
+      },
+      {
+        "round": 3,
+        "epoch": 3,
+        "loss": 0.082538
+      },
+      {
+        "round": 3,
+        "epoch": 4,
+        "loss": 0.077794
+      },
+      {
+        "round": 3,
+        "epoch": 5,
+        "loss": 0.074429
+      },
+      {
+        "round": 3,
+        "epoch": 6,
+        "loss": 0.075627
+      },
+      {
+        "round": 3,
+        "epoch": 7,
+        "loss": 0.074918
+      },
+      {
+        "round": 3,
+        "epoch": 8,
+        "loss": 0.070501
+      },
+      {
+        "round": 3,
+        "epoch": 9,
+        "loss": 0.069161
+      },
+      {
+        "round": 3,
+        "epoch": 10,
+        "loss": 0.066058
+      },
+      {
+        "round": 3,
+        "epoch": 11,
+        "loss": 0.064099
+      },
+      {
+        "round": 3,
+        "epoch": 12,
+        "loss": 0.063115
+      },
+      {
+        "round": 3,
+        "epoch": 13,
+        "loss": 0.061522
+      },
+      {
+        "round": 3,
+        "epoch": 14,
+        "loss": 0.060195
+      },
+      {
+        "round": 3,
+        "epoch": 15,
+        "loss": 0.059375
+      },
+      {
+        "round": 3,
+        "epoch": 16,
+        "loss": 0.058764
+      },
+      {
+        "round": 3,
+        "epoch": 17,
+        "loss": 0.057302
+      },
+      {
+        "round": 3,
+        "epoch": 18,
+        "loss": 0.056495
+      },
+      {
+        "round": 3,
+        "epoch": 19,
+        "loss": 0.056484
+      },
+      {
+        "round": 4,
+        "epoch": 0,
+        "loss": 0.117935
+      },
+      {
+        "round": 4,
+        "epoch": 1,
+        "loss": 0.105358
+      },
+      {
+        "round": 4,
+        "epoch": 2,
+        "loss": 0.09281
+      },
+      {
+        "round": 4,
+        "epoch": 3,
+        "loss": 0.087163
+      },
+      {
+        "round": 4,
+        "epoch": 4,
+        "loss": 0.082812
+      },
+      {
+        "round": 4,
+        "epoch": 5,
+        "loss": 0.082371
+      },
+      {
+        "round": 4,
+        "epoch": 6,
+        "loss": 0.081247
+      },
+      {
+        "round": 4,
+        "epoch": 7,
+        "loss": 0.080172
+      },
+      {
+        "round": 4,
+        "epoch": 8,
+        "loss": 0.075963
+      },
+      {
+        "round": 4,
+        "epoch": 9,
+        "loss": 0.078474
+      },
+      {
+        "round": 4,
+        "epoch": 10,
+        "loss": 0.075691
+      },
+      {
+        "round": 4,
+        "epoch": 11,
+        "loss": 0.070647
+      },
+      {
+        "round": 4,
+        "epoch": 12,
+        "loss": 0.069085
+      },
+      {
+        "round": 4,
+        "epoch": 13,
+        "loss": 0.069822
+      },
+      {
+        "round": 4,
+        "epoch": 14,
+        "loss": 0.067934
+      },
+      {
+        "round": 4,
+        "epoch": 15,
+        "loss": 0.065471
+      },
+      {
+        "round": 4,
+        "epoch": 16,
+        "loss": 0.066356
+      },
+      {
+        "round": 4,
+        "epoch": 17,
+        "loss": 0.063914
+      },
+      {
+        "round": 4,
+        "epoch": 18,
+        "loss": 0.064425
+      },
+      {
+        "round": 4,
+        "epoch": 19,
+        "loss": 0.064134
+      }
+    ],
+    "round_diagnostics": null
+  }
+}

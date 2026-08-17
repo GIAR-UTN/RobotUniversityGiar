@@ -32,11 +32,19 @@ Today there is one implemented method:
   value function — PPO fine-tuning warms it up on its own once training
   resumes, same as the start of any other run.
 
-"dagger" (interleaving student rollouts with teacher relabeling, to correct
-for BC's covariate-shift problem — the student never visits its OWN
-mistakes during one-shot BC, only the teacher's trajectory) is listed below
-for UI/CLI parity with fusion.FUSION_METHODS's own "planned but not
-implemented" entries, but not implemented in this pass.
+- "dagger" (Dataset Aggregation) — one-shot "behavior_cloning" has a hard,
+  well-documented ceiling: covariate shift. The student is only ever trained
+  on states the TEACHER visited, so the moment its own imperfect actions
+  drift it even slightly off that trajectory, it's in a state distribution
+  with no correction signal, and error compounds roughly O(T^2) instead of
+  O(T) over an episode. dagger_train() below fixes this the standard way:
+  roll the env out under a student/teacher action MIX (a decaying `beta`
+  fraction is the teacher, so round 0 isn't a totally untrained student
+  immediately face-planting), record the actual obs sequence visited, and
+  aggregate it — together with every PRIOR round's data, not just the
+  latest — into bc_train()'s growing dataset each round. See HANDOFF_dagger_
+  distillation.md (repo root, at implementation time) for the full external
+  research trail motivating this.
 """
 from __future__ import annotations
 
@@ -64,7 +72,7 @@ DISTILL_METHODS: Dict[str, dict] = {
             "cloning's covariate-shift problem — the student visits its OWN mistakes and "
             "gets corrected on them, not just the teacher's trajectory."
         ),
-        "available": False,
+        "available": True,
     },
 }
 
@@ -140,18 +148,29 @@ def collect_rollout(env, teacher_backend, num_steps: int,
     per-env reset as long as `num_envs == 1` — the convention this whole
     distillation feature requires teachers to run under.
 
-    Returns `(obs_buf, action_buf, dones_buf)`, each shaped
-    (num_steps, num_envs, dim) for the first two and (num_steps, num_envs)
-    for `dones_buf` — kept as separate per-step tensors (not flattened) so
-    bc_train() can choose to flatten (non-recurrent student) or walk them in
-    temporal order, resetting hidden state at the real episode boundaries
-    `dones_buf` records (recurrent student)."""
+    Returns `(obs_buf, action_buf, dones_buf, ground_truth)`. The first three are shaped
+    (num_steps, num_envs, dim) / (num_steps, num_envs) as before. `ground_truth` is a dict
+    of RAW simulator-state tensors — {"commands", "base_lin_vel", "base_ang_vel"}, each
+    (num_steps, num_envs, 3) — recorded straight off `env.commands`/`env.simulator.*`
+    every step, for summarize_rollout() below. Deliberately NOT decoded from obs_buf: each
+    task subclass (e.g. G1Robot in envs/g1/g1.py) can freely override compute_observations()
+    with its own column order/contents (g1's own layout has no base_lin_vel at all, and puts
+    commands at columns [6:9] instead of the base LeggedRobot's [9:12]) — decoding obs_buf by
+    a fixed slice silently reads the wrong columns on any task that doesn't match the base
+    layout exactly, producing plausible-looking but wrong numbers (confirmed the hard way:
+    an early version of this function read `dof_pos` deltas as if they were commands on g1).
+    Reading simulator state directly, same as legged_robot.py's own actual_lin_vel_x-style
+    diagnostics, is layout-independent by construction."""
     obs = env.get_observations()
     obs_list, action_list, done_list = [], [], []
+    cmd_list, lin_vel_list, ang_vel_list = [], [], []
     for step in range(num_steps):
         actions = teacher_backend.step(obs.detach())
         obs_list.append(obs.detach().clone())
         action_list.append(actions.detach().clone())
+        cmd_list.append(env.commands[:, :3].detach().clone())
+        lin_vel_list.append(env.simulator.base_lin_vel.detach().clone())
+        ang_vel_list.append(env.simulator.base_ang_vel.detach().clone())
         obs, _, _, dones, _ = env.step(actions.detach())
         done_mask = dones.detach().clone().bool() if torch.is_tensor(dones) else \
             torch.zeros(obs.shape[0], dtype=torch.bool, device=obs.device)
@@ -160,7 +179,47 @@ def collect_rollout(env, teacher_backend, num_steps: int,
             teacher_backend.reset()
         if callback is not None:
             callback(step, num_steps)
-    return torch.stack(obs_list), torch.stack(action_list), torch.stack(done_list)
+    ground_truth = {
+        "commands": torch.stack(cmd_list),
+        "base_lin_vel": torch.stack(lin_vel_list),
+        "base_ang_vel": torch.stack(ang_vel_list),
+    }
+    return torch.stack(obs_list), torch.stack(action_list), torch.stack(done_list), ground_truth
+
+
+def summarize_rollout(ground_truth: Dict[str, torch.Tensor], action_buf: torch.Tensor) -> Dict[str, Dict[str, float]]:
+    """Diagnostic-only summary of a collect_rollout() dataset — never fed into bc_train(),
+    just printed/logged so a stubbornly-high final_bc_loss (or a clone that visibly doesn't
+    move like its teacher) can be told apart from a plain DATA-COVERAGE gap: with
+    `--num_envs 1` (the required default for a batch-locked teacher — see this module's
+    docstring), the whole BC dataset is a SINGLE rollout_steps-long trajectory under
+    whatever commands the env's own resampler happened to draw during that one run —
+    nothing guarantees it ever visited the teacher's full command envelope (e.g. turning,
+    or a full-speed command) even once. A rollout whose commanded_ang_vel_yaw range never
+    leaves ~0 means the student was never shown what the teacher does under a turn command,
+    regardless of how low final_bc_loss gets on the (narrow) data it did see.
+
+    `ground_truth` is collect_rollout()'s own return (raw simulator state, not decoded from
+    obs — see that function's docstring for why decoding obs_buf by column slice is fragile
+    across task subclasses). `action_buf` is collect_rollout()'s own (steps, envs, dim)."""
+    commands = ground_truth["commands"].reshape(-1, 3)
+    lin_vel = ground_truth["base_lin_vel"].reshape(-1, 3)
+    ang_vel = ground_truth["base_ang_vel"].reshape(-1, 3)
+    flat_actions = action_buf.reshape(-1, action_buf.shape[-1])
+
+    def stats(t: torch.Tensor) -> Dict[str, float]:
+        return {"mean": t.mean().item(), "std": t.std().item(),
+                "min": t.min().item(), "max": t.max().item()}
+
+    return {
+        "actual_lin_vel_x": stats(lin_vel[:, 0]),
+        "actual_lin_vel_y": stats(lin_vel[:, 1]),
+        "actual_ang_vel_yaw": stats(ang_vel[:, 2]),
+        "commanded_lin_vel_x": stats(commands[:, 0]),
+        "commanded_lin_vel_y": stats(commands[:, 1]),
+        "commanded_ang_vel_yaw": stats(commands[:, 2]),
+        "action_abs_mean": flat_actions.abs().mean().item(),
+    }
 
 
 def bc_train(student: nn.Module, obs_buf: torch.Tensor, action_buf: torch.Tensor, epochs: int,
@@ -252,3 +311,144 @@ def bc_train(student: nn.Module, obs_buf: torch.Tensor, action_buf: torch.Tensor
         if callback is not None:
             callback(epoch, final_loss)
     return final_loss
+
+
+def dagger_train(env, teacher_backend, student: nn.Module, num_rounds: int, round_steps: int,
+                  bc_epochs: int, lr: float = 1e-3, beta0: float = 1.0, beta_decay: float = 0.5,
+                  num_mini_batches: int = 4, chunk_len: int = 25,
+                  callback: Optional[Callable[[str, int, int, int, Optional[float]], None]] = None
+                  ) -> Tuple[float, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+    """DAgger: fixes one-shot `bc_train()`'s covariate-shift ceiling (see this
+    module's docstring) by training on states the STUDENT actually visits,
+    correctly relabeled with what the teacher would have done there.
+
+    For `num_rounds` rounds: roll `env` out for `round_steps` ticks under a
+    per-step, per-env MIX of student and teacher actions (`beta = beta0 *
+    beta_decay**round` fraction teacher — round 0 defaults to all-teacher so
+    the very first rollout isn't an untrained student immediately
+    face-planting and only ever visiting "on the ground" states, decaying
+    toward mostly-student in later rounds); aggregate this round's (obs,
+    label) pairs onto every PRIOR round's (vanilla DAgger — the whole point
+    is a training set spanning both old and newly-discovered states); retrain
+    `student` in place via `bc_train()` (continued from its current weights,
+    not from scratch — cheaper, and standard practice) on the full aggregate.
+
+    Labeling: the teacher backend is run *inline*, once, over the exact same
+    obs sequence the mixed policy is producing in the exact order it's
+    produced — not a separate replay pass. Since `teacher_backend.step()` is
+    a pure function of the input history in order, stepping it forward live
+    during the mixed rollout to decide the mix IS already "replaying the obs
+    sequence through the teacher in order" (the operation a recurrent
+    teacher's hidden-state continuity requires, see collect_rollout()'s and
+    HANDOFF_distillation_hidden_state_bug.md's docstrings for why that
+    matters) — a second, separate replay pass would recompute the identical
+    values.
+
+    A round boundary resets both the teacher's and (if recurrent) the
+    student's hidden state, but does NOT reset `env` itself (rollout simply
+    continues from wherever the previous round's episode was) — so that
+    reset is invisible to the environment's own `dones` signal. To keep
+    `bc_train()`'s chunked-BPTT hidden-state resets aligned with what
+    actually happened during collection, each round's first recorded step is
+    OR'd into `True` in the returned/aggregated dones buffer, same as a real
+    episode boundary.
+
+    Returns `(final_loss, obs_buf, action_buf, dones_buf, ground_truth, loss_curve,
+    round_diagnostics)`. The first five match `collect_rollout()`'s own return shape
+    (plus the final round's BC loss) so callers (web_distill.py) can feed
+    `(ground_truth, action_buf)` into `summarize_rollout()` exactly as they already do
+    for `behavior_cloning`. The last two exist because a single `final_bc_loss` number
+    is actively misleading for dagger — see this function's own module-level context:
+    each round's dataset is a strict superset of the last, MORE, and progressively
+    HARDER (the student's own drifted/mistake states, not just the teacher's clean
+    trajectory), so the loss is expected to trend UP round-over-round even as the
+    student's real closed-loop competence improves — a bare final number can't be told
+    apart from an actual regression without the per-round trend.
+    - `loss_curve`: one entry per (round, epoch) — `{"round", "epoch", "loss"}` — the
+      full curve, for a UI to chart the within-round convergence AND the round-to-round
+      resets in one series.
+    - `round_diagnostics`: one entry per round — `{"round", "beta", "final_loss",
+      **summarize_rollout(...)}` computed from THAT round's own (obs, teacher-relabeled
+      action) pairs only, not the aggregate — so behavioral coverage (commanded/actual
+      velocity ranges, action magnitude) can be tracked trending toward the teacher's
+      own numbers round over round, independent of the loss number.
+
+    `callback(phase, round_idx, i, total, loss)` fires with phase="rollout" (i=step,
+    total=round_steps, loss=None) during collection and phase="bc_train" (i=epoch,
+    total=bc_epochs, loss=mean_loss) during each round's retrain."""
+    device = next(student.parameters()).device
+    all_obs, all_actions, all_dones = [], [], []
+    all_cmd, all_lin_vel, all_ang_vel = [], [], []
+    loss_curve, round_diagnostics = [], []
+    final_loss = 0.0
+
+    for round_idx in range(num_rounds):
+        beta = beta0 * (beta_decay ** round_idx)
+        obs = env.get_observations()
+        teacher_backend.reset()
+        student.reset(dones=torch.ones(env.num_envs, dtype=torch.bool, device=obs.device))
+
+        obs_list, label_list, done_list = [], [], []
+        cmd_list, lin_vel_list, ang_vel_list = [], [], []
+        with torch.no_grad():
+            for step in range(round_steps):
+                teacher_action = teacher_backend.step(obs.detach())
+                student_action = student.act_inference(obs.detach())
+                use_teacher = (torch.rand(env.num_envs, device=obs.device) < beta).unsqueeze(-1)
+                mixed_action = torch.where(use_teacher, teacher_action, student_action)
+
+                obs_list.append(obs.detach().clone())
+                label_list.append(teacher_action.detach().clone())
+                cmd_list.append(env.commands[:, :3].detach().clone())
+                lin_vel_list.append(env.simulator.base_lin_vel.detach().clone())
+                ang_vel_list.append(env.simulator.base_ang_vel.detach().clone())
+
+                obs, _, _, dones, _ = env.step(mixed_action.detach())
+                done_mask = dones.detach().clone().bool() if torch.is_tensor(dones) else \
+                    torch.zeros(obs.shape[0], dtype=torch.bool, device=obs.device)
+                done_list.append(done_mask)
+                if torch.any(done_mask):
+                    teacher_backend.reset()
+                    student.reset(dones=done_mask)
+                if callback is not None:
+                    callback("rollout", round_idx, step, round_steps, None)
+
+        done_list[0] = torch.ones_like(done_list[0])  # round boundary == forced hidden-state reset, see docstring
+        all_obs.append(torch.stack(obs_list))
+        all_actions.append(torch.stack(label_list))
+        all_dones.append(torch.stack(done_list))
+        all_cmd.append(torch.stack(cmd_list))
+        all_lin_vel.append(torch.stack(lin_vel_list))
+        all_ang_vel.append(torch.stack(ang_vel_list))
+
+        agg_obs = torch.cat(all_obs, dim=0)
+        agg_actions = torch.cat(all_actions, dim=0)
+        agg_dones = torch.cat(all_dones, dim=0)
+
+        def _epoch_callback(epoch, loss, _round_idx=round_idx):
+            loss_curve.append({"round": _round_idx, "epoch": epoch, "loss": loss})
+            if callback is not None:
+                callback("bc_train", _round_idx, epoch, bc_epochs, loss)
+
+        final_loss = bc_train(
+            student, agg_obs, agg_actions, epochs=bc_epochs, lr=lr,
+            num_mini_batches=num_mini_batches, chunk_len=chunk_len, dones_buf=agg_dones,
+            callback=_epoch_callback)
+
+        round_gt = {
+            "commands": torch.stack(cmd_list),
+            "base_lin_vel": torch.stack(lin_vel_list),
+            "base_ang_vel": torch.stack(ang_vel_list),
+        }
+        round_diagnostics.append({
+            "round": round_idx, "beta": beta, "final_loss": final_loss,
+            **summarize_rollout(round_gt, torch.stack(label_list)),
+        })
+
+    ground_truth = {
+        "commands": torch.cat(all_cmd, dim=0),
+        "base_lin_vel": torch.cat(all_lin_vel, dim=0),
+        "base_ang_vel": torch.cat(all_ang_vel, dim=0),
+    }
+    return (final_loss, torch.cat(all_obs, dim=0), torch.cat(all_actions, dim=0),
+            torch.cat(all_dones, dim=0), ground_truth, loss_curve, round_diagnostics)

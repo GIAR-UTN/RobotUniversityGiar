@@ -324,10 +324,18 @@ class LeggedRobot(BaseTask):
             ) * self.reward_scales["termination"]
             self.rew_buf += rew
             self.episode_sums["termination"] += rew
-        # diagnostic-only: actual forward velocity, not a reward term (never added to
-        # rew_buf) — dt-scaled to match how reward terms accumulate, so the reset-time
-        # division by max_episode_length_s yields a true time-average in m/s
+        # diagnostic-only: actual motor-behavior variables, not reward terms (never added
+        # to rew_buf) — dt-scaled to match how reward terms accumulate, so the reset-time
+        # division by max_episode_length_s yields a true time-average in physical units.
+        # All come straight off simulator state already computed every step for the reward
+        # functions above — free to log, see "How to know if a checkpoint actually walks"
+        # in the rugiar skill for why tracking-reward numbers alone aren't trusted here.
         self.episode_sums["actual_lin_vel_x"] += self.simulator.base_lin_vel[:, 0] * self.dt
+        self.episode_sums["actual_lin_vel_y"] += self.simulator.base_lin_vel[:, 1] * self.dt
+        self.episode_sums["actual_ang_vel_yaw"] += self.simulator.base_ang_vel[:, 2] * self.dt
+        self.episode_sums["actual_base_height"] += self.simulator.base_pos[:, 2] * self.dt
+        self.episode_sums["actual_torque_abs_mean"] += torch.mean(
+            torch.abs(self.simulator.torques), dim=1) * self.dt
 
     def compute_observations(self) -> None:
         """Compute observations for all environments.
@@ -668,7 +676,9 @@ class LeggedRobot(BaseTask):
         # same episode_sums/extras plumbing (and its "rew_" key prefix) to get free logging
         # in the training printout, meta.json metrics series, and the control web's charts —
         # see "Measuring actual velocity" in the rugiar skill for why this exists.
-        self.episode_sums["actual_lin_vel_x"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+        for _diag_key in ("actual_lin_vel_x", "actual_lin_vel_y", "actual_ang_vel_yaw",
+                          "actual_base_height", "actual_torque_abs_mean"):
+            self.episode_sums[_diag_key] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
 
     def _parse_cfg(self, cfg: LeggedRobotCfg) -> None:
         # === SIMULATION TIMING VALIDATION ===
