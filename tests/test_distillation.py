@@ -67,16 +67,23 @@ class _FakeTeacherBackend:
 
 
 class _FakeEnv:
-    """Just enough of the vectorized-env interface collect_rollout() needs
-    (get_observations()/step()) — real dynamics are irrelevant to testing
-    the BC plumbing itself. `done_at_steps`, if given, is a set of step
-    indices (0-based, matching collect_rollout()'s own `step` counter) at
-    which every env reports done=True, so tests can exercise the
-    episode-boundary reset path."""
+    """Just enough of the vectorized-env interface collect_rollout()/
+    dagger_train() need (get_observations()/step()/commands/simulator.*) —
+    real dynamics are irrelevant to testing the BC plumbing itself.
+    `commands`/`simulator.base_lin_vel`/`simulator.base_ang_vel` back
+    collect_rollout()'s ground_truth diagnostics (see its own docstring for
+    why those are read straight off simulator state instead of decoded from
+    obs). `done_at_steps`, if given, is a set of step indices (0-based,
+    matching collect_rollout()'s own `step` counter) at which every env
+    reports done=True, so tests can exercise the episode-boundary reset
+    path."""
 
     def __init__(self, num_envs, num_obs, done_at_steps=frozenset()):
         self.num_envs, self.num_obs = num_envs, num_obs
         self.obs = torch.randn(num_envs, num_obs)
+        self.commands = torch.randn(num_envs, 3)
+        self.simulator = types.SimpleNamespace(
+            base_lin_vel=torch.randn(num_envs, 3), base_ang_vel=torch.randn(num_envs, 3))
         self.done_at_steps = done_at_steps
         self._step = 0
 
@@ -85,6 +92,9 @@ class _FakeEnv:
 
     def step(self, actions):
         self.obs = torch.randn(self.num_envs, self.num_obs)
+        self.commands = torch.randn(self.num_envs, 3)
+        self.simulator.base_lin_vel = torch.randn(self.num_envs, 3)
+        self.simulator.base_ang_vel = torch.randn(self.num_envs, 3)
         dones = torch.full((self.num_envs,), self._step in self.done_at_steps, dtype=torch.bool)
         self._step += 1
         return self.obs, None, None, dones, {}
@@ -141,7 +151,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
         teacher = _FakeTeacherBackend(ActorCritic(num_actor_obs=6, num_critic_obs=6, num_actions=3,
                                                     actor_hidden_dims=[8], critic_hidden_dims=[8]))
         env = _FakeEnv(num_envs=4, num_obs=6)
-        obs_buf, action_buf, dones_buf = distillation.collect_rollout(env, teacher, num_steps=10)
+        obs_buf, action_buf, dones_buf, ground_truth = distillation.collect_rollout(env, teacher, num_steps=10)
         self.assertEqual(tuple(obs_buf.shape), (10, 4, 6))
         self.assertEqual(tuple(action_buf.shape), (10, 4, 3))
         self.assertEqual(tuple(dones_buf.shape), (10, 4))
@@ -168,7 +178,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
         teacher = _FakeTeacherBackend(ActorCritic(num_actor_obs=6, num_critic_obs=6, num_actions=3,
                                                     actor_hidden_dims=[8], critic_hidden_dims=[8]))
         env = _FakeEnv(num_envs=1, num_obs=6, done_at_steps={2, 5})
-        obs_buf, action_buf, dones_buf = distillation.collect_rollout(env, teacher, num_steps=10)
+        obs_buf, action_buf, dones_buf, ground_truth = distillation.collect_rollout(env, teacher, num_steps=10)
         self.assertEqual(teacher.reset_calls, 2)
         self.assertTrue(bool(dones_buf[2, 0]))
         self.assertTrue(bool(dones_buf[5, 0]))
@@ -179,7 +189,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
         teacher = _FakeTeacherBackend(ActorCritic(num_actor_obs=6, num_critic_obs=6, num_actions=3,
                                                     actor_hidden_dims=[8], critic_hidden_dims=[8]))
         env = _FakeEnv(num_envs=4, num_obs=6)
-        obs_buf, action_buf, _ = distillation.collect_rollout(env, teacher, num_steps=20)
+        obs_buf, action_buf, _, _ = distillation.collect_rollout(env, teacher, num_steps=20)
         student = distillation.build_student(6, 6, 3, _policy_cfg(), is_recurrent=False)
         losses = []
         final = distillation.bc_train(student, obs_buf, action_buf, epochs=25, lr=1e-2, num_mini_batches=2,
@@ -193,7 +203,7 @@ class TestDistillationAlgorithm(unittest.TestCase):
             num_actor_obs=6, num_critic_obs=6, num_actions=3, actor_hidden_dims=[8], critic_hidden_dims=[8],
             rnn_type="lstm", rnn_hidden_size=8, rnn_num_layers=1))
         env = _FakeEnv(num_envs=3, num_obs=6)
-        obs_buf, action_buf, dones_buf = distillation.collect_rollout(env, teacher, num_steps=30)
+        obs_buf, action_buf, dones_buf, _ = distillation.collect_rollout(env, teacher, num_steps=30)
         student = distillation.build_student(6, 6, 3, _policy_cfg(), is_recurrent=True)
         losses = []
         final = distillation.bc_train(student, obs_buf, action_buf, epochs=12, lr=1e-2, chunk_len=10,
@@ -227,6 +237,74 @@ class TestDistillationAlgorithm(unittest.TestCase):
         params_a = torch.cat([p.detach().flatten() for p in student_a.parameters()])
         params_b = torch.cat([p.detach().flatten() for p in student_b.parameters()])
         self.assertFalse(torch.allclose(params_a, params_b))
+
+    def test_dagger_train_returns_correctly_shaped_aggregated_buffers(self):
+        torch.manual_seed(3)
+        teacher = _FakeTeacherBackend(ActorCritic(num_actor_obs=6, num_critic_obs=6, num_actions=3,
+                                                    actor_hidden_dims=[8], critic_hidden_dims=[8]))
+        env = _FakeEnv(num_envs=2, num_obs=6)
+        student = distillation.build_student(6, 6, 3, _policy_cfg(rnn_hidden_size=8), is_recurrent=False)
+        final_loss, obs_buf, action_buf, dones_buf, ground_truth = distillation.dagger_train(
+            env, teacher, student, num_rounds=3, round_steps=5, bc_epochs=2, lr=1e-2)
+        # 3 rounds x 5 steps each, aggregated (not just the latest round) — see this
+        # function's own docstring on why vanilla DAgger keeps every round's data.
+        self.assertEqual(tuple(obs_buf.shape), (15, 2, 6))
+        self.assertEqual(tuple(action_buf.shape), (15, 2, 3))
+        self.assertEqual(tuple(dones_buf.shape), (15, 2))
+        self.assertEqual(tuple(ground_truth["commands"].shape), (15, 2, 3))
+        self.assertIsInstance(final_loss, float)
+
+    def test_dagger_train_marks_round_boundaries_as_done(self):
+        # Round boundaries reset both backends' hidden state but env.step() itself never
+        # reports a done there — dagger_train() must force that boundary into dones_buf
+        # itself (see its own docstring) so bc_train()'s chunked hidden-state resets stay
+        # aligned with what collection actually did.
+        torch.manual_seed(4)
+        teacher = _FakeTeacherBackend(ActorCritic(num_actor_obs=6, num_critic_obs=6, num_actions=3,
+                                                    actor_hidden_dims=[8], critic_hidden_dims=[8]))
+        env = _FakeEnv(num_envs=1, num_obs=6)  # never reports done on its own
+        student = distillation.build_student(6, 6, 3, _policy_cfg(), is_recurrent=False)
+        _, _, _, dones_buf, _ = distillation.dagger_train(
+            env, teacher, student, num_rounds=3, round_steps=4, bc_epochs=1, lr=1e-2)
+        self.assertTrue(bool(dones_buf[0, 0]))    # round 0 boundary
+        self.assertTrue(bool(dones_buf[4, 0]))    # round 1 boundary
+        self.assertTrue(bool(dones_buf[8, 0]))    # round 2 boundary
+        self.assertFalse(bool(dones_buf[1, 0]))
+
+    def test_dagger_train_beta_zero_round_steps_env_with_student_actions(self):
+        # With beta0=0 (never the teacher), every action actually fed to env.step() must be
+        # the STUDENT's — proves the mix genuinely branches on beta rather than always
+        # leaning on the teacher regardless of the requested fraction. lr=0.0 keeps the
+        # student's weights (and thus its action for a given obs) fixed across the single
+        # round's retrain, so the comparison below isn't chasing a moving target.
+        torch.manual_seed(5)
+        teacher = _FakeTeacherBackend(ActorCritic(num_actor_obs=6, num_critic_obs=6, num_actions=3,
+                                                    actor_hidden_dims=[8], critic_hidden_dims=[8]))
+        student = distillation.build_student(6, 6, 3, _policy_cfg(), is_recurrent=False)
+
+        class _SpyEnv(_FakeEnv):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.seen_actions = []
+
+            def step(self, actions):
+                self.seen_actions.append(actions.detach().clone())
+                return super().step(actions)
+
+        env = _SpyEnv(num_envs=4, num_obs=6)
+        # lr=0.0 keeps the student's weights fixed across the round's retrain, so replaying
+        # the SAME obs sequence dagger_train() recorded (obs_buf) through the (unmoved)
+        # student afterward reproduces exactly what should have been fed to env.step() if
+        # (and only if) the mix picked the student's action at every one of these steps.
+        _, obs_buf, _, _, _ = distillation.dagger_train(
+            env, teacher, student, num_rounds=1, round_steps=6, bc_epochs=1, lr=0.0, beta0=0.0)
+
+        self.assertEqual(len(env.seen_actions), 6)
+        student.reset(dones=torch.ones(4, dtype=torch.bool))
+        with torch.no_grad():
+            for t in range(6):
+                expected = student.act_inference(obs_buf[t])
+                self.assertTrue(torch.allclose(expected, env.seen_actions[t]))
 
 
 class TestStartDistillation(unittest.TestCase):
@@ -281,9 +359,45 @@ class TestStartDistillation(unittest.TestCase):
             mgr.start_distillation("t", "g1", "out", method="nope")
 
     def test_planned_but_unavailable_method_raises(self):
+        # dagger is real now (distillation.DISTILL_METHODS["dagger"]["available"] is True)
+        # — exercise the "planned, not implemented" rejection path itself instead, via a
+        # temporary fake entry, so this guard stays covered even with every real method available.
+        from legged_gym.control import distillation
+        distillation.DISTILL_METHODS["_test_planned"] = {"label": "x", "description": "x", "available": False}
+        try:
+            mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
+            with self.assertRaises(ValueError):
+                mgr.start_distillation("t", "g1", "out", method="_test_planned")
+        finally:
+            del distillation.DISTILL_METHODS["_test_planned"]
+
+    def test_dagger_method_is_accepted(self):
+        import unittest.mock as mock
+        mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
+        fake_proc = types.SimpleNamespace(poll=lambda: None, terminate=lambda: None)
+        with mock.patch.object(training_mod.subprocess, "Popen", return_value=fake_proc) as popen:
+            job_id = mgr.start_distillation(
+                "t", "g1", "out", method="dagger", dagger_rounds=3, dagger_beta0=0.8, dagger_beta_decay=0.4)
+        argv = popen.call_args.args[0]
+        self.assertIn("--dagger_rounds", argv)
+        self.assertEqual(argv[argv.index("--dagger_rounds") + 1], "3")
+        self.assertIn("--dagger_beta0", argv)
+        self.assertIn("--dagger_beta_decay", argv)
+        self.assertEqual(mgr.jobs[job_id].distill_method, "dagger")
+        # max_iterations must be the TOTAL bc epochs across all rounds (dagger_rounds *
+        # bc_epochs), not just one round's — see start_distillation()'s own comment on why.
+        self.assertEqual(mgr.jobs[job_id].max_iterations, 3 * 20)  # bc_epochs defaults to 20
+        mgr._log_files[job_id].close()
+
+    def test_dagger_invalid_rounds_raises(self):
         mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
         with self.assertRaises(ValueError):
-            mgr.start_distillation("t", "g1", "out", method="dagger")
+            mgr.start_distillation("t", "g1", "out", method="dagger", dagger_rounds=0)
+
+    def test_dagger_invalid_beta_raises(self):
+        mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
+        with self.assertRaises(ValueError):
+            mgr.start_distillation("t", "g1", "out", method="dagger", dagger_beta0=1.5)
 
     def test_empty_out_name_raises(self):
         mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})

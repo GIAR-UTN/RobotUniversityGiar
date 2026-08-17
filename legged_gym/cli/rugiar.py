@@ -290,6 +290,13 @@ def _build_distill_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
                              "docstring; a locally-trained teacher can safely go higher for a faster rollout)")
     hyper.add_argument("--method", type=str, default="behavior_cloning",
                         help="distillation method (see --list_distill_methods) — 'behavior_cloning' (default)")
+    hyper.add_argument("--dagger_rounds", type=int, default=None,
+                        help="'dagger' method only — rollout+relabel+retrain rounds (default: 5). "
+                             "--rollout_steps/--bc_epochs become PER-ROUND values under dagger.")
+    hyper.add_argument("--dagger_beta0", type=float, default=None,
+                        help="'dagger' method only — teacher-action fraction in round 0 (default: 1.0)")
+    hyper.add_argument("--dagger_beta_decay", type=float, default=None,
+                        help="'dagger' method only — per-round multiplicative decay on that fraction (default: 0.5)")
 
     discover = p.add_argument_group("Discovery (print information and exit — no distilling)")
     discover.add_argument("--list_distill_methods", action="store_true",
@@ -336,6 +343,8 @@ def run_distill(args: argparse.Namespace, parser: argparse.ArgumentParser) -> in
         job_id = mgr.start_distillation(
             args.teacher, args.task, args.name, rollout_steps=args.rollout_steps,
             bc_epochs=args.bc_epochs, lr=args.lr, num_envs=args.num_envs, method=args.method,
+            dagger_rounds=args.dagger_rounds, dagger_beta0=args.dagger_beta0,
+            dagger_beta_decay=args.dagger_beta_decay,
         )
     except ValueError as e:
         parser.error(str(e))
@@ -384,6 +393,16 @@ def run_distill(args: argparse.Namespace, parser: argparse.ArgumentParser) -> in
     )
     print(f"\n[rugiar] '{job.policy_name}' ready — distilled from '{args.teacher}', "
           f"final_bc_loss={job.final_bc_loss}, checkpoint at {final_checkpoint}")
+    diag = job.rollout_diagnostics or {}
+    yaw = diag.get("commanded_ang_vel_yaw")
+    vx = diag.get("commanded_lin_vel_x")
+    if yaw and vx:
+        yaw_span = yaw["max"] - yaw["min"]
+        vx_span = vx["max"] - vx["min"]
+        print(f"[rugiar] rollout command coverage — vx range={vx_span:.3f} m/s, "
+              f"yaw range={yaw_span:.3f} rad/s (single {args.num_envs}-env trajectory; "
+              "a narrow range here means the student never saw the teacher do that, "
+              "regardless of final_bc_loss)")
     return 0
 
 
