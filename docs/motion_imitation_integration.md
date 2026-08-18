@@ -298,28 +298,42 @@ ahí se rescataron dos checkpoints útiles, registrados en `policies/`:
   ("dance1_subject2") — no necesariamente relacionado con el clip
   `B_DadDance` de g1-moves ya convertido en este repo.
 
-**No son plug-and-play con `g1_deepmimic`.** Ambos onnx esperan una
-observación de **154 dims** (`onnxruntime` lo confirma: `obs [1, 154]`) —
-la convención propia de `unitree_rl_mjlab`, un solo frame. Nuestro
-`g1_deepmimic` espera **1380 dims** (`frame_stack=5 × (151 propioceptivo +
-125 de referencia de movimiento)`, ver `g1_deepmimic_config.py`). Es un
-mismatch de **dimensión**, no solo semántico como con `stable` — ni
-`rugiar_driver.py --task g1_deepmimic` ni `rugiar distill` (que valida
-dimensiones antes de aceptar un teacher) lo van a aceptar tal cual. Por
-eso quedaron registrados con `"task": "g1_mjlab_mimic_unregistered"` — un
-nombre que no coincide con ninguna task real, a propósito: quedan
-visibles en `rugiar train --list_policies` pero ningún driver va a
-intentar cargarlos solo y crashear.
+**Actualización 2026-08-18 — resuelto vía migración a mjlab, no vía
+`g1_deepmimic`.** Lo de abajo describe el estado tal como se encontró en
+esta sesión (correcto en su momento); ver `docs/mjlab_migration.md` para
+el estado actual. Resumen: no se hizo compatible con `g1_deepmimic` (eso
+seguía siendo un mismatch de dimensión real, 154 vs 1380, y sigue siendo
+cierto — `g1_deepmimic` no cambió). En cambio, se migró el stack de motion
+imitation completo a `mjlab` (opción 1 de abajo, pero contra `mjlab`
+directamente, no contra `unitree_rl_mjlab` — ver §0 de
+`docs/mjlab_migration.md`). Ambos checkpoints ahora cargan y corren en
+loop cerrado contra `Rugiar-G1-Mimic`, la task propia de este repo
+(`mjlab_tasks/`), confirmado con rollouts de 400 pasos
+(`tests/test_javier_checkpoints_track.py`): `dance1_subject2` no cae
+ninguna vez, error de tracking ~10cm; `model_7000` cae 6 veces (probó
+contra un motion clip desconocido, no necesariamente `dance1_subject2` —
+pregunta abierta para Javier). `meta.json` de ambos ya no dice
+"incompatible as-is" — dice `"task": "Rugiar-G1-Mimic"`.
 
-Dos caminos reales para aprovecharlos, ninguno trivial:
-1. **Registrar una task nueva** con la convención de obs de 154 dims de
-   `unitree_rl_mjlab` (traer su pipeline de observación, no solo el
-   checkpoint) — ahí sí serían teachers válidos para `rugiar distill`.
-2. **Usarlos solo como fuente de movimiento**, no de pesos — correr su
-   sim mjlab (fuera de este repo) para extraer la trayectoria resultante
-   y convertirla al `.pkl` de `MotionLoader`, mismo tratamiento que ya se
-   le dio al clip de g1-moves. Esto no requiere que las redes sean
-   compatibles, solo el movimiento que producen.
+**No son plug-and-play con `g1_deepmimic`** (esto sigue siendo cierto).
+Ambos onnx esperan una observación de **154 dims** (`onnxruntime` lo
+confirma: `obs [1, 154]`) — la convención propia de `mjlab`, un solo
+frame. Nuestro `g1_deepmimic` espera **1380 dims** (`frame_stack=5 × (151
+propioceptivo + 125 de referencia de movimiento)`, ver
+`g1_deepmimic_config.py`). Es un mismatch de **dimensión**, no solo
+semántico como con `stable` — ni `rugiar_driver.py --task g1_deepmimic`
+ni `rugiar distill` (que valida dimensiones antes de aceptar un teacher)
+lo van a aceptar tal cual, y eso no cambió.
+
+Dos caminos reales para aprovecharlos, ninguno trivial (**camino 1
+tomado, ver arriba**):
+1. ~~Registrar una task nueva con la convención de obs de 154 dims de
+   `unitree_rl_mjlab`~~ — hecho, pero contra `mjlab` directamente
+   (`mjlab_tasks/`), no contra el fork de `unitree_rl_mjlab` (ver §0 de
+   `docs/mjlab_migration.md` para por qué el fork no era el target
+   correcto).
+2. Usarlos solo como fuente de movimiento, no de pesos — seguía siendo
+   una opción, no hizo falta: el camino 1 resultó viable directamente.
 
 Se descartó el clon completo de `unitree_rl_mjlab` (664MB) después de
 extraer estos dos archivos — si hace falta algo más de ahí (otros

@@ -117,9 +117,19 @@ xyzw → `.npz` wxyz, converter ported from
    a real path-ordering bug while wiring this up: see R1's update.
    `tests/test_mjlab_tasks_registration.py` confirms the registered task's
    154-dim actor obs and term order match the stock task exactly.
-4. Flip Javier's checkpoints to the registered task; closed-loop test
-   with the thresholds from §1 (with margin — MuJoCo Warp is not
-   deterministic, see R4).
+4. **Flip Javier's checkpoints to the registered task; closed-loop
+   validation.** ✅ done — **this is the milestone**. Both
+   `policies/javier_mjlab_*/meta.json` now say `"task":
+   "Rugiar-G1-Mimic"` (were `"g1_mjlab_mimic_unregistered"`, marked
+   "INCOMPATIBLE AS-IS"). `tests/test_javier_checkpoints_track.py` drives
+   each ONNX checkpoint directly (onnxruntime, no external runner) for
+   400 steps against the `dance1_subject2` reference motion:
+   `dance1_subject2` — 0 falls, ~10cm mean body-pos error;
+   `model_7000` — 6 falls (unknown training motion, see R3), ~18cm.
+   Both within the test's margin-padded thresholds. This is the same
+   result the architecture agent measured outside the repo in §1, now
+   reproduced *inside* the repo, against a properly registered task,
+   as a repeatable test.
 5. Wire into `rugiar_driver_mjlab.py` / `MjlabAdapter` / web UI (third
    family, existing extension point — no new panel).
 6. Training path (Kaggle), first self-trained mjlab policy, and the
