@@ -106,8 +106,8 @@ xyzw → `.npz` wxyz, converter ported from
    the converter's own `torch.testing.assert_close` sanity checks passed,
    and the output loads into a real `Mjlab-Tracking-*` env and steps
    without falling. See `tests/test_process_reference_motion_mjlab.py`.
-2. G1 robot config parity check (docs-only diff, no port needed —
-   mjlab ships G1 29-DoF natively).
+2. **G1 robot config parity check.** ✅ done (docs-only, no port needed —
+   mjlab ships G1 29-DoF natively). See §6 below for the diff.
 3. Register `Rugiar-G1-Mimic`, our own mjlab tracking task (`mjlab_tasks/`
    package at repo root).
 4. Flip Javier's checkpoints to the registered task; closed-loop test
@@ -179,7 +179,51 @@ across driver scripts.** `rugiar_driver_mjlab.py` legitimately can't match
 (different framework) — must be explicitly exempted with a written reason,
 not silently broken or contorted to pass.
 
-## §6 — The 90-day clock
+## §6 — G1 asset parity (Phase 2)
+
+Joint *order* is confirmed identical everywhere in this migration (§0, §3,
+and `docs/motion_imitation_integration.md`) — this section is about
+*gains*, which are **not** identical, and that's fine (sim-only work),
+documented so nobody is surprised later when plugging a policy into
+hardware (see R7).
+
+**Base pose.** Ours (`G1Flat29DofCommonCfg.init_state.pos`): `z=0.8`. mjlab
+(`g1_constants.HOME_KEYFRAME.pos`): `z=0.783675`. ~1.6cm different resting
+height — cosmetic, both are "standing roughly upright" starting points.
+
+**Default joint angles.** Ours hand-tunes all 29 (`default_joint_angles`,
+`common_cfgs.py:211-241` — e.g. `hip_pitch=-0.1`, `knee=0.3`,
+`ankle_pitch=-0.2`, `shoulder_pitch=0.3`, `elbow=0.97`). mjlab's
+`HOME_KEYFRAME.joint_pos` only overrides 7 regex-matched groups
+(`hip_pitch=-0.1`, `knee=0.3`, `ankle_pitch=-0.2`, `shoulder_pitch=0.2`,
+`elbow=1.28`, `shoulder_roll=±0.2`) — everything else defaults to 0.
+Different standing pose, not a bug: the tracking task doesn't use a fixed
+default pose as its behavioral target the way a walking task does (the
+*motion command* is the target), so this matters less than it would for
+`g1`/`go2`.
+
+**Gains — genuinely different, by design.** mjlab derives stiffness from
+motor physics: `armature * (2π·10Hz)²` per actuator family
+(`STIFFNESS_5020=14.25`, `STIFFNESS_7520_14=40.18`,
+`STIFFNESS_7520_22=99.10`, `STIFFNESS_4010=16.78`, each with a matched
+damping). Ours (`G1Flat29DofCommonCfg.control`, `common_cfgs.py:245-265`)
+is hand-tuned per joint *group* (not per motor family):
+`hip=100, knee=150, ankle=40, waist_yaw=200, waist_roll/pitch=40,
+shoulder/elbow/wrist=40`. **Action scale** is the starkest difference:
+ours is a single flat `0.25` for every joint; mjlab's `G1_ACTION_SCALE` is
+per-joint-group, ranging `0.075` (wrist pitch/yaw) to `0.548` (hip
+pitch/yaw, waist yaw) — a ~7x spread ours doesn't have.
+
+**Conclusion, per the migration plan: document, don't fix.** These are two
+independently-tuned gain sets for the same robot, both presumably valid
+for their own reward/action-scale conventions. Mixing them (e.g. porting
+mjlab's action scale into the Genesis stack, or vice versa) is not a
+drop-in change and isn't needed for this migration — mjlab tasks use
+mjlab's own gains end-to-end. The only place this would ever matter is a
+real-hardware deploy, where `deploy.yaml`'s hand-tuned arrays (a *third*,
+independently-tuned set, see R7) are the ones that actually apply.
+
+## §7 — The 90-day clock
 
 Per the handoff's Opus critique: write down triggers now, don't drift.
 `g1_deepmimic`/`g1_motion_vis`/Genesis-based `MotionLoader` get deprecated
