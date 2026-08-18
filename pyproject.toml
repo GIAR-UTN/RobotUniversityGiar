@@ -55,6 +55,20 @@ isaaclab = [
 cloud = [
     "kaggle",
 ]
+mjlab = [
+    # NOTE: install into a SEPARATE venv (.venv-mjlab), never this repo's
+    # main .venv, and always invoke that venv's python with `-I` (isolated
+    # mode). Two hard collisions otherwise: this repo vendors a top-level
+    # `rsl_rl/` package (see [tool.setuptools] packages below) which
+    # shadows PyPI `rsl-rl-lib` (installs as `rsl_rl` too) whenever the
+    # repo root ends up on sys.path -- confirmed on this machine: a plain
+    # `python -c` run from the repo root resolves rsl_rl to the vendored
+    # copy even inside .venv-mjlab; `python -I` fixes it. Second: `genesis`
+    # above pulls mujoco==3.10.0, mjlab needs mujoco~=3.11.0. See
+    # docs/mjlab_migration.md R1.
+    "mjlab==1.6.0",
+    "onnxruntime>=1.19",
+]
 
 [tool.setuptools]
 packages = ['rsl_rl', 'resources', 'legged_gym']

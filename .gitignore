@@ -63,6 +63,7 @@ resources/terrains/*.stl
 
 # GIAR fork additions
 .venv/
+.venv-mjlab/
 plot.png
 outputs/
 
