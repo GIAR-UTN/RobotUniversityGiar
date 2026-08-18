@@ -884,12 +884,19 @@ class TrainingManager:
         whatever --policy flags happened to be typed that time.
 
         Returns name -> {"task", "checkpoint", "train_checkpoint", "category"} for
-        every folder with a checkpoint.pt, skipping names in `exclude`
-        (already loaded a different way, e.g. via --policy) and skipping
-        (with nothing raised — this must never crash startup) anything
-        without a readable meta.json giving its task, since loading a
-        checkpoint from the wrong task/observation-space would crash
-        load_policy() rather than just fail to appear."""
+        every folder with a checkpoint.pt (or checkpoint.onnx — see below),
+        skipping names in `exclude` (already loaded a different way, e.g.
+        via --policy) and skipping (with nothing raised — this must never
+        crash startup) anything without a readable meta.json giving its
+        task, since loading a checkpoint from the wrong task/observation-
+        space would crash load_policy() rather than just fail to appear.
+
+        checkpoint.onnx (in addition to checkpoint.pt) is recognized so an
+        externally-sourced ONNX export (policy.py's load_policy_backend()
+        already dispatches on the .onnx suffix — see OnnxStatelessPolicy/
+        OnnxExplicitStatePolicy) can live in the same policies/<name>/
+        folder convention as a jit one, instead of only being loadable via
+        an ad-hoc --policy path. Prefers .pt if a folder somehow has both."""
         found = {}
         if not POLICIES_DIR.is_dir():
             return found
@@ -898,6 +905,8 @@ class TrainingManager:
             if name in exclude or not entry.is_dir():
                 continue
             checkpoint = entry / "checkpoint.pt"
+            if not checkpoint.is_file():
+                checkpoint = entry / "checkpoint.onnx"
             if not checkpoint.is_file():
                 continue
             try:

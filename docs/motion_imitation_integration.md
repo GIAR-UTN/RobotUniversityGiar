@@ -9,10 +9,15 @@ tenemos nosotros que sirve tal cual, y qué falta convertir/escribir.
 ## Fuentes revisadas
 
 1. **Kaggle notebook de Javier** — `kaggle.com/code/jvillalba007/unitree-rl-mimic`.
-   Corrido sobre `unitreerobotics/unitree_rl_gym` (upstream, NO este fork), no
-   sobre `rugiar`. Llegó hasta la iteración 7000 (`model_7000`). Javier aclaró
-   que es el **G1 EDU completo, 29 motores** (cuerpo entero: piernas + cintura
-   + brazos), a diferencia del trabajo previo del equipo que era solo 12 DOF
+   **Corrección tras bajar el output real**: no corre sobre `unitree_rl_gym`
+   como se pensaba en la Fase 1 (eso es solo lo que menciona el texto del
+   chat) — el kernel en realidad clona y entrena sobre
+   `unitreerobotics/unitree_rl_mjlab` (familia MuJoCo/IsaacLab, NO
+   IsaacGym), exactamente el repo que Javier señaló por separado como "el
+   intermedio que me sirve" (mensaje del 2026-08-16). Llegó hasta la
+   iteración 7000 (`model_7000`). Javier aclaró que es el **G1 EDU
+   completo, 29 motores** (cuerpo entero: piernas + cintura + brazos), a
+   diferencia del trabajo previo del equipo que era solo 12 DOF
    (piernas). El checkpoint en sí no llegó a mandarse por WhatsApp — hay que
    bajarlo del propio notebook de Kaggle (sus outputs/logs).
 2. **Dataset `exptech/g1-moves`** (Hugging Face, CC-BY-4.0) — el que Javier
@@ -275,6 +280,86 @@ con g1-moves antes de asumir que calzan sin reordenar.
 terminan en un policy que se distribuye, hay que dejar constancia del
 crédito a `exptech`/g1-moves en el mismo lugar donde se documenta la
 procedencia (meta.json `note`, como ya se hizo acá, o en un doc central).
+
+## El checkpoint real de Javier — bajado, pero incompatible tal cual
+
+Javier nunca mandó un archivo por WhatsApp — todo lo que compartió fue el
+link a su Kaggle notebook público. Se bajó directo con
+`kaggle kernels output jvillalba007/unitree-rl-mimic` (credenciales ya
+configuradas en esta máquina): el kernel clona y entrena sobre
+`unitreerobotics/unitree_rl_mjlab` (664MB de repo completo con logs). De
+ahí se rescataron dos checkpoints útiles, registrados en `policies/`:
+
+- **`javier_mjlab_model_7000`** — `logs/rsl_rl/g1_tracking/2026-08-13_06-
+  08-32/policy.onnx`, el export final de su run de 7000 iteraciones.
+- **`javier_mjlab_dance1_subject2`** — `deploy/robots/g1/config/policy/
+  mimic/dance1_subject2/exported/policy.onnx` (+ `.onnx.data`), un export
+  curado para deploy de una policy de mimic de UN movimiento específico
+  ("dance1_subject2") — no necesariamente relacionado con el clip
+  `B_DadDance` de g1-moves ya convertido en este repo.
+
+**No son plug-and-play con `g1_deepmimic`.** Ambos onnx esperan una
+observación de **154 dims** (`onnxruntime` lo confirma: `obs [1, 154]`) —
+la convención propia de `unitree_rl_mjlab`, un solo frame. Nuestro
+`g1_deepmimic` espera **1380 dims** (`frame_stack=5 × (151 propioceptivo +
+125 de referencia de movimiento)`, ver `g1_deepmimic_config.py`). Es un
+mismatch de **dimensión**, no solo semántico como con `stable` — ni
+`rugiar_driver.py --task g1_deepmimic` ni `rugiar distill` (que valida
+dimensiones antes de aceptar un teacher) lo van a aceptar tal cual. Por
+eso quedaron registrados con `"task": "g1_mjlab_mimic_unregistered"` — un
+nombre que no coincide con ninguna task real, a propósito: quedan
+visibles en `rugiar train --list_policies` pero ningún driver va a
+intentar cargarlos solo y crashear.
+
+Dos caminos reales para aprovecharlos, ninguno trivial:
+1. **Registrar una task nueva** con la convención de obs de 154 dims de
+   `unitree_rl_mjlab` (traer su pipeline de observación, no solo el
+   checkpoint) — ahí sí serían teachers válidos para `rugiar distill`.
+2. **Usarlos solo como fuente de movimiento**, no de pesos — correr su
+   sim mjlab (fuera de este repo) para extraer la trayectoria resultante
+   y convertirla al `.pkl` de `MotionLoader`, mismo tratamiento que ya se
+   le dio al clip de g1-moves. Esto no requiere que las redes sean
+   compatibles, solo el movimiento que producen.
+
+Se descartó el clon completo de `unitree_rl_mjlab` (664MB) después de
+extraer estos dos archivos — si hace falta algo más de ahí (otros
+`model_N.pt` intermedios, otros exports de `deploy/robots/g1/config/
+policy/`), hay que volver a bajarlo con el mismo comando.
+
+## `unitree_rl_gym` vs `unitree_rl_mjlab` — de dónde sale realmente cada uno
+
+Esto no depende de lo que diga nadie en el chat — el código y la actividad
+de ambos repos (ambos de `unitreerobotics`, no forks de terceros) ya lo
+muestran:
+
+| | `unitree_rl_gym` (base de este fork/`rugiar`) | `unitree_rl_mjlab` |
+|---|---|---|
+| Último push | 2025-07-25 (~1 año congelado) | 2026-04-13 (activo) |
+| Issues abiertos | 59 | 42 |
+| Motion imitation nativo | **No existe** (`legged_gym/envs/` solo tiene base/g1/go2/h1/h1_2, ningún mimic) | **Sí, de primera clase** — conversión CSV→NPZ, tasks `Unitree-G1-Tracking-No-State-Estimation`, integración con BeyondMimic |
+
+Conclusión: `g1_deepmimic`/`MotionLoader` en este repo fueron construidos
+**desde cero** por el equipo porque `unitree_rl_gym` nunca tuvo nada
+equivalente — no había nada de upstream para copiar. Javier no eligió
+`mjlab` por preferencia personal de entorno: es el proyecto que Unitree
+mismo sigue manteniendo y que ya trae resuelto justo lo que a nuestra
+base le faltaba. Mismo patrón que Isaac Gym → Isaac Lab (que Ramiro señaló
+para el toolchain de NVIDIA), solo que nadie lo había dicho en voz alta
+para este otro par.
+
+**Corrección**: `dance1_subject2` (el checkpoint que bajamos) es un
+motion de EJEMPLO que viene con el propio repo `unitree_rl_mjlab`
+(`src/assets/motions/g1/dance1_subject2.csv` en su tutorial de motion
+imitation) — no algo que Javier haya retargeteado él mismo. No hay que
+confundirlo con trabajo original de Javier.
+
+**Decisión pendiente, no resuelta acá**: si conviene migrar el stack
+completo (`legged_gym`/Genesis/`g1_deepmimic`) a `mjlab` es una decisión
+de arquitectura grande — MuJoCo en vez de Genesis, otra API de obs/task,
+toca todo. Vale la pena tenerlo en el radar del equipo, pero no se decide
+en este documento ni se ejecuta sin una conversación explícita primero.
+Mientras tanto, el camino más chico sigue siendo el ya documentado arriba:
+usar `mjlab`/g1-moves solo como fuente de DATO de movimiento, no de pesos.
 
 ## Preguntas abiertas para Javier
 
