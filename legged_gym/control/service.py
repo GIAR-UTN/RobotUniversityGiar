@@ -45,7 +45,7 @@ class ControlService:
         self.selector = selector
         self.training = training
         # Which registered task THIS process's Genesis scene was built for —
-        # e.g. "g1" or "g1_gaze". Only used to answer list_families()'s
+        # e.g. "g1" or "g1_target". Only used to answer list_families()'s
         # `current` field and to validate switch_family() requests; None on a
         # caller that doesn't pass it (e.g. RealAdapter setups, or tests)
         # simply means family-switching isn't offered.
@@ -501,7 +501,7 @@ class ControlService:
 
     def switch_family(self, task: str) -> None:
         """Requests switching this ENTIRE session to a different registered
-        task ('family') — e.g. from 'g1' (walking) to 'g1_gaze' (standing).
+        task ('family') — e.g. from 'g1' (walking) to 'g1_target' (standing).
         Unlike request_switch() (swaps the active POLICY within the current
         task's already-built scene), this can't be done in-process: Genesis
         owns global, once-per-process simulator state (see

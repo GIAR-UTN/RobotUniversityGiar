@@ -227,7 +227,7 @@ xyzw → `.npz` wxyz, converter ported from
    Fuse / Distill panels don't work against an mjlab session (they shell out
    to Genesis `web_train.py`); mjlab training is Phase 6. A family switch
    *out of* mjlab always routes through `rugiar_driver.py`, which
-   re-dispatches to the gaze driver if needed (one extra ~15s relaunch in
+   re-dispatches to the target-aware driver if needed (one extra ~15s relaunch in
    that one case — this process can't import `task_registry` to tell).
 6. Training path (Kaggle), first self-trained mjlab policy, and the
    deprecation of `g1_deepmimic`/Genesis for this family (walking tasks

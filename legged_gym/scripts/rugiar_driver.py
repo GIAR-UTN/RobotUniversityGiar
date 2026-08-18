@@ -24,8 +24,8 @@ here is treated as a separate EXPERIMENT, not a live mode to hot-swap within
 one process (see the "Family selector" plan and its follow-up discussion for
 why: Genesis can't rebuild its scene in-process, and more importantly, the
 user explicitly wants experiments kept architecturally separate, not unified
-into one policy). `legged_gym/scripts/rugiar_driver_gaze.py` is the sibling
-driver for the "target-aware" family (g1_gaze and future siblings) — same
+into one policy). `legged_gym/scripts/rugiar_driver_target.py` is the sibling
+driver for the "target-aware" family (g1_target and future siblings) — same
 plumbing, plus the per-tick target-bearing injection that family's tasks
 expect. The control web's Family panel switches between them by relaunching
 the correct one for the chosen task — see _relaunch_for_family()/
@@ -37,20 +37,20 @@ Usage:
         --policy crouch:logs/g1/<run>/exported/policy_lstm_1.pt \
         --active stable
 
-DUPLICATION WARNING: rugiar_driver_gaze.py is a largely-duplicated sibling of
+DUPLICATION WARNING: rugiar_driver_target.py is a largely-duplicated sibling of
 this file, not a caller of it (see above for why). Standalone helper
 functions shared verbatim between the two (_encode_camera_frame_jpeg,
 parse_policy_args, _sibling_meta_simulator, _script_for_task,
 _bare_g1_policy_specs, _relaunch_for_family, _sibling_meta_task,
 drain_finished_training) are checked for drift automatically by
 tests/test_driver_family_parity.py — if you change one of those here, that
-test will fail until you mirror the change into rugiar_driver_gaze.py too.
-main() itself is NOT covered by that test (the gaze driver legitimately
-interleaves target-aware obs injection into it) — if you change non-gaze
+test will fail until you mirror the change into rugiar_driver_target.py too.
+main() itself is NOT covered by that test (the target driver legitimately
+interleaves target-aware obs injection into it) — if you change non-target
 control flow inside main() here (argparse setup, policy loading,
 supervisor/safety setup, ControlServer/web mount setup, the restart/
 family-switch/training-poll main loop, camera frame capture/publish), mirror
-that change into rugiar_driver_gaze.py's main() by hand.
+that change into rugiar_driver_target.py's main() by hand.
 """
 import argparse
 import glob
@@ -124,9 +124,9 @@ def _sibling_meta_simulator(checkpoint_path: str) -> str:
 
 def _script_for_task(task: str) -> str:
     """Which driver script implements `task`'s family -- rugiar_driver.py
-    (this file, the default) for ordinary tasks, rugiar_driver_gaze.py
+    (this file, the default) for ordinary tasks, rugiar_driver_target.py
     for the "target-aware" family (any task with cfg.rewards.target_aware =
-    True, e.g. g1_gaze and future siblings), or rugiar_driver_mjlab.py for
+    True, e.g. g1_target and future siblings), or rugiar_driver_mjlab.py for
     an mjlab (MuJoCo Warp) task. Dynamic (inspects the task's own cfg)
     rather than a hardcoded task-name list, so a new target-aware sibling
     task works here with no change to this function.
@@ -142,7 +142,7 @@ def _script_for_task(task: str) -> str:
         return "rugiar_driver_mjlab.py"
     env_cfg, _ = task_registry.get_cfgs(name=task)
     if getattr(env_cfg.rewards, "target_aware", False):
-        return "rugiar_driver_gaze.py"
+        return "rugiar_driver_target.py"
     return "rugiar_driver.py"
 
 
@@ -155,7 +155,7 @@ def _bare_g1_policy_specs() -> list:
     docker-entrypoint.sh already uses for its own automatic launch. Only
     offered for --task g1: these predate the multi-task system entirely (all
     pretrained/legacy G1 checkpoints) and, unlike folder-based policies, have
-    no sibling meta.json to check a task against -- g1_gaze's obs size
+    no sibling meta.json to check a task against -- g1_target's obs size
     happens to coincide with g1's (see _sibling_meta_task's docstring on why
     that coincidence is exactly the dangerous case), so blindly offering
     these to every family would risk a silent wrong-shape load for a
@@ -281,7 +281,7 @@ def main():
                               "already registered that way (e.g. unitree_rl_gym's own pretrained checkpoints).")
     parser.add_argument('--task', type=str, default='g1',
                          help="registered task this server's Genesis scene (and every --policy's "
-                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_gaze'. "
+                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_target'. "
                               "All --policy specs must have been trained on this same task.")
     parser.add_argument('--active', type=str, default=None, help="which --policy name starts active (default: first one given)")
     parser.add_argument('--ramp_ticks', type=int, default=15, help="control ticks to cross-fade over on a switch")

@@ -118,11 +118,11 @@ def _script_for_task(task: str) -> str:
     """Which driver script implements `task`'s family, from THIS process's
     point of view. mjlab tasks come from mjlab's own registry; anything
     else is a Genesis/Isaac task belonging to one of the two legged_gym
-    drivers. This process cannot tell g1 from g1_gaze (that needs
+    drivers. This process cannot tell g1 from g1_target (that needs
     legged_gym's task_registry, which needs Genesis, which is not installed
     in .venv-mjlab), so it hands every non-mjlab task to rugiar_driver.py —
     whose OWN _script_for_task() then re-dispatches to
-    rugiar_driver_gaze.py if the task turns out to be target-aware. One
+    rugiar_driver_target.py if the task turns out to be target-aware. One
     extra ~15s relaunch in that one case, versus importing Genesis here,
     which simply isn't possible."""
     if task in registry.list_tasks():

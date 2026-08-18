@@ -43,7 +43,7 @@ This codebase splits into seven areas along a policy's lifecycle: train it, tran
 | **Control** | The live-robot engine: policy switching, safety gating, WebSocket transport, sim/real adapters — the subject of §3–§5 below. `legged_gym/control/`. |
 | **Web UI** | The browser client: the unified control page plus the Training/Fuse/Distill forms. `web/`. |
 | **CLI** | `rugiar` — a thin, side-effect-free frontend onto Training and Policy Operations only; never touches the live-robot layer. |
-| **Robot Driver** | The process that wires Control, an adapter, and a simulator or real robot together and runs the main loop. `legged_gym/scripts/rugiar_driver.py` (and `rugiar_driver_gaze.py`). |
+| **Robot Driver** | The process that wires Control, an adapter, and a simulator or real robot together and runs the main loop. `legged_gym/scripts/rugiar_driver.py` (and `rugiar_driver_target.py`). |
 | **Third-Party Integrations** | Placeholder — no integration surface exists in this repo yet. Real upstream work to eventually draw from: a G1 motion-capture retargeting pipeline ([dataset](https://huggingface.co/datasets/exptech/g1-moves), [release](https://github.com/jvillalba007/GIAR-moves/releases/tag/1.0.0)), a browser-based [Motion Viewer](https://giar-mv.9zteam.pp.ua/) for previewing motion clips, and the official [unitreerobotics](https://github.com/unitreerobotics) ecosystem. See `ARCHITECTURE.md` §7 for details. Most likely lands in the Web UI. |
 
 ---

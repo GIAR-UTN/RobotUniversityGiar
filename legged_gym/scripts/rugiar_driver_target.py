@@ -19,7 +19,7 @@ docs/index.html's "Talking to the robot: the control protocol" section
 (id=control-protocol) for the full wire format, and examples/joystick_controller.py
 for a working reference client.
 
-This is the driver for the "target-aware" family of tasks (g1_gaze and future
+This is the driver for the "target-aware" family of tasks (g1_target and future
 siblings that set cfg.rewards.target_aware = True) — same plumbing as
 `legged_gym/scripts/rugiar_driver.py` (the "g1" walking family's driver),
 plus a per-tick step that overwrites the running task's last-2-obs-slots
@@ -34,9 +34,9 @@ the correct one for the chosen task — see _relaunch_for_family()/
 _script_for_task() below.
 
 Usage:
-    python legged_gym/scripts/rugiar_driver_gaze.py \
-        --policy gaze_smoke:policies/gaze_smoke/checkpoint.pt \
-        --active gaze_smoke --ball --camera
+    python legged_gym/scripts/rugiar_driver_target.py \
+        --policy target_smoke:policies/target_smoke/checkpoint.pt \
+        --active target_smoke --ball --camera
 
 DUPLICATION WARNING: this file is a largely-duplicated sibling of
 rugiar_driver.py, not a caller of it (see above for why). Standalone helper
@@ -49,7 +49,7 @@ test will fail until you mirror the change into rugiar_driver.py too.
 main() itself is NOT covered by that test (this file legitimately interleaves
 target-aware obs injection into it via _inject_target_obs() — see the
 target_aware flag and the two call sites right before service.tick(obs)) —
-if you change non-gaze control flow inside main() here (argparse setup,
+if you change non-target control flow inside main() here (argparse setup,
 policy loading, supervisor/safety setup, ControlServer/web mount setup, the
 restart/family-switch/training-poll main loop, camera frame capture/
 publish), mirror that change into rugiar_driver.py's main() by hand.
@@ -126,7 +126,7 @@ def _sibling_meta_simulator(checkpoint_path: str) -> str:
 
 def _inject_target_obs(obs: torch.Tensor, adapter, pitch_range, roll_range) -> torch.Tensor:
     """Overwrites the last 2 obs slots (the shared target-aware contract's
-    pitch_target/roll_target -- see the "G1 gaze" plan) with the pitch/roll
+    pitch_target/roll_target -- see the "G1 target" plan) with the pitch/roll
     needed to face adapter.get_target_relative_pos() right now, in place of
     whatever the task's own per-episode training sampler put there. A no-op
     (returns obs unchanged) if there's no ball prop to read this tick -- e.g.
@@ -136,7 +136,7 @@ def _inject_target_obs(obs: torch.Tensor, adapter, pitch_range, roll_range) -> t
     policy for something outside the envelope it learned.
 
     Sign convention (pitch positive = look down, matching the D435 mount's
-    own downward tilt -- see G1GazeCfg.sensor.rgb_camera_config) was derived
+    own downward tilt -- see G1TargetCfg.sensor.rgb_camera_config) was derived
     from the URDF, not proven on paper -- verify by watching, per this repo's
     own "don't trust the math blind" rule."""
     rel = adapter.get_target_relative_pos()
@@ -154,9 +154,9 @@ def _inject_target_obs(obs: torch.Tensor, adapter, pitch_range, roll_range) -> t
 
 def _script_for_task(task: str) -> str:
     """Which driver script implements `task`'s family -- rugiar_driver.py
-    for ordinary tasks, rugiar_driver_gaze.py (this file) for the
+    for ordinary tasks, rugiar_driver_target.py (this file) for the
     "target-aware" family (any task with cfg.rewards.target_aware = True,
-    e.g. g1_gaze and future siblings), or rugiar_driver_mjlab.py for an
+    e.g. g1_target and future siblings), or rugiar_driver_mjlab.py for an
     mjlab (MuJoCo Warp) task. Dynamic (inspects the task's own cfg) rather
     than a hardcoded task-name list, so a new target-aware sibling task
     works here with no change to this function.
@@ -172,7 +172,7 @@ def _script_for_task(task: str) -> str:
         return "rugiar_driver_mjlab.py"
     env_cfg, _ = task_registry.get_cfgs(name=task)
     if getattr(env_cfg.rewards, "target_aware", False):
-        return "rugiar_driver_gaze.py"
+        return "rugiar_driver_target.py"
     return "rugiar_driver.py"
 
 
@@ -185,7 +185,7 @@ def _bare_g1_policy_specs() -> list:
     docker-entrypoint.sh already uses for its own automatic launch. Only
     offered for --task g1: these predate the multi-task system entirely (all
     pretrained/legacy G1 checkpoints) and, unlike folder-based policies, have
-    no sibling meta.json to check a task against -- g1_gaze's obs size
+    no sibling meta.json to check a task against -- g1_target's obs size
     happens to coincide with g1's (see _sibling_meta_task's docstring on why
     that coincidence is exactly the dangerous case), so blindly offering
     these to every family would risk a silent wrong-shape load for a
@@ -311,7 +311,7 @@ def main():
                               "already registered that way (e.g. unitree_rl_gym's own pretrained checkpoints).")
     parser.add_argument('--task', type=str, default='g1',
                          help="registered task this server's Genesis scene (and every --policy's "
-                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_gaze'. "
+                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_target'. "
                               "All --policy specs must have been trained on this same task.")
     parser.add_argument('--active', type=str, default=None, help="which --policy name starts active (default: first one given)")
     parser.add_argument('--ramp_ticks', type=int, default=15, help="control ticks to cross-fade over on a switch")
@@ -430,8 +430,8 @@ def main():
 
     # Whether this task's last 2 obs slots are the shared "target-aware"
     # contract (pitch_target, roll_target = the orientation needed to face
-    # the current target) -- see the "G1 gaze" plan. Any task that opts in
-    # (e.g. G1GazeCfg) gets those slots overwritten every tick, right before
+    # the current target) -- see the "G1 target" plan. Any task that opts in
+    # (e.g. G1TargetCfg) gets those slots overwritten every tick, right before
     # the policy sees them, with the live --ball target's actual bearing
     # instead of whatever the task's own training-time sampler put there --
     # same slots, same meaning, just a different source at drive time.
@@ -554,7 +554,7 @@ def main():
     if cli.control_port is not None:
         control_server = ControlServer(service, port=cli.control_port, token=cli.token)
         if cli.token is None and cli.real:
-            print("[rugiar_driver_gaze] WARNING: --real with no --token — the control socket is reachable "
+            print("[rugiar_driver_target] WARNING: --real with no --token — the control socket is reachable "
                   "unauthenticated from anything on this robot's network. Pass --token to require a "
                   "shared secret (see docs/index.html §13).")
 

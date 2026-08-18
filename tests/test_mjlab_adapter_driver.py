@@ -168,7 +168,7 @@ def test_control_loop_drives_and_switches(env, adapter):
 def test_driver_dispatches_families_by_registry():
     """rugiar_driver_mjlab._script_for_task must send mjlab tasks to itself
     and everything else back to the Genesis driver (which re-dispatches to
-    the gaze one if needed) — the mjlab half of the family routing."""
+    the target-aware one if needed) — the mjlab half of the family routing."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -178,7 +178,7 @@ def test_driver_dispatches_families_by_registry():
 
     assert driver._script_for_task("Rugiar-G1-Mimic") == "rugiar_driver_mjlab.py"
     assert driver._script_for_task("g1") == "rugiar_driver.py"
-    assert driver._script_for_task("g1_gaze") == "rugiar_driver.py"
+    assert driver._script_for_task("g1_target") == "rugiar_driver.py"
     # meta.json task guard (a checkpoint trained for another task must not
     # be loaded silently) — same check rugiar_driver.py applies.
     assert driver._sibling_meta_task(

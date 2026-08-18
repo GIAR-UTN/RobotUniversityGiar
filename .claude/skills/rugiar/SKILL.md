@@ -1,7 +1,7 @@
 ---
 name: rugiar
 description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
-allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_gaze.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_gaze.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
+allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_target.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_target.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
 ---
 
 # RUgiar system — training CLI (`rugiar`) and running/control (`rugiar_driver.py`)
@@ -85,8 +85,8 @@ usage: rugiar_driver.py [-h] --policy POLICY_SPECS [--active ACTIVE]
 
 `rugiar_driver.py` (this section) drives the **"g1" walking family** — every
 `g1`-task policy (`stable_home_made_*`, `walk_gpu_c4*`, etc.). A separate,
-largely-duplicated sibling script, `rugiar_driver_gaze.py`, drives the
-**"target-aware" family** (`g1_gaze` and future siblings whose config sets
+largely-duplicated sibling script, `rugiar_driver_target.py`, drives the
+**"target-aware" family** (`g1_target` and future siblings whose config sets
 `cfg.rewards.target_aware = True`) — same flags/behavior, plus a per-tick
 step that feeds the live `--ball` position into the running task's obs.
 Each registered task is treated as its own **experiment**, deliberately kept
@@ -97,7 +97,7 @@ The control web's **Family** panel (above Policies) lets an operator switch
 which task/driver is running without a terminal: it calls
 `ControlService.switch_family(task)`, which self-relaunches the correct
 script for that task's family (picking `rugiar_driver.py` vs
-`rugiar_driver_gaze.py` via `_script_for_task()`) on the same port — Genesis
+`rugiar_driver_target.py` via `_script_for_task()`) on the same port — Genesis
 can't rebuild its scene in-process (see `training.py`'s module docstring), so
 this is a ~15-20s process handoff, not an instant switch; the browser
 reconnects on its own. Only tasks with at least one local trained policy are

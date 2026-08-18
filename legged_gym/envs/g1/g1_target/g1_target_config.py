@@ -3,7 +3,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfgPPO
 from legged_gym.envs.base.common_cfgs import G1Flat12DofCommonCfg
 
 
-class G1GazeCfg(G1Flat12DofCommonCfg):
+class G1TargetCfg(G1Flat12DofCommonCfg):
     class env(G1Flat12DofCommonCfg.env):
         # ang_vel(3) + gravity(3) + commands(3) + dof_pos(12) + dof_vel(12) + actions(12)
         # + pitch_target(1) + roll_target(1) = 47; privileged adds base_lin_vel(3) = 50.
@@ -26,7 +26,7 @@ class G1GazeCfg(G1Flat12DofCommonCfg):
         soft_dof_pos_limit = 0.9
         torso_pitch_tracking_sigma = 0.1  # same magnitude as go2_wtw's euler_tracking_sigma
         torso_roll_tracking_sigma = 0.1
-        # Shared "target-aware" contract (see the "G1 gaze" plan): the last 2 obs
+        # Shared "target-aware" contract (see the "G1 target" plan): the last 2 obs
         # slots are (pitch_target, roll_target), meaning "the orientation needed
         # to face the current target" -- sampled per-episode during training
         # (behavior_params_range below), overwritten each tick with a live
@@ -61,13 +61,13 @@ class G1GazeCfg(G1Flat12DofCommonCfg):
         class rgb_camera_config(G1Flat12DofCommonCfg.sensor.rgb_camera_config):
             # Exact D435 mount pose from the URDF's pelvis->torso_link (fixed,
             # xyz=(-0.00396,0,0.044)) composed with torso_link->d435_link (fixed,
-            # xyz=(0.0576,0.0175,0.4299), pitch~=0.8308 rad down) -- see the "G1 gaze"
+            # xyz=(0.0576,0.0175,0.4299), pitch~=0.8308 rad down) -- see the "G1 target"
             # plan for the derivation. `forward` is (1,0,0) rotated by that pitch about Y.
             pos = (0.0537, 0.0175, 0.4739)
             forward = (0.6743, 0.0, -0.7385)
 
 
-class G1GazeCfgPPO(LeggedRobotCfgPPO):
+class G1TargetCfgPPO(LeggedRobotCfgPPO):
     class policy:
         init_noise_std = 0.8
         actor_hidden_dims = [32]
@@ -84,4 +84,4 @@ class G1GazeCfgPPO(LeggedRobotCfgPPO):
         policy_class_name = "ActorCriticRecurrent"
         max_iterations = 10000
         run_name = ''
-        experiment_name = 'g1_gaze'
+        experiment_name = 'g1_target'

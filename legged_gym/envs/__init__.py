@@ -55,9 +55,9 @@ from legged_gym.envs.g1.g1_motion_vis.g1_motion_vis_config import G1MotionVisCfg
 # g1 DeepMimic
 from legged_gym.envs.g1.g1_deepmimic.g1_deepmimic import G1DeepMimic
 from legged_gym.envs.g1.g1_deepmimic.g1_deepmimic_config import G1DeepMimicCfg, G1DeepMimicCfgPPO
-# g1 gaze (standing torso pitch/roll target-tracking, camera-aiming proof of concept)
-from legged_gym.envs.g1.g1_gaze.g1_gaze import G1Gaze
-from legged_gym.envs.g1.g1_gaze.g1_gaze_config import G1GazeCfg, G1GazeCfgPPO
+# g1 target (standing torso pitch/roll target-tracking, camera-aiming proof of concept)
+from legged_gym.envs.g1.g1_target.g1_target import G1Target
+from legged_gym.envs.g1.g1_target.g1_target_config import G1TargetCfg, G1TargetCfgPPO
 # go2
 from legged_gym.envs.go2.go2 import GO2
 from legged_gym.envs.go2.go2_config import GO2Cfg, GO2CfgPPO
@@ -113,7 +113,7 @@ task_registry.register("k1_cts_amp", K1_CTS_AMP, K1_CTS_AMPCfg(), K1_CTS_AMPCfgP
 task_registry.register("g1", G1Robot, G1RoughCfg(), G1RoughCfgPPO())
 task_registry.register("g1_deepmimic", G1DeepMimic, G1DeepMimicCfg(), G1DeepMimicCfgPPO())
 task_registry.register("g1_motion_vis", G1MotionVis, G1MotionVisCfg(), LeggedRobotCfgPPO()) # for motion visualization, not for training
-task_registry.register("g1_gaze", G1Gaze, G1GazeCfg(), G1GazeCfgPPO())
+task_registry.register("g1_target", G1Target, G1TargetCfg(), G1TargetCfgPPO())
 task_registry.register( "go2", GO2, GO2Cfg(), GO2CfgPPO())
 task_registry.register( "go2_wtw", GO2WTW, GO2WTWCfg(), GO2WTWCfgPPO())
 task_registry.register( "go2_ts", Go2TS, Go2TSCfg(), Go2TSCfgPPO())

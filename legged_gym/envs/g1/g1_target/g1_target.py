@@ -5,12 +5,12 @@ from legged_gym.envs.base.legged_robot import LeggedRobot
 from legged_gym.utils.math_utils import torch_rand_float
 
 
-class G1Gaze(LeggedRobot):
+class G1Target(LeggedRobot):
     """G1 (12-DOF, legs only -- same body as the "g1" walking task), standing in
     place and learning to pitch/roll its torso to a sampled per-episode target,
     purely by articulating its legs (no stepping). Proof of concept for aiming
     the torso-mounted camera at a target without walking toward it -- see
-    rugiar's plan "G1 gaze proof of concept" for the full context.
+    rugiar's plan "G1 target proof of concept" for the full context.
     """
 
     def _init_buffers(self):
@@ -19,20 +19,20 @@ class G1Gaze(LeggedRobot):
         self.roll_target_range = self.cfg.rewards.behavior_params_range.roll_target_range
         self.pitch_target = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
         self.roll_target = torch.zeros(self.num_envs, 1, dtype=torch.float, device=self.device)
-        self._resample_gaze_targets(torch.arange(self.num_envs, device=self.device))
+        self._resample_targets(torch.arange(self.num_envs, device=self.device))
 
     def reset_idx(self, env_ids):
         super().reset_idx(env_ids)
-        self._resample_gaze_targets(env_ids)
+        self._resample_targets(env_ids)
 
     def _post_physics_step_callback(self):
         super()._post_physics_step_callback()
         env_ids = (self.episode_length_buf % int(
             self.cfg.rewards.behavior_params_range.resampling_time / self.dt
         ) == 0).nonzero(as_tuple=False).flatten()
-        self._resample_gaze_targets(env_ids)
+        self._resample_targets(env_ids)
 
-    def _resample_gaze_targets(self, env_ids):
+    def _resample_targets(self, env_ids):
         if len(env_ids) == 0:
             return
         self.pitch_target[env_ids, :] = torch_rand_float(

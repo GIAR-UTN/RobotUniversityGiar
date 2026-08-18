@@ -14,7 +14,7 @@ class G1RoughCfg(G1Flat12DofCommonCfg):
 
     class sensor(G1Flat12DofCommonCfg.sensor):
         class rgb_camera_config(G1Flat12DofCommonCfg.sensor.rgb_camera_config):
-            # Same D435 mount pose as g1_gaze (see g1_gaze_config.py) instead of the
+            # Same D435 mount pose as g1_target (see g1_target_config.py) instead of the
             # generic "sit atop the base" placeholder in legged_robot_config.py.
             pos = (0.0537, 0.0175, 0.4739)
             forward = (0.6743, 0.0, -0.7385)

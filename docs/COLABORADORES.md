@@ -32,7 +32,7 @@ El proyecto se parte en siete áreas siguiendo el ciclo de vida de una policy. E
 | 3 | **Control** | El motor del robot en vivo: cambio de policy, seguridad, transporte WebSocket, adapters sim/real. | `service.py`, `transport.py`, `supervisor.py`, `safety.py`, `adapter.py`, `policy.py` |
 | 4 | **UI Web** | El cliente de navegador para Control, más los formularios de Entrenar / Fusionar / Destilar. | `web/index.html`, `web/app.js` |
 | 5 | **CLI** | `rugiar` — frontend de línea de comandos sobre Entrenamiento y Operaciones, **solo** sobre eso. | `legged_gym/cli/rugiar.py` |
-| 6 | **Driver del robot** | El proceso que cablea Control + adapter + simulador (o robot real) y corre el loop principal. | `legged_gym/scripts/rugiar_driver.py`, `rugiar_driver_gaze.py` |
+| 6 | **Driver del robot** | El proceso que cablea Control + adapter + simulador (o robot real) y corre el loop principal. | `legged_gym/scripts/rugiar_driver.py`, `rugiar_driver_target.py` |
 | 7 | **Integraciones de terceros** | Placeholder. Un colaborador desarrolla retargeting de captura de movimiento humano en otro repo; entrará probablemente por la UI Web. | (todavía nada) |
 
 Notas rápidas por área:
@@ -42,7 +42,7 @@ Notas rápidas por área:
 - **Control** no se instancia solo: lo arma y lo tiquea el Driver.
 - **UI Web** es una hoja del árbol: no la llama nadie, solo habla WebSocket contra Control. Sin build step, a propósito (es material de curso).
 - **CLI** no toca Control ni el Driver. Cero imports. Es la frontera más limpia del repo.
-- **Driver** son dos scripts independientes (`g1` y `g1_gaze`), no dos modos de uno solo: Genesis no puede reconstruir su escena en proceso, así que cambiar de familia de tareas relanza el proceso.
+- **Driver** son dos scripts independientes (`g1` y `g1_target`), no dos modos de uno solo: Genesis no puede reconstruir su escena en proceso, así que cambiar de familia de tareas relanza el proceso.
 
 ---
 
@@ -78,7 +78,7 @@ Hay dos hilos: el de simulación (el loop del Driver) y el del socket (asyncio d
 | **Control** | `ARCHITECTURE.md` §3 **completo**, después `service.py` | El diagrama de secuencia del round-trip y la nota de concurrencia son lectura obligatoria antes de la primera línea. |
 | **UI Web** | `web/app.js`: `send()`, `call()`, `applyStatus()` | `applyStatus()` es el render central del que cuelga casi todo panel. Reusá `makeSortable()` en vez de copiarlo. |
 | **CLI** | `legged_gym/cli/rugiar.py` | Lo valioso a preservar es la *ausencia* de imports de Control/Driver. |
-| **Driver del robot** | `scripts/rugiar_driver.py` | Cualquier cambio en un helper compartido va también en `rugiar_driver_gaze.py`; `test_driver_family_parity.py` lo verifica por AST y falla en CI. |
+| **Driver del robot** | `scripts/rugiar_driver.py` | Cualquier cambio en un helper compartido va también en `rugiar_driver_target.py`; `test_driver_family_parity.py` lo verifica por AST y falla en CI. |
 | **Hardware real** | `deploy_real/real_adapter.py` | Portado con cuidado pero **nunca probado en un robot físico**. Orden de motores, convención del cuaternión de la IMU y match de escalas solo los puede verificar una persona con el G1 delante. |
 | **Integraciones de terceros** | Nada todavía | Hablá con el colaborador que está haciendo retargeting antes de escribir código que asuma un contrato de integración. |
 | **Solo entender el sistema** | [`docs/index.html`](index.html) | Desde cero, con demo interactiva. |
