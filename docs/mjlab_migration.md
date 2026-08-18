@@ -108,8 +108,15 @@ xyzw → `.npz` wxyz, converter ported from
    without falling. See `tests/test_process_reference_motion_mjlab.py`.
 2. **G1 robot config parity check.** ✅ done (docs-only, no port needed —
    mjlab ships G1 29-DoF natively). See §6 below for the diff.
-3. Register `Rugiar-G1-Mimic`, our own mjlab tracking task (`mjlab_tasks/`
-   package at repo root).
+3. **Register `Rugiar-G1-Mimic`, our own mjlab tracking task.** ✅ done —
+   `mjlab_tasks/` package at repo root (named that, not `src`, avoiding
+   unitree_rl_mjlab's own mistake, §0). Calls mjlab's own
+   `unitree_g1_flat_tracking_env_cfg()` unmodified (not a fork), so its
+   observation contract is bit-for-bit what Javier's checkpoints were
+   trained against — only `task_id`/`experiment_name` are ours. Surfaced
+   a real path-ordering bug while wiring this up: see R1's update.
+   `tests/test_mjlab_tasks_registration.py` confirms the registered task's
+   154-dim actor obs and term order match the stock task exactly.
 4. Flip Javier's checkpoints to the registered task; closed-loop test
    with the thresholds from §1 (with margin — MuJoCo Warp is not
    deterministic, see R4).
@@ -124,11 +131,29 @@ xyzw → `.npz` wxyz, converter ported from
 **R1 — `rsl_rl` name collision (verified, hard).** This repo vendors a
 top-level `rsl_rl/` package. Running `.venv-mjlab/bin/python` from the repo
 root (e.g. `python -c "..."`) resolves `import rsl_rl` to the **vendored**
-copy, not PyPI `rsl-rl-lib==5.4.2` — confirmed on this machine. Fix:
-**always invoke with `-I`** (isolated mode) — confirmed this correctly
-resolves to `.venv-mjlab/lib/.../site-packages/rsl_rl`. Secondary: `genesis`
-extra pulls `mujoco==3.10.0`; mjlab needs `~=3.11.0`. Both are why this is a
-fully separate venv, not an extra in the main one.
+copy, not PyPI `rsl-rl-lib==5.4.2` — confirmed on this machine. Secondary:
+`genesis` extra pulls `mujoco==3.10.0`; mjlab needs `~=3.11.0`. Both are why
+this is a fully separate venv, not an extra in the main one.
+
+Fix, refined during Phase 3: **`-I` (isolated mode) alone is only correct
+for scripts that don't import this repo's own `mjlab_tasks/` package.**
+`-I` strips the cwd/repo-root entry from `sys.path` entirely — that fixes
+`rsl_rl` (resolves to `.venv-mjlab/site-packages`, confirmed) but also
+makes `mjlab_tasks` unimportable, since it's *only* available via the repo
+root. Anything that needs both (Phase 3 onward) must instead **reorder**
+`sys.path` rather than strip it — repo root moved to the *end*, not
+removed:
+
+```python
+import sys
+sys.path = [p for p in sys.path if p not in ("", ".")] + [""]
+```
+
+Run before any `import rsl_rl` / `import mjlab_tasks` — confirmed on this
+machine: `rsl_rl` still resolves to the pip-installed copy (site-packages
+entries now come first) and `mjlab_tasks` still resolves (nothing else
+provides that name). `tests/conftest.py` applies this for the whole test
+session so individual test files don't need to.
 
 **R2 — Obs schema.** Resolved — see §2. Residual: pin `mjlab==1.6.0`
 exactly; a future mjlab release could add/reorder actor terms and silently
