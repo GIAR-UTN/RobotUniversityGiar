@@ -23,8 +23,11 @@ fi
 # Configure via environment variables in docker-compose.yml or a .env file:
 #
 #   ACTIVE_POLICY=<name>   (must match a policies/<name>/ folder)
-#   CONTROL_PORT=<int>     (default: 9013)
-#   VISER_PORT=<int>       (default: 9006)
+#   CONTROL_PORT=<int>     (default: 9017 — registered in `las ports ls` as
+#                           "GIAR docker-compose control"; keep the registry
+#                           in sync if you change this)
+#   VISER_PORT=<int>       (default: 9006 — "GIAR docker-compose viser" in
+#                           `las ports ls`)
 #   HEADLESS=1|0           (default: 0)
 #   SPEED=<float>          (default: 0.35)
 # ---------------------------------------------------------------------------
@@ -46,7 +49,7 @@ fi
 if [ -n "$CONTROL_PORT" ]; then
     ARGS+=("--control_port" "$CONTROL_PORT")
 else
-    ARGS+=("--control_port" "9013")
+    ARGS+=("--control_port" "9017")
 fi
 
 if [ -n "$VISER_PORT" ]; then

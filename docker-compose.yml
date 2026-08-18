@@ -10,7 +10,14 @@
 #   2. Launch:
 #        docker compose up --build
 #   3. Open the viser viewer at http://localhost:9006
-#      and the unified control web at http://localhost:9013
+#      and the unified control web at http://localhost:9017
+#
+# These ports (9006 viser, 9017 control) are registered in the Local Agent
+# Society port registry (`las ports ls`) as "GIAR docker-compose viser" /
+# "GIAR docker-compose control". If you ever need to change them, update the
+# CONTROL_PORT/VISER_PORT defaults below AND `las ports release`/`las ports
+# claim` the new ones — don't just override via .env, or the registry drifts
+# out of sync with what's actually running (this has happened before).
 #
 # Override policy paths or backend via a .env file or CLI flags:
 #   GENESIS_BACKEND=cuda docker compose up
@@ -61,7 +68,7 @@ services:
       ACTIVE_POLICY: ${ACTIVE_POLICY:-}
       # Network ports exposed to the host.  Change in .env if defaults collide
       # with another service.
-      CONTROL_PORT: ${CONTROL_PORT:-9013}
+      CONTROL_PORT: ${CONTROL_PORT:-9017}
       VISER_PORT: ${VISER_PORT:-9006}
       # Set to 1 for a headless smoke test (no web viewer).
       HEADLESS: ${HEADLESS:-0}
@@ -76,7 +83,7 @@ services:
 
     ports:
       - "${VISER_PORT:-9006}:${VISER_PORT:-9006}"   # viser 3-D viewer
-      - "${CONTROL_PORT:-9013}:${CONTROL_PORT:-9013}"   # unified control web
+      - "${CONTROL_PORT:-9017}:${CONTROL_PORT:-9017}"   # unified control web
 
     stdin_open: true
     tty: true
