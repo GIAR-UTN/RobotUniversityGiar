@@ -448,6 +448,41 @@ class ControlService:
         actual reset happens in the sim loop, not here."""
         self.restart_requested = True
 
+    @staticmethod
+    def _registered_task_names() -> list:
+        """Genesis/Isaac task names from legged_gym's own task_registry —
+        or an empty list when that import isn't available at all, which is
+        the normal case under `.venv-mjlab` (mjlab runs from a separate venv
+        with no Genesis and no vendored rsl_rl — see
+        docs/mjlab_migration.md R1). An mjlab session's families then come
+        entirely from the local policy catalog below, which is backend-
+        agnostic (it just reads policies/<name>/meta.json)."""
+        try:
+            from legged_gym.utils import task_registry
+        except ImportError:
+            return []
+        return list(task_registry.task_classes.keys())
+
+    def _switchable_families(self) -> tuple:
+        """(all task names, policies_per_task) — the union of every
+        registered legged_gym task and every task some local policy was
+        trained for. That union is what makes cross-BACKEND family
+        switching work: `Rugiar-G1-Mimic` is an mjlab task and will never
+        appear in legged_gym's task_registry, but Javier's checkpoints
+        under policies/javier_mjlab_*/ declare it in their meta.json, so
+        it shows up as a switchable family from a Genesis session (and,
+        symmetrically, the Genesis families show up from an mjlab one).
+        The driver decides which script/interpreter that task needs — see
+        rugiar_driver.py's _script_for_task()."""
+        policies_per_task: dict = {}
+        if self.training is not None:
+            for name, info in self.training.discover_local_policies().items():
+                policies_per_task.setdefault(info["task"], []).append(name)
+        tasks = set(self._registered_task_names()) | set(policies_per_task)
+        if self.task_name is not None:
+            tasks.add(self.task_name)
+        return sorted(tasks), policies_per_task
+
     def list_families(self) -> dict:
         """Every registered task ('family'), and which local policies exist
         for each — what the control web's Family panel needs to render
@@ -457,13 +492,9 @@ class ControlService:
         obs shape matches the currently running one — the whole point here
         is offering tasks with a DIFFERENT shape, that's what a family
         switch is for."""
-        from legged_gym.utils import task_registry
-        policies_per_task: dict = {}
-        if self.training is not None:
-            for name, info in self.training.discover_local_policies().items():
-                policies_per_task.setdefault(info["task"], []).append(name)
+        tasks, policies_per_task = self._switchable_families()
         return {
-            "tasks": sorted(task_registry.task_classes.keys()),
+            "tasks": tasks,
             "current": self.task_name,
             "policies_per_task": policies_per_task,
         }
@@ -485,15 +516,12 @@ class ControlService:
         mechanism. Validates up front (task registered AND has at least one
         local policy to load) so a switch that can't succeed never kills a
         working session for nothing."""
-        from legged_gym.utils import task_registry
-        if task not in task_registry.task_classes:
-            raise ValueError(f"unknown task '{task}'")
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
-        has_local_policy = any(
-            info["task"] == task for info in self.training.discover_local_policies().values()
-        )
-        if not has_local_policy:
+        tasks, policies_per_task = self._switchable_families()
+        if task not in tasks:
+            raise ValueError(f"unknown task '{task}'")
+        if not policies_per_task.get(task):
             raise ValueError(f"no trained local policies for task '{task}' yet")
         self.family_switch_requested = task
 

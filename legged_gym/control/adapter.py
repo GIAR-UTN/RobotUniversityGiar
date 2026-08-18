@@ -20,7 +20,17 @@ from typing import Optional, Protocol
 
 import torch
 
-from legged_gym.utils.math_utils import quat_rotate_inverse
+# NOTE: quat_rotate_inverse is imported lazily, inside the one method that
+# uses it (SimAdapter.get_target_relative_pos), NOT at module scope. Reason:
+# `legged_gym.utils.math_utils` can't be imported without executing
+# `legged_gym/utils/__init__.py`, which pulls in helpers.py -> this repo's
+# VENDORED rsl_rl (ActorCriticTSDepth & co.). That package doesn't exist in
+# .venv-mjlab, which deliberately installs PyPI rsl-rl-lib instead (see
+# docs/mjlab_migration.md R1) — and legged_gym/scripts/rugiar_driver_mjlab.py
+# has to be able to import this module, since RobotState/Lifecycle/
+# RobotAdapter are what MjlabAdapter implements. Nothing else in
+# legged_gym/control/ imports legged_gym at module scope, so this one line
+# was the entire Genesis-side coupling of the control engine.
 
 # See SimAdapter.set_operator_speed_limit's docstring — bounded, not
 # unbounded, so a typo (e.g. an extra zero) can't ask for a wildly
@@ -248,6 +258,7 @@ class SimAdapter:
         at all; callers must treat a missing/absent method or a None return
         the same way get_camera_frame()'s callers already do: 'nothing to
         feed this tick', not an error."""
+        from legged_gym.utils.math_utils import quat_rotate_inverse  # lazy — see this module's import note
         props = getattr(self.env.simulator, "_props", None)
         if not props or "ball" not in props:
             return None

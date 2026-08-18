@@ -66,6 +66,12 @@ const simPushDir = $('#sim-push-dir');
 const chkEpisodeTimeout = $('#chk-episode-timeout');
 const episodeTimeoutRow = $('#episode-timeout-row');
 const episodeTimeoutS = $('#episode-timeout-s');
+const commandSection = document.querySelector('section[data-section="command"]');
+const stimuliSection = document.querySelector('section[data-section="stimuli"]');
+// Whether THIS backend has a velocity command at all — see applyStatus().
+// Starts true so nothing is gated before the first status arrives (every
+// Genesis/real backend supports it; only mjlab's tracking task doesn't).
+let commandSupported = true;
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
@@ -693,6 +699,20 @@ function applyStatus(status) {
     realPlaceholder.textContent = `Real-robot view unavailable: current backend is "${status.backend}".`;
   }
 
+  // Same "absent means this adapter doesn't support it" convention as
+  // episode_timeout_s / operator_speed_limit above (see
+  // ControlService.status(), which only emits these keys when the adapter
+  // itself exposes them). A motion-TRACKING backend — mjlab's
+  // Rugiar-G1-Mimic via MjlabAdapter — has no velocity command and no
+  // domain-randomization stimuli at all: the "command" IS the reference
+  // motion clip baked into the loaded policy. Hide those two panels rather
+  // than leave live-looking HUDs that would answer every drag with a
+  // NotImplementedError. Nothing here is backend-NAME-specific: any future
+  // adapter that omits the same keys gets the same treatment for free.
+  commandSupported = 'command' in status;
+  commandSection.hidden = !commandSupported;
+  stimuliSection.hidden = !('random_events' in status);
+
   let auto = false;
   if (status.random_events) {
     chkPush.checked = status.random_events.push_robots;
@@ -958,6 +978,12 @@ function clampToRange(v, range) {
 
 function sendCruiseCommand() {
   updateCommandUI();
+  // A backend with no velocity command at all (see applyStatus()'s
+  // commandSupported) would just answer every one of these with a
+  // NotImplementedError — the Command panel is hidden there, but the
+  // keyboard bindings are global, so this is the one gate that catches
+  // W/A/S/D too.
+  if (!commandSupported) return;
   send('set_command', { vx: cruiseVx, vy: cruiseVy, yaw: cruiseYaw });
 }
 

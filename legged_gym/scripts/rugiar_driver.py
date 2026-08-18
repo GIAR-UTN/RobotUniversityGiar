@@ -124,11 +124,22 @@ def _sibling_meta_simulator(checkpoint_path: str) -> str:
 
 def _script_for_task(task: str) -> str:
     """Which driver script implements `task`'s family -- rugiar_driver.py
-    (this file, the default) for ordinary tasks, or rugiar_driver_gaze.py
+    (this file, the default) for ordinary tasks, rugiar_driver_gaze.py
     for the "target-aware" family (any task with cfg.rewards.target_aware =
-    True, e.g. g1_gaze and future siblings). Dynamic (inspects the task's
-    own cfg) rather than a hardcoded task-name list, so a new target-aware
-    sibling task works here with no change to this function."""
+    True, e.g. g1_gaze and future siblings), or rugiar_driver_mjlab.py for
+    an mjlab (MuJoCo Warp) task. Dynamic (inspects the task's own cfg)
+    rather than a hardcoded task-name list, so a new target-aware sibling
+    task works here with no change to this function.
+
+    A task legged_gym's own registry has never heard of is, by
+    construction, not a Genesis/Isaac task at all -- it's an mjlab one
+    (e.g. 'Rugiar-G1-Mimic', registered through mjlab's registry by the
+    repo-root mjlab_tasks/ package, see docs/mjlab_migration.md phase 3).
+    Those surface in the Family panel via their policies' own meta.json
+    (ControlService._switchable_families()), so this has to answer for
+    them too rather than KeyError on get_cfgs()."""
+    if task not in task_registry.task_classes:
+        return "rugiar_driver_mjlab.py"
     env_cfg, _ = task_registry.get_cfgs(name=task)
     if getattr(env_cfg.rewards, "target_aware", False):
         return "rugiar_driver_gaze.py"
@@ -188,29 +199,56 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
     caller can omit it) is read for its LIVE operator_speed_limit -- an
     operator who already dialed this down mid-session should stay at that
     same limit after switching families, not silently snap back to
-    whatever --cruise_limit this process happened to be launched with."""
-    script = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), _script_for_task(new_task))
-    cruise_limit = getattr(adapter, "operator_speed_limit", cli.cruise_limit)
-    argv = [sys.executable, script, "--task", new_task,
-            "--viser_port", str(cli.viser_port), "--speed", str(cli.speed),
-            "--ramp_ticks", str(cli.ramp_ticks), "--cruise_limit", str(cruise_limit)]
-    if new_task == "g1":
-        argv += _bare_g1_policy_specs()
-    if cli.control_port is not None:
-        argv += ["--control_port", str(cli.control_port)]
-    if cli.ball:
-        argv.append("--ball")
-    if cli.camera:
-        argv.append("--camera")
-    if cli.real:
-        argv.append("--real")
-        argv += ["--net_interface", cli.net_interface, "--robot_config", cli.robot_config]
-    if cli.token:
-        argv += ["--token", cli.token]
+    whatever --cruise_limit this process happened to be launched with.
+
+    An mjlab family (see _script_for_task) needs a DIFFERENT INTERPRETER
+    too, not just a different script: mjlab lives in its own .venv-mjlab
+    (incompatible mujoco pin + an rsl_rl name collision with this repo's
+    vendored copy -- docs/mjlab_migration.md R1), so relaunching it with
+    this process's sys.executable would fail on `import mjlab`. Returns
+    (instead of exiting) if that venv isn't present, leaving this session
+    running rather than killing it for a switch that can't work."""
+    script_name = _script_for_task(new_task)
+    script = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), script_name)
+    env = os.environ.copy()
+    if script_name == "rugiar_driver_mjlab.py":
+        interpreter = str(Path(__file__).resolve().parents[2] / ".venv-mjlab" / "bin" / "python")
+        if not os.path.exists(interpreter):
+            print(f"[family switch] cannot switch to {new_task!r}: no mjlab venv at {interpreter} "
+                  f"(see docs/mjlab_migration.md phase 0) -- staying on the current family.")
+            return
+        env["SIMULATOR"] = "mjlab"
+        # No --cruise_limit/--ball/--camera/--real: a tracking task has no
+        # velocity command to cap (see MjlabAdapter's docstring), and the
+        # mjlab driver has no Genesis props/camera/DDS path at all.
+        argv = [interpreter, script, "--task", new_task,
+                "--viser_port", str(cli.viser_port), "--ramp_ticks", str(cli.ramp_ticks)]
+        if cli.control_port is not None:
+            argv += ["--control_port", str(cli.control_port)]
+        if cli.token:
+            argv += ["--token", cli.token]
+    else:
+        cruise_limit = getattr(adapter, "operator_speed_limit", cli.cruise_limit)
+        argv = [sys.executable, script, "--task", new_task,
+                "--viser_port", str(cli.viser_port), "--speed", str(cli.speed),
+                "--ramp_ticks", str(cli.ramp_ticks), "--cruise_limit", str(cruise_limit)]
+        if new_task == "g1":
+            argv += _bare_g1_policy_specs()
+        if cli.control_port is not None:
+            argv += ["--control_port", str(cli.control_port)]
+        if cli.ball:
+            argv.append("--ball")
+        if cli.camera:
+            argv.append("--camera")
+        if cli.real:
+            argv.append("--real")
+            argv += ["--net_interface", cli.net_interface, "--robot_config", cli.robot_config]
+        if cli.token:
+            argv += ["--token", cli.token]
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
     sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
-    subprocess.Popen(argv, start_new_session=True)
+    subprocess.Popen(argv, start_new_session=True, env=env)
     os._exit(0)  # immediate -- release the port now, no cleanup needed
 
 
@@ -613,7 +651,13 @@ def main():
                 viser_viewer.resync_camera_tracking()
 
         if service.family_switch_requested is not None:
-            _relaunch_for_family(cli, service.family_switch_requested, adapter)  # never returns
+            # Cleared BEFORE the call: _relaunch_for_family() normally never
+            # returns (it execs a fresh process and os._exit()s), but it does
+            # return when the target family's venv is missing -- leaving the
+            # flag set would retry that same impossible switch every tick.
+            requested_task = service.family_switch_requested
+            service.family_switch_requested = None
+            _relaunch_for_family(cli, requested_task, adapter)  # normally never returns
 
         drain_finished_training()
 

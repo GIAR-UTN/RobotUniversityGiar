@@ -130,8 +130,105 @@ xyzw → `.npz` wxyz, converter ported from
    result the architecture agent measured outside the repo in §1, now
    reproduced *inside* the repo, against a properly registered task,
    as a repeatable test.
-5. Wire into `rugiar_driver_mjlab.py` / `MjlabAdapter` / web UI (third
-   family, existing extension point — no new panel).
+5. **Wire into `rugiar_driver_mjlab.py` / `MjlabAdapter` / web UI (third
+   family, existing extension point — no new panel).** ✅ done —
+   `Rugiar-G1-Mimic` is now drivable from the same control web
+   (`web/index.html`) as every Genesis task, over the same WebSocket
+   protocol, with zero new UI panels.
+
+   Built: `legged_gym/control/mjlab_adapter.py` (`MjlabAdapter`,
+   `backend_name="mjlab"`, `capabilities={"restart": True}`, mapping
+   `robot.data.joint_pos/joint_vel/default_joint_pos/root_link_quat_w/
+   root_link_ang_vel_b/root_link_lin_vel_b/projected_gravity_b/
+   root_link_pos_w[:,2]` into `RobotState`) and
+   `legged_gym/scripts/rugiar_driver_mjlab.py` (third sibling driver:
+   env + adapter + viewer bridge only — `ControlService`/`ControlServer`/
+   `PolicySupervisor`/`SafetyGovernor`/`load_policy` are reused as-is).
+   `tests/test_mjlab_adapter_driver.py` covers both.
+
+   Three things the plan assumed and reading corrected:
+   - **`ViserPlayViewer` was the right guess** (`mjlab/viewer/viser/viewer.py`),
+     but its `run()` *is* the sim loop — it calls `policy(obs)` then
+     `env.step()` itself. So there is no `while True` in this driver: the
+     per-tick control work (`drain_commands` → `service.tick` →
+     `publish_status`) lives in the policy callback, which the viewer calls
+     on its own main thread — ARCHITECTURE.md's sim-thread invariant holds
+     unchanged. It accepts an external `viser_server`, which is how
+     `--viser_port` is honored. The reference-motion ghost is mjlab's own
+     (`MotionCommandCfg.debug_vis` + `MjlabViserScene`); nothing was
+     reimplemented.
+   - **The control engine had exactly one Genesis coupling**, and it wasn't
+     obvious from the docs: `adapter.py` imported
+     `legged_gym.utils.math_utils`, which executes `legged_gym/utils/__init__.py`
+     → `helpers.py` → this repo's *vendored* `rsl_rl` (`ActorCriticTSDepth`),
+     which doesn't exist under `.venv-mjlab`. Now imported lazily inside the
+     one method that uses it. Plus `legged_gym/__init__.py` accepts
+     `SIMULATOR=mjlab` (imports no simulator at all) so `legged_gym.control`
+     is importable from the mjlab venv.
+   - **Family routing needed `ControlService` to widen its task list.**
+     `list_families()` enumerated `task_registry.task_classes` only, which
+     can never contain an mjlab task id. It now returns the union of
+     registered legged_gym tasks and tasks any local `policies/<name>/meta.json`
+     declares (`_switchable_families()`), so `Rugiar-G1-Mimic` shows up as a
+     third family from a Genesis session — and, symmetrically, the Genesis
+     families show up from an mjlab one (where `task_registry` isn't
+     importable at all and the import is caught). `_script_for_task()` in
+     both Genesis drivers routes an unregistered (⇒ mjlab) task to
+     `rugiar_driver_mjlab.py`, and `_relaunch_for_family()` now picks the
+     **interpreter** too (`.venv-mjlab/bin/python` + `SIMULATOR=mjlab` out;
+     `.venv/bin/python` + `SIMULATOR=genesis` back), returning instead of
+     exiting when the target venv is missing.
+
+   **R9 resolved:** `applyStatus()` did *not* gate the Command HUD
+   generically. It now hides the Command and Stress-Stimuli panels when
+   `status` omits `command`/`random_events` — the same "absent key means
+   this adapter doesn't support it" rule already used for
+   `episode_timeout_s`/`operator_speed_limit` — and `sendCruiseCommand()`
+   no-ops, so W/A/S/D can't fire at a backend with no velocity command
+   either. Backend-name-agnostic: any future commandless adapter gets it
+   free. No new panel, no bridge UI.
+
+   **R10 resolved:** `tests/test_driver_family_parity.py` carries a written
+   `MJLAB_EXEMPT_DRIVER` exemption plus a test that the exemption is still
+   load-bearing (fails if the mjlab driver's `_script_for_task` /
+   `_relaunch_for_family` ever become identical to the Genesis ones).
+
+   Verified on this machine (Apple M1 Pro, CPU-only), real output:
+   - `CUDA_VISIBLE_DEVICES="" .venv-mjlab/bin/python legged_gym/scripts/rugiar_driver_mjlab.py --task Rugiar-G1-Mimic --headless`
+     → `obs=154 actions=29`, both Javier checkpoints loaded, live switch at
+     step 40 (`active=javier_mjlab_dance1_subject2` → `javier_mjlab_model_7000`),
+     `Headless smoke test done.`
+   - Real session on ports 9012/9013 (`las ports free` — 9006/9017 were in
+     use by a running Genesis session and deliberately left alone): a
+     scripted WebSocket client got `backend=mjlab`,
+     `current_task=Rugiar-G1-Mimic`, `capabilities={'restart': True}`, live
+     telemetry (`base_height=0.688`, `projected_gravity=[0.099, 0.084, -0.992]`),
+     `list_families` listing `Rugiar-G1-Mimic` with both policies, a
+     confirmed live `request_switch`, working `pause`/`resume`/`restart`, and
+     `set_command` correctly answered
+     `NotImplementedError: MjlabAdapter does not support set_command`.
+   - `examples/joystick_controller.py ws://localhost:9012 --demo` connected
+     with **zero edits** and read live status; its velocity commands get that
+     same clean per-call error (there is no velocity command on a tracking
+     task) without dropping the connection.
+   - `SIMULATOR=genesis .venv/bin/python -m pytest tests/ -q` → **188 passed,
+     5 skipped** (baseline before this phase: 187 passed, 4 skipped — +1 new
+     parity test, +1 file skipped for having no mjlab).
+   - `SIMULATOR=mjlab CUDA_VISIBLE_DEVICES="" .venv-mjlab/bin/python -m pytest tests/ -q`
+     → **201 passed**. Note the `SIMULATOR=mjlab` prefix: it is now the
+     canonical way to run the FULL suite in that venv (without it, three
+     pre-existing test files fail collection on `legged_gym`'s
+     SIMULATOR check — that was already true before this phase).
+
+   Venv delta: `.venv-mjlab` gained `fastapi` + `uvicorn` (+`starlette`,
+   `anyio`, `h11`, `annotated-doc`) — `ControlServer`'s transport, unchanged.
+
+   Known limitations, deliberately not fixed here: the Create-Policy /
+   Fuse / Distill panels don't work against an mjlab session (they shell out
+   to Genesis `web_train.py`); mjlab training is Phase 6. A family switch
+   *out of* mjlab always routes through `rugiar_driver.py`, which
+   re-dispatches to the gaze driver if needed (one extra ~15s relaunch in
+   that one case — this process can't import `task_registry` to tell).
 6. Training path (Kaggle), first self-trained mjlab policy, and the
    deprecation of `g1_deepmimic`/Genesis for this family (walking tasks
    stay on Genesis — no trigger to move them).
