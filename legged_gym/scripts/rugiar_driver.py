@@ -236,9 +236,9 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
             argv += _bare_g1_policy_specs()
         if cli.control_port is not None:
             argv += ["--control_port", str(cli.control_port)]
-        if cli.ball:
+        if cli.ball or new_task == "g1":
             argv.append("--ball")
-        if cli.camera:
+        if cli.camera or new_task == "g1":
             argv.append("--camera")
         if cli.real:
             argv.append("--real")

@@ -82,16 +82,17 @@ const speedLimitWarning = $('#speed-limit-warning');
 // ---- transition overlay: family switch / fresh local training start ----
 // Both can make viser stall or drop its WS connection for several seconds
 // (see the module docstring reference to Genesis's global once-per-process
-// state) with otherwise zero visual cue besides the footer/console. Two
-// modes share this one card (see index.html's block comment on
-// #transition-overlay): showConfirmOverlay() gates an action that hasn't
-// happened yet — Switch/Cancel, nothing sent to the server until Switch —
-// used before a family switch, since that's disruptive enough (10-20s
-// reconnect) to deserve an explicit "yes, do it" rather than firing on the
-// first click. showLoadingOverlay() is purely informational for something
-// already in flight (the reconnect itself, or a training run that already
+// state) with otherwise zero visual cue besides the footer/console. One
+// card, two modes (see index.html's block comment on #transition-overlay):
+// showLoadingOverlay() is purely informational for something already in
+// flight (a family switch's reconnect, or a training run that already
 // started) — single "Got it" dismiss, no way to undo something that
-// already happened.
+// already happened. showConfirmOverlay() (Switch/Cancel, nothing sent
+// until confirmed) exists for a future disruptive-but-cancelable action
+// that needs an explicit "yes, do it" gate — family switch used to be one,
+// but that just meant clicking through two stacked modals (ask, then load)
+// for one action; the loading overlay's own full-page block (see its CSS)
+// already covers "don't let me fat-finger this" well enough on its own.
 const transitionOverlay = $('#transition-overlay');
 const transitionMessage = $('#transition-message');
 const transitionSpinner = $('#transition-spinner');
@@ -104,15 +105,26 @@ function showConfirmOverlay(message, onConfirm) {
   transitionMessage.textContent = message;
   transitionSpinner.hidden = true;
   transitionCancel.hidden = false;
+  transitionAccept.hidden = false;
   transitionAccept.textContent = 'Switch';
   transitionOnConfirm = onConfirm;
   transitionOverlay.hidden = false;
 }
 
-function showLoadingOverlay(message) {
+// dismissible=false hides the "Got it" button entirely -- for something
+// that WILL close itself once actually done (e.g. a family switch's
+// reconnect, via hideTransitionOverlay() in connect()'s ws.onopen), letting
+// the operator dismiss it manually just exposes the raw, ungated mid-switch
+// UI (footer reconnecting, panel updating piecemeal) that this overlay
+// exists to hide in the first place -- there's nothing useful to do here
+// but wait. Defaults to true for actually-informational-only loads (e.g.
+// distillation started in the background) that have nothing left to wait
+// for on THIS page.
+function showLoadingOverlay(message, dismissible = true) {
   transitionMessage.textContent = message;
   transitionSpinner.hidden = false;
   transitionCancel.hidden = true;
+  transitionAccept.hidden = !dismissible;
   transitionAccept.textContent = 'Got it';
   transitionOnConfirm = null;
   transitionOverlay.hidden = false;
@@ -124,19 +136,23 @@ function hideTransitionOverlay() {
   if (transitionAutoHideTimer) { clearTimeout(transitionAutoHideTimer); transitionAutoHideTimer = null; }
 }
 
-// Manual reconnect for the Simulator view (Family panel's ↻ button) — a
-// family switch can leave viser's own WS connection dead with no
-// automatic way to recover it (viser doesn't retry a fully-dead
-// connection on its own), but reloading it is a real WebGL
+// Reconnect for the Simulator view (Family panel's ↻ button, and the
+// post-family-switch auto-reload below) — viser's own WS connection can be
+// left dead with no automatic way to recover it (viser doesn't retry a
+// fully-dead connection on its own). Reloading it is a real WebGL
 // teardown/rebuild that competes with the sim for the SAME CPU (Genesis
-// runs on CPU here, see system_info) — doing this automatically once
-// visibly degraded the robot's control loop (steps starting, then
-// stalling) on a loaded host, so it's manual: the user decides when
-// paying that cost is safe (e.g. NOT mid-maneuver).
-$('#btn-reload-sim').addEventListener('click', () => {
+// runs on CPU here, see system_info) — doing this WHILE the new process is
+// still mid-startup once visibly degraded the robot's control loop (steps
+// starting, then stalling) on a loaded host. That's why the family-switch
+// auto-reload below waits for our own WS to have already reconnected AND
+// settled (config re-fetched) before firing, instead of doing this the
+// instant the switch is requested — by then the new process is confirmed
+// up and serving, not still mid-boot.
+function reloadSimViewer() {
   const simIframe = document.querySelector('#view-sim iframe');
   if (simIframe && viserPort) simIframe.src = `http://localhost:${viserPort}/?darkMode`;
-});
+}
+$('#btn-reload-sim').addEventListener('click', reloadSimViewer);
 
 transitionAccept.addEventListener('click', () => {
   // In LOADING mode this is just "Got it" (transitionOnConfirm is null)
@@ -267,7 +283,15 @@ function connect() {
       send('restart');
       fetch('/config').then((r) => r.json()).then(applyRuntimeConfig)
         .catch((e) => console.warn('config refresh after family switch failed:', e.message))
-        .finally(hideTransitionOverlay);
+        .finally(() => {
+          hideTransitionOverlay();
+          // See reloadSimViewer()'s docstring for why this waits until here
+          // (WS reconnected + config settled) instead of firing the instant
+          // the switch was requested. A further short delay past that point
+          // gives the new process a beat to finish its own first few sim
+          // steps before also paying the WebGL teardown/rebuild cost.
+          setTimeout(reloadSimViewer, 1500);
+        });
     }
   };
   ws.onclose = () => {
@@ -518,15 +542,20 @@ function familyButtonRow(name, current, hasPolicies) {
   btn.disabled = name === current || familySwitchInFlight || !hasPolicies;
   if (!hasPolicies) btn.title = `No trained policies for '${name}' yet — train one first`;
   btn.onclick = () => {
-    showConfirmOverlay(
-      `Switch to family "${name}"? The whole process restarts, so the simulator will disconnect and can take 10-20s to settle back down.`,
-      () => {
-        familySwitchInFlight = true;
-        footer.textContent = `switching to '${name}' — this page will reconnect on its own (10-20s)…`;
-        showLoadingOverlay(
-          `Switching to family "${name}"… reconnecting (10-20s). This page reconnects on its own; if the simulator view stays frozen, use the ↻ next to "Family" to reconnect it whenever you're ready.`);
-        send('switch_family', { task: name });
-      });
+    // Used to confirm ("Switch to family X?") THEN show a separate loading
+    // overlay -- two modals back to back for one action. A family switch is
+    // reversible (switch again if it was a misclick) and the loading overlay
+    // already blocks the whole page (see its CSS comment), so the confirm
+    // step wasn't preventing much -- go straight to the one loading overlay.
+    familySwitchInFlight = true;
+    // Not dismissible: this closes itself once the switch is actually done
+    // (hideTransitionOverlay() in connect()'s ws.onopen) -- see
+    // showLoadingOverlay()'s docstring for why a manual dismiss here would
+    // just expose the raw mid-switch UI instead of skipping anything real.
+    showLoadingOverlay(
+      `Switching to family "${name}"… reconnecting (10-20s). This page reconnects and reloads the simulator view on its own once it's back.`,
+      false);
+    send('switch_family', { task: name });
   };
   row.appendChild(btn);
   return row;

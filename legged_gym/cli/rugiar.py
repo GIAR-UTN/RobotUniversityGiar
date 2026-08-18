@@ -161,6 +161,143 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     return p
 
 
+DRIVE_PRESETS = {
+    "genesis": {
+        "script": "legged_gym/scripts/rugiar_driver.py",
+        "python": ".venv/bin/python",
+        "default_task": "g1",
+        "env": {"SIMULATOR": "genesis"},
+        "extra_args": [],
+    },
+    "mjlab": {
+        "script": "legged_gym/scripts/rugiar_driver_mjlab.py",
+        "python": ".venv-mjlab/bin/python",
+        "default_task": "Rugiar-G1-Mimic",
+        # CUDA_VISIBLE_DEVICES="" matches this driver's own documented launch line
+        # (see rugiar_driver_mjlab.py's module docstring) -- this repo's mjlab setup
+        # is CPU-only on Mac, same reasoning as genesis's own cpu-backend default.
+        "env": {"SIMULATOR": "mjlab", "CUDA_VISIBLE_DEVICES": ""},
+        "extra_args": ["--ramp_ticks", "15"],
+    },
+}
+
+
+def _build_drive_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "drive",
+        formatter_class=_HelpFormatter,
+        help="Launch the control web (Genesis or mjlab) without hand-composing rugiar_driver.py flags",
+        description=(
+            "Thin launcher around 'python legged_gym/scripts/rugiar_driver.py' (Genesis) / "
+            "'rugiar_driver_mjlab.py' (mjlab) -- picks the right venv's interpreter, the right "
+            "SIMULATOR/env vars, and a sensible default --task per backend, so switching which "
+            "system is running doesn't require remembering both scripts' full flag set. Local "
+            "policies under ./policies/ are auto-discovered at startup either way -- no need to "
+            "list them with --policy. If something is already listening on --control_port, it's "
+            "stopped first (same 'one session per port' rule the Family panel's own switch uses) "
+            "so this never leaves two drivers fighting over the same port."
+        ),
+        epilog=(
+            "examples:\n"
+            "  # Genesis backend, default task 'g1', default ports\n"
+            "  rugiar drive genesis\n\n"
+            "  # mjlab backend, a specific task\n"
+            "  rugiar drive mjlab --task g1_target\n\n"
+            "  # preview a different reference-motion clip before training against it\n"
+            "  rugiar drive mjlab --motion_file resources/reference_motion/unitree_g1/mjlab_run/g1moves_B_DadDance.npz\n\n"
+            "  # custom ports (e.g. running a second, unrelated session)\n"
+            "  rugiar drive genesis --task g1_deepmimic --control_port 9018 --viser_port 9007\n"
+        ),
+    )
+    p.add_argument("system", choices=sorted(DRIVE_PRESETS), help="which backend/driver to launch")
+    p.add_argument("--task", type=str, default=None,
+                    help="registered task to drive (default: 'g1' for genesis, 'Rugiar-G1-Mimic' for mjlab)")
+    p.add_argument("--control_port", type=int, default=9017,
+                    help="control web + WebSocket port (default: 9017, the LAS port-registry value)")
+    p.add_argument("--viser_port", type=int, default=9006, help="raw 3D viewer port (default: 9006)")
+    p.add_argument("--headless", action="store_true", default=False,
+                    help="no viewer/control web -- runs a scripted smoke test instead")
+    p.add_argument("--motion_file", type=str, default=None,
+                    help="mjlab only -- reference-motion .npz to preview/track instead of the task's "
+                         "default (see resources/reference_motion/unitree_g1/mjlab_run/*.npz). Lets you "
+                         "sanity-check a new clip retargets/plays sensibly on the robot before spending "
+                         "a training run on it. Errors if passed with --system genesis.")
+    p.add_argument("--no_replace", action="store_true", default=False,
+                    help="don't stop an existing process on --control_port first -- fail instead "
+                         "if the port's already taken")
+    return p
+
+
+def _pids_listening_on(port: int) -> list:
+    import subprocess
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return []
+    return [int(pid) for pid in out.stdout.split() if pid.strip()]
+
+
+def run_drive(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    import os
+    import shlex
+    import signal
+    import time
+
+    preset = DRIVE_PRESETS[args.system]
+    repo_root = Path.cwd()
+    python_bin = repo_root / preset["python"]
+    script = repo_root / preset["script"]
+    if not python_bin.is_file():
+        parser.error(
+            f"{preset['python']} not found under {repo_root} -- run this from the repo root, "
+            f"with the '{args.system}' venv already set up (see README)."
+        )
+    if not script.is_file():
+        parser.error(f"{preset['script']} not found under {repo_root} -- run this from the repo root.")
+    if args.motion_file and args.system != "mjlab":
+        parser.error("--motion_file only applies to --system mjlab")
+
+    existing = _pids_listening_on(args.control_port)
+    if existing:
+        if args.no_replace:
+            parser.error(f"port {args.control_port} is already in use by pid(s) {existing} "
+                         f"(pass without --no_replace to stop it automatically)")
+        print(f"[rugiar] stopping existing process on port {args.control_port}: pid(s) {existing}")
+        for pid in existing:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.time() + 8
+        while time.time() < deadline and _pids_listening_on(args.control_port):
+            time.sleep(0.3)
+        for pid in _pids_listening_on(args.control_port):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    task = args.task or preset["default_task"]
+    argv = [str(python_bin), str(script), "--task", task,
+            "--viser_port", str(args.viser_port), "--control_port", str(args.control_port)]
+    argv += preset["extra_args"]
+    if args.headless:
+        argv.append("--headless")
+    if args.motion_file:
+        argv += ["--motion_file", args.motion_file]
+
+    env = os.environ.copy()
+    env.update(preset["env"])
+
+    print(f"[rugiar] launching {args.system} — {' '.join(shlex.quote(a) for a in argv)}")
+    if not args.headless:
+        print(f"[rugiar] control web: http://localhost:{args.control_port}/")
+    os.chdir(repo_root)
+    os.execvpe(argv[0], argv, env)  # replaces this process -- Ctrl-C behaves exactly like a direct launch
+    return 0  # unreachable, execvpe never returns on success
+
+
 def _build_order_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subparsers.add_parser(
         "order",
@@ -460,15 +597,15 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
         formatter_class=_HelpFormatter,
-        description="rugiar — command-line interface for RobotUniversityGiar policy creation.",
+        description="rugiar — command-line interface for RobotUniversityGiar policy creation and driving.",
         epilog=(
-            "Scope: rugiar only trains, fine-tunes, fuses, and distills policies — it has\n"
-            "no path into the live-robot layer (no policy switching, no driving, no joystick\n"
-            "control). For that, see 'python legged_gym/scripts/rugiar_driver.py --help'\n"
-            "(--control_port serves both a browser control web and a WebSocket protocol any\n"
-            "custom client, e.g. a home-made joystick, can speak — docs/index.html's\n"
-            "'Talking to the robot' section has the full wire format). For the system-wide\n"
-            "area map, see legged_gym/control/ARCHITECTURE.md."
+            "Scope: rugiar trains, fine-tunes, fuses, and distills policies, and launches the\n"
+            "control web/driver ('rugiar drive') -- for anything beyond that (raw --policy-by-\n"
+            "--policy control, --real hardware flags), see\n"
+            "'python legged_gym/scripts/rugiar_driver.py --help' directly (--control_port serves\n"
+            "both a browser control web and a WebSocket protocol any custom client, e.g. a\n"
+            "home-made joystick, can speak — docs/index.html's 'Talking to the robot' section has\n"
+            "the full wire format). For the system-wide area map, see legged_gym/control/ARCHITECTURE.md."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -476,7 +613,9 @@ def build_parser():
     order_parser = _build_order_parser(subparsers)
     fuse_parser = _build_fuse_parser(subparsers)
     distill_parser = _build_distill_parser(subparsers)
-    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser, "distill": distill_parser}
+    drive_parser = _build_drive_parser(subparsers)
+    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser,
+                     "distill": distill_parser, "drive": drive_parser}
 
 
 def _print_lines(title: str, rows) -> None:
@@ -642,6 +781,8 @@ def main(argv: Optional[list] = None) -> None:
         sys.exit(run_fuse(args, subparsers["fuse"]))
     elif args.command == "distill":
         sys.exit(run_distill(args, subparsers["distill"]))
+    elif args.command == "drive":
+        sys.exit(run_drive(args, subparsers["drive"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)

@@ -109,11 +109,14 @@
      switch — "Switch"/"Cancel", no spinner, nothing has been sent to
      the server yet); LOADING is purely informational for something already
      in flight (post-confirm family switch reconnect, or a training run
-     that already started — spinner, single "Got it" dismiss). Covers
-     the simulator (never the #panel sidebar). z-index above .drawer (5)
-     since a drawer can be open underneath when this fires. */
+     that already started — spinner, single "Got it" dismiss). position:fixed
+     (not absolute) so it covers the WHOLE page, #panel sidebar included --
+     a family switch relaunches the whole process, so Family/Policies/etc.
+     are just as unusable mid-switch as the simulator is, and clicking them
+     while a switch is in flight (e.g. requesting a second switch) races
+     against the first. z-index above .drawer (5) and #panel's own popovers. */
   #transition-overlay{
-    position:absolute; inset:0; z-index:10;
+    position:fixed; inset:0; z-index:50;
     display:flex; align-items:center; justify-content:center;
     background:color-mix(in srgb, var(--bg) 78%, transparent);
     backdrop-filter:blur(2px);
@@ -429,6 +432,12 @@
     margin-bottom:.3rem; text-transform:none; letter-spacing:0;
   }
   #speed-limit-slider{width:100%; accent-color:var(--accent2);}
+
+  #episode-timeout-row{
+    flex-direction:row; align-items:center; justify-content:space-between; gap:.5rem;
+  }
+  #episode-timeout-row label{margin-bottom:0;}
+  #episode-timeout-row input{width:4.5rem; flex:none; text-align:right;}
 
   .toggle-row{
     display:flex; align-items:center; gap:.45rem; font-size:.85rem;

@@ -158,6 +158,10 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
         argv += ["--control_port", str(cli.control_port)]
     if cli.token:
         argv += ["--token", cli.token]
+    if new_task == "g1" and script_name != "rugiar_driver_mjlab.py":
+        # g1's own default: land in the ball+camera demo setup, same default
+        # rugiar_driver.py's own _relaunch_for_family() applies -- see there.
+        argv += ["--ball", "--camera"]
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
     sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
