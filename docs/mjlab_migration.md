@@ -97,8 +97,15 @@ xyzw → `.npz` wxyz, converter ported from
    `resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz`,
    `tests/test_mjlab_env_smoke.py` (154-dim actor obs confirmed on this
    machine).
-1. Motion converter: our `.pkl` → mjlab `.npz`
-   (`legged_gym/scripts/process_reference_motion_mjlab.py`).
+1. **Motion converter: our `.pkl` → mjlab `.npz`.** ✅ done —
+   `legged_gym/scripts/process_reference_motion_mjlab.py`, ported from
+   `third_party/unitree_rl_mjlab/csv_to_npz.py.reference` (same
+   MotionLoader/run_sim math, xyzw→wxyz on load instead of on a CSV
+   column). Converted `g1moves_B_DadDance.pkl` (2509 frames @ 60fps input
+   → 2090 @ 50fps output) end-to-end: schema matches the Phase 0 fixture,
+   the converter's own `torch.testing.assert_close` sanity checks passed,
+   and the output loads into a real `Mjlab-Tracking-*` env and steps
+   without falling. See `tests/test_process_reference_motion_mjlab.py`.
 2. G1 robot config parity check (docs-only diff, no port needed —
    mjlab ships G1 29-DoF natively).
 3. Register `Rugiar-G1-Mimic`, our own mjlab tracking task (`mjlab_tasks/`
