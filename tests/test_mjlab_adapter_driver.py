@@ -75,8 +75,9 @@ def adapter(env):
 def test_backend_identity_and_capabilities(adapter):
     assert adapter.backend_name == "mjlab"
     # ControlService.status()['capabilities'] — web/app.js reads `restart`
-    # to enable/disable the Restart button.
-    assert adapter.capabilities == {"restart": True}
+    # to enable/disable the Restart button, and `motion` to gate the Motion
+    # panel (mjlab-only — see MjlabAdapter.capabilities' docstring).
+    assert adapter.capabilities == {"restart": True, "motion": True}
     assert adapter.num_envs == 1
 
 
@@ -116,7 +117,7 @@ def test_status_omits_command_keys(adapter):
     status = service.status()
     assert status["backend"] == "mjlab"
     assert status["current_task"] == "Rugiar-G1-Mimic"
-    assert status["capabilities"] == {"restart": True}
+    assert status["capabilities"] == {"restart": True, "motion": True}
     for key in ("command", "random_events", "operator_speed_limit", "episode_timeout_s"):
         assert key not in status, f"status() should not carry '{key}' on a tracking backend"
     # Telemetry still works — it's what the Live Telemetry panel renders.

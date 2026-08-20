@@ -70,6 +70,7 @@ METHODS = {
     "task_defaults", "delete_policy", "rename_policy", "policy_info",
     "refresh_local_policies", "fuse_policies",
     "list_families", "switch_family",
+    "list_motions", "switch_motion",
 }
 
 

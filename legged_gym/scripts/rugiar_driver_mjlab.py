@@ -130,16 +130,39 @@ def _script_for_task(task: str) -> str:
     return "rugiar_driver.py"
 
 
-def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
-    """Self-relaunch for a different family, mirroring rugiar_driver.py's
-    function of the same name (see its docstring for the full why: the new
-    process rebinds the same --control_port/--viser_port, and the browser's
-    WS client reconnects on its own). Picks the INTERPRETER as well as the
-    script: leaving mjlab means switching back to the main `.venv` (with
-    SIMULATOR=genesis), since neither venv can import the other's
-    simulator. Returns without exiting if that venv is missing, leaving
-    this session alive rather than killing it for a switch that can't
-    work."""
+def _base_relaunch_argv(cli: argparse.Namespace, script: str, interpreter: str, new_task: str) -> list:
+    """The argv/flags every self-relaunch (family switch OR motion switch)
+    shares: interpreter + script + the port/ramp/token wiring that lets the
+    new process rebind the same --control_port/--viser_port so the
+    browser's WS client just reconnects on its own — see
+    _relaunch_for_family()'s and _relaunch_for_motion()'s docstrings for
+    what each adds on top of this."""
+    argv = [interpreter, script, "--task", new_task,
+            "--viser_port", str(cli.viser_port), "--ramp_ticks", str(cli.ramp_ticks)]
+    if cli.control_port is not None:
+        argv += ["--control_port", str(cli.control_port)]
+    if cli.token:
+        argv += ["--token", cli.token]
+    return argv
+
+
+def _argv_for_family_switch(cli: argparse.Namespace, new_task: str) -> Optional[tuple]:
+    """Builds (argv, env) for a family-switch relaunch, or None if the
+    target venv is missing (see _relaunch_for_family()'s docstring for
+    that case). Split out from _relaunch_for_family() itself so the argv
+    construction — in particular, that --motion_file gets preserved when
+    the new family is still mjlab-hosted — is unit-testable without
+    actually exec'ing a subprocess and os._exit()-ing the caller.
+
+    Preserves --motion_file when relaunching BACK INTO an mjlab task: this
+    process's cli.motion_file is whatever clip is actually active right
+    now (may differ from DEFAULT_MOTION — see switch_motion()/
+    _relaunch_for_motion() below) — dropping it here would silently revert
+    the session to the default clip on every round-trip through a
+    different family, discarding whatever was actually loaded. This was a
+    real bug (found and fixed alongside item S1 of
+    HANDOFF_mimic_motion_library_ux.md): the old argv rebuild never
+    included --motion_file at all."""
     script_name = _script_for_task(new_task)
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
     env = os.environ.copy()
@@ -150,23 +173,149 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
         if not os.path.exists(interpreter):
             print(f"[family switch] cannot switch to {new_task!r}: no Genesis venv at {interpreter} "
                   f"-- staying on the current family.")
-            return
+            return None
         env["SIMULATOR"] = "genesis"
-    argv = [interpreter, script, "--task", new_task,
-            "--viser_port", str(cli.viser_port), "--ramp_ticks", str(cli.ramp_ticks)]
-    if cli.control_port is not None:
-        argv += ["--control_port", str(cli.control_port)]
-    if cli.token:
-        argv += ["--token", cli.token]
+    argv = _base_relaunch_argv(cli, script, interpreter, new_task)
+    if script_name == "rugiar_driver_mjlab.py" and cli.motion_file:
+        # rugiar_driver.py (the Genesis sibling) has no --motion_file flag
+        # at all -- only relevant when the NEW task is itself mjlab-hosted.
+        argv += ["--motion_file", cli.motion_file]
     if new_task == "g1" and script_name != "rugiar_driver_mjlab.py":
         # g1's own default: land in the ball+camera demo setup, same default
         # rugiar_driver.py's own _relaunch_for_family() applies -- see there.
         argv += ["--ball", "--camera"]
+    return argv, env
+
+
+def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
+    """Self-relaunch for a different family, mirroring rugiar_driver.py's
+    function of the same name (see its docstring for the full why: the new
+    process rebinds the same --control_port/--viser_port, and the browser's
+    WS client reconnects on its own). Picks the INTERPRETER as well as the
+    script: leaving mjlab means switching back to the main `.venv` (with
+    SIMULATOR=genesis), since neither venv can import the other's
+    simulator. Returns without exiting if that venv is missing, leaving
+    this session alive rather than killing it for a switch that can't
+    work. See _argv_for_family_switch() for the actual argv/env
+    construction (including the --motion_file preservation)."""
+    built = _argv_for_family_switch(cli, new_task)
+    if built is None:
+        return
+    argv, env = built
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
     sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
     subprocess.Popen(argv, start_new_session=True, env=env)
     os._exit(0)  # immediate -- release the port now, no cleanup needed
+
+
+def _argv_for_motion_switch(cli: argparse.Namespace, new_motion_file: str) -> list:
+    """Builds argv for a motion-switch relaunch — split out from
+    _relaunch_for_motion() for the same unit-testability reason as
+    _argv_for_family_switch() above. Unlike a family switch, this never
+    changes task or interpreter: mjlab can't rebuild its motion command
+    term without a fresh env (see build_env()'s docstring), but the fresh
+    env is still for THIS SAME task, so this always stays on the current
+    interpreter/script — only --motion_file changes."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rugiar_driver_mjlab.py")
+    argv = _base_relaunch_argv(cli, script, sys.executable, cli.task)
+    argv += ["--motion_file", new_motion_file]
+    return argv
+
+
+def _relaunch_for_motion(cli: argparse.Namespace, new_motion_file: str) -> None:
+    """Self-relaunch against a different reference-motion clip — the
+    motion-switch counterpart to _relaunch_for_family() above, requested by
+    ControlService.switch_motion() and drained by control_tick() below the
+    same way family_switch_requested is."""
+    argv = _argv_for_motion_switch(cli, new_motion_file)
+    print(f"[motion switch] relaunching for motion {new_motion_file!r}: {' '.join(argv)}")
+    sys.stdout.flush()  # see _relaunch_for_family()'s identical flush comment above
+    sys.stderr.flush()
+    subprocess.Popen(argv, start_new_session=True, env=os.environ.copy())
+    os._exit(0)  # immediate -- release the port now, no cleanup needed
+
+
+def _load_policies(cli: argparse.Namespace, adapter, num_obs: int, num_actions: int,
+                    policy_paths: dict) -> tuple:
+    """Loads every --policy spec / auto-discovered local policy (each
+    pinned by name -> checkpoint path) plus, always, the damping fallback
+    -- and picks the starting active policy. Zero policies for cli.task is
+    NOT fatal (S2, HANDOFF_mimic_motion_library_ux.md item 2): this session
+    starts damping-only instead of raising, so a reference-motion clip's
+    ghost overlay can still be previewed (robot holding a neutral pose)
+    before anything is ever trained against it. Returns (policies,
+    active_name)."""
+    active_name = cli.active or next(iter(policy_paths), "damping")
+
+    print("Loading policies:")
+    policies = {}
+    for name, path in policy_paths.items():
+        checkpoint_task = _sibling_meta_task(path)
+        if checkpoint_task is not None and checkpoint_task != cli.task:
+            raise ValueError(
+                f"--policy '{name}' ({path}) was trained for task '{checkpoint_task}', but this "
+                f"server is running --task {cli.task!r}.")
+        # hidden_size is irrelevant for these (Javier's are single-input
+        # stateless ONNX — see policy.py's OnnxStatelessPolicy) but the
+        # signature wants one; 0 keeps it honest rather than pretending
+        # there's an LSTM here.
+        policies[name] = load_policy(name, path, num_obs=num_obs, hidden_size=0,
+                                     num_envs=adapter.num_envs)
+        print(f"  '{name}' <- {path}")
+    policies["damping"] = damping_policy(adapter.num_envs, num_actions)
+    if not policy_paths:
+        print(f"  no local policies for task {cli.task!r} yet -- starting damping-only "
+              f"(neutral pose hold; preview the reference-motion ghost, train a policy "
+              f"against this clip, then switch to it).")
+    return policies, active_name
+
+
+def drain_finished_training(training, supervisor, load_new_policy):
+    """Call once per control tick. Any job TrainingManager reports done gets
+    finalized and registered into the RUNNING supervisor right here, so a
+    policy trained from this live session becomes selectable without
+    restarting the process — the mjlab counterpart of rugiar_driver.py's
+    same-named nested helper (which this cannot share: that one is a Genesis
+    closure over env_cfg/hidden_size, and this driver's load_policy() call
+    has a different shape — stateless ONNX, hidden_size=0).
+
+    Unlike a family or motion switch, this needs NO relaunch: it only
+    extends the running process's known-policies set, the same category of
+    operation as ControlService.refresh_local_policies() picking up a policy
+    dropped into policies/ by hand.
+
+    Module-level (not nested in main()) and given its collaborators as
+    arguments specifically so it's unit-testable without building an mjlab
+    env or a viewer — the same split _argv_for_motion_switch() already uses
+    against its un-testable _relaunch_for_motion() wrapper.
+
+    `load_new_policy(job, checkpoint_path)` returns the loaded Policy for a
+    finished job; everything else (finalize, register, report) is here.
+    Returns the names actually loaded. A job whose export fails to load is
+    marked failed on the job itself rather than raised — a bad export must
+    never take down the control loop."""
+    loaded = []
+    for job in training.poll():
+        try:
+            # Copies both checkpoints out of the training log_dir into their
+            # own policies/<name>/ folder and registers the result as a
+            # Clone-from source — see TrainingManager.finalize_policy()'s
+            # docstring. Load THAT path, not job.policy_path, so what's
+            # running matches what's registered.
+            final_checkpoint = training.finalize_policy(
+                job.policy_name, task=job.task, checkpoint=job.policy_path,
+                train_checkpoint=job.train_checkpoint_path, job=job,
+            )
+            supervisor.add_policy(load_new_policy(job, final_checkpoint))
+            loaded.append(job.policy_name)
+            print(f"[training] '{job.policy_name}' finished and is now selectable "
+                  f"(job {job.id}, exported to {final_checkpoint})")
+        except Exception as e:  # noqa: BLE001 - a bad export must not crash the control loop
+            job.status = "failed"
+            job.error = f"training finished but the policy failed to load: {e}"
+            print(f"[training] job {job.id} ('{job.policy_name}') failed to load: {e}")
+    return loaded
 
 
 def build_env(task: str, motion_file: Optional[str], device: str, debug_vis: bool):
@@ -235,29 +384,7 @@ def main():
             continue  # a different task's obs/action space — see rugiar_driver.py's same filter
         policy_paths[name] = info["checkpoint"]
 
-    if not policy_paths:
-        raise ValueError(
-            f"no policies to load: no --policy specs given, and no local policies/<name>/ folder is "
-            f"registered for task {cli.task!r} (checked ./policies/)."
-        )
-    active_name = cli.active or next(iter(policy_paths))
-
-    print("Loading policies:")
-    policies = {}
-    for name, path in policy_paths.items():
-        checkpoint_task = _sibling_meta_task(path)
-        if checkpoint_task is not None and checkpoint_task != cli.task:
-            raise ValueError(
-                f"--policy '{name}' ({path}) was trained for task '{checkpoint_task}', but this "
-                f"server is running --task {cli.task!r}.")
-        # hidden_size is irrelevant for these (Javier's are single-input
-        # stateless ONNX — see policy.py's OnnxStatelessPolicy) but the
-        # signature wants one; 0 keeps it honest rather than pretending
-        # there's an LSTM here.
-        policies[name] = load_policy(name, path, num_obs=num_obs, hidden_size=0,
-                                     num_envs=adapter.num_envs)
-        print(f"  '{name}' <- {path}")
-    policies["damping"] = damping_policy(adapter.num_envs, num_actions)
+    policies, active_name = _load_policies(cli, adapter, num_obs, num_actions, policy_paths)
 
     supervisor = PolicySupervisor(policies, active=active_name, ramp_ticks=cli.ramp_ticks)
     safety = SafetyGovernor(supervisor, damping_policy_name="damping")
@@ -275,8 +402,16 @@ def main():
         return load_policy(name, path, num_obs=num_obs, hidden_size=0, num_envs=adapter.num_envs,
                            description="Rediscovered from disk (refresh)")
 
+    def _load_trained_policy(job, checkpoint_path):
+        """A just-finished job's export, loaded against THIS session's
+        obs/action space — see drain_finished_training() above."""
+        return load_policy(job.policy_name, checkpoint_path, num_obs=num_obs, hidden_size=0,
+                           num_envs=adapter.num_envs,
+                           description=f"Trained via the control web ({job.command})")
+
     service = ControlService(adapter, supervisor, safety, selector=None, training=training,
-                             policy_loader=_load_policy_for_refresh, task_name=cli.task)
+                             policy_loader=_load_policy_for_refresh, task_name=cli.task,
+                             motion_file=cli.motion_file)
 
     control_server = None
     if cli.control_port is not None:
@@ -379,6 +514,17 @@ def main():
             requested_task = service.family_switch_requested
             service.family_switch_requested = None
             _relaunch_for_family(cli, requested_task)  # normally never returns
+
+        if service.motion_switch_requested is not None:
+            requested_motion = service.motion_switch_requested
+            service.motion_switch_requested = None
+            _relaunch_for_motion(cli, requested_motion)  # normally never returns
+
+        # Same "web layer requests, sim-loop thread executes" boundary as the
+        # three flags above: loading a policy module isn't safety-relevant,
+        # but it does touch the same supervisor the control loop reads every
+        # tick, so it belongs on this thread and not the socket thread.
+        drain_finished_training(training, supervisor, _load_trained_policy)
 
         action = service.tick(obs[MjlabAdapter.OBS_GROUP])
         if control_server is not None:

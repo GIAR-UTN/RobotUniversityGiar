@@ -68,10 +68,15 @@ const episodeTimeoutRow = $('#episode-timeout-row');
 const episodeTimeoutS = $('#episode-timeout-s');
 const commandSection = document.querySelector('section[data-section="command"]');
 const stimuliSection = document.querySelector('section[data-section="stimuli"]');
+const motionSection = document.querySelector('section[data-section="motion"]');
 // Whether THIS backend has a velocity command at all — see applyStatus().
 // Starts true so nothing is gated before the first status arrives (every
 // Genesis/real backend supports it; only mjlab's tracking task doesn't).
 let commandSupported = true;
+// Starts false (opposite of commandSupported's default): most sessions
+// (Genesis, real) don't support motion clips at all, and this only flips
+// true once a status push actually says so — see applyStatus() below.
+let motionSupported = false;
 const hudVx = $('.hud-vx');
 const hudVy = $('.hud-vy');
 const hudYaw = $('.hud-yaw');
@@ -260,17 +265,26 @@ function connect() {
   ws = new WebSocket(url);
   ws.onopen = () => {
     footer.textContent = 'connected'; connDot.className = 'ok';
+    // Covers BOTH a family switch and a motion switch — both relaunch the
+    // whole server process (see switch_family()'s and switch_motion()'s
+    // docstrings) and share this one in-flight flag/overlay on purpose,
+    // see the Motion panel's own comment block above familyButtonRow's
+    // motion counterpart, motionButtonRow().
     const wasSwitchingFamily = familySwitchInFlight;
     familySwitchInFlight = false;
     refreshTrainingCatalog();
     refreshSystemInfo();
     refreshFamilyList();
-    // A family switch relaunches the whole server process for a different
-    // task (see switch_family()'s docstring) — command ranges and camera
-    // availability can differ for it, and the camera feed needs a fresh
-    // src to reconnect (see applyRuntimeConfig()). A routine reconnect
+    if (motionSupported) refreshMotionList();
+    // A family/motion switch relaunches the whole server process (see
+    // switch_family()'s/switch_motion()'s docstrings) — command ranges and
+    // camera availability can differ for it, and the camera feed needs a
+    // fresh src to reconnect (see applyRuntimeConfig()), and the Motion
+    // panel's `current` clip needs re-fetching (motionSupported alone
+    // doesn't flip on a same-backend switch, so applyStatus()'s own
+    // refetch-on-flip wouldn't otherwise catch this). A routine reconnect
     // (network hiccup, same process still running) has nothing new to
-    // fetch here, so this only runs after an actual family switch.
+    // fetch here, so this only runs after an actual switch.
     if (wasSwitchingFamily) {
       // The new process's active policy defaults to whichever local
       // checkpoint happens to load first (see loadLastPolicy()'s docstring)
@@ -599,6 +613,96 @@ function refreshFamilyList() {
   });
 }
 
+// ---- Motion panel (mjlab's Rugiar-G1-Mimic only — see applyStatus()'s
+// capabilities.motion gate above) ----
+// A motion switch is a process relaunch, exactly like a family switch (see
+// ControlService.switch_motion()'s docstring) -- so it deliberately reuses
+// familySwitchInFlight/the SAME loading overlay/reconnect handling
+// (connect()'s ws.onopen 'wasSwitchingFamily' branch) rather than a second,
+// parallel in-flight flag and transition mechanism. That branch's restart()
+// + /config refresh + sim-viewer reload apply just as much after a motion
+// switch (fresh env, robot back at a known pose) as after a family switch.
+const motionList = $('#motion-list');
+
+function motionButtonRow(clip, current) {
+  const row = document.createElement('div');
+  row.className = 'policy-row';
+  const btn = document.createElement('button');
+  const isCurrent = clip.path === current;
+  btn.className = 'policy-btn' + (isCurrent ? ' active' : '');
+  btn.disabled = isCurrent || familySwitchInFlight;
+  // Deliberately NOT gated on clip.has_policy — unlike familyButtonRow's
+  // hasPolicies disable, previewing a policy-less clip's reference-motion
+  // ghost (against whatever's active, even 'damping') is the whole point
+  // of this panel, see HANDOFF_mimic_motion_library_ux.md item 2.
+  btn.textContent = clip.name;
+  if (!clip.has_policy) {
+    const badge = document.createElement('span');
+    badge.className = 'tele-badge no_policy';
+    badge.textContent = 'no policy';
+    badge.title = `No local policy trained against '${clip.name}' yet — preview it anyway; the `
+      + `reference-motion ghost plays regardless of what's driving the robot.`;
+    btn.appendChild(document.createTextNode(' '));
+    btn.appendChild(badge);
+  }
+  btn.onclick = () => {
+    familySwitchInFlight = true;
+    showLoadingOverlay(
+      `Switching to motion "${clip.name}"… reconnecting (10-20s). This page reconnects and reloads `
+      + `the simulator view on its own once it's back.`,
+      false);
+    send('switch_motion', { path: clip.path });
+  };
+  row.appendChild(btn);
+  return row;
+}
+
+function renderMotionList(data) {
+  if (!data) return;
+  motionList.innerHTML = '';
+  (data.clips || []).forEach((clip) => {
+    motionList.appendChild(motionButtonRow(clip, data.current));
+  });
+  if (!data.clips || data.clips.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'field-hint';
+    empty.textContent = 'No reference-motion clips found under resources/reference_motion/unitree_g1/mjlab_run/.';
+    motionList.appendChild(empty);
+  }
+  // Cached and reused by the Create Policy panel's own motion-clip picker
+  // (see populateTrainMotionSelect()) — same list_motions() response, no
+  // second endpoint needed (S11 explicitly reuses this one).
+  motionClipsCache = data.clips || [];
+  populateTrainMotionSelect();
+}
+
+function refreshMotionList() {
+  call('list_motions').then(renderMotionList).catch((e) => {
+    console.warn('list_motions unavailable:', e.message);
+  });
+}
+
+// ---- Create Policy panel's motion-clip picker (S11) — reuses list_motions()
+// via motionClipsCache above rather than a second fetch/endpoint. Only shown
+// for a task whose task_defaults() reports needs_motion_file (see
+// refreshTaskFieldVisibility()), which is what mjlab_train.py itself requires
+// (docs/mjlab_training_contract.md §2) — computed generically off the task's
+// own cfg.commands, not a name check, so a future tracking task not named
+// "Rugiar-G1-Mimic" gets this picker for free too.
+let motionClipsCache = [];
+
+function populateTrainMotionSelect() {
+  const prev = trainMotion.value;
+  trainMotion.innerHTML = '<option value="">&mdash; pick a clip &mdash;</option>';
+  for (const clip of motionClipsCache) {
+    const opt = document.createElement('option');
+    opt.value = clip.path;
+    opt.textContent = clip.has_policy ? clip.name : `${clip.name} (no policy trained yet)`;
+    trainMotion.appendChild(opt);
+  }
+  if (motionClipsCache.some((c) => c.path === prev)) trainMotion.value = prev;
+}
+
 function onPolicyReorder() {
   // While collapsed, only the visible rows exist in the DOM to drag — any
   // names hidden behind "Show all" aren't part of this drag at all, so
@@ -741,6 +845,22 @@ function applyStatus(status) {
   commandSupported = 'command' in status;
   commandSection.hidden = !commandSupported;
   stimuliSection.hidden = !('random_events' in status);
+
+  // Same "absent/false means unsupported" convention as command/
+  // random_events above, but read from status.capabilities (adapter-
+  // declared, see MjlabAdapter.capabilities' docstring) rather than a
+  // top-level status key — list_motions()/switch_motion() are an
+  // mjlab-only concept (Genesis has no reference-motion command term at
+  // all), so this is what gates the whole Motion panel's visibility.
+  const motionSupportedNow = status.capabilities?.motion === true;
+  motionSection.hidden = !motionSupportedNow;
+  if (motionSupportedNow && !motionSupported) {
+    // Flipped on (fresh connect, or a family switch landed on a
+    // motion-capable task) — fetch the clip list now rather than waiting
+    // for something else to trigger it.
+    refreshMotionList();
+  }
+  motionSupported = motionSupportedNow;
 
   let auto = false;
   if (status.random_events) {
@@ -1696,6 +1816,11 @@ const trainName = $('#train-name');
 const trainBase = $('#train-base');
 const trainBaseSimWarning = $('#train-base-sim-warning');
 const trainTask = $('#train-task');
+const trainMotionRow = $('#train-motion-row');
+const trainMotion = $('#train-motion');
+const trainCommandEnvelopeRow = $('#train-command-envelope-row');
+const trainTargetVarsGroup = $('#train-target-vars-group');
+const trainPushRow = $('#train-push-row');
 const trainIters = $('#train-iters');
 const trainMinutes = $('#train-minutes');
 const trainEnvs = $('#train-envs');
@@ -2161,6 +2286,10 @@ function updateEstimate() {
       max_iterations: hasIters ? iterations : null,
       max_minutes: hasMinutes ? minutes : null,
       backend: trainBackend,
+      // Disambiguates "local" into local-genesis vs local-mjlab history —
+      // both persist backend="local" server-side (see
+      // TrainingBackend.job_backend's docstring in training.py).
+      task: trainTask.value || null,
     }).then((est) => {
       if (est.basis !== 'measured') {
         trainEstimate.textContent = hasMinutes && !hasIters
@@ -2299,6 +2428,38 @@ function refreshTargetReferences() {
     }
     renderTargetReferences();
   }).catch(() => { targetReferences = {}; renderTargetReferences(); });
+}
+
+// ---- data-driven show/hide of the Genesis-only field-groups (S11) ----
+// Command envelope, Target variables and Push disturbances only mean
+// something for a task with a velocity-command/stability-target concept —
+// gated on whether task_defaults(task).variables comes back with any keys
+// at all (see TrainingManager.task_defaults()'s docstring: a motion-tracking
+// task returns an EMPTY variables dict, not full-keyed-with-None) rather
+// than a hardcoded task-name/family check, so this generalizes to any future
+// non-locomotion task the same way it already does for Rugiar-G1-Mimic.
+// currentTaskNeedsMotion drives the Motion-clip picker's visibility AND the
+// submit-time validation below (see createPolicyForm's submit handler).
+let currentTaskNeedsMotion = false;
+
+function applyTaskFieldVisibility(hasEnvelopeVars, needsMotion) {
+  trainCommandEnvelopeRow.hidden = !hasEnvelopeVars;
+  trainTargetVarsGroup.hidden = !hasEnvelopeVars;
+  trainPushRow.hidden = !hasEnvelopeVars;
+  trainMotionRow.hidden = !needsMotion;
+  currentTaskNeedsMotion = needsMotion;
+  if (needsMotion && motionSupported && motionClipsCache.length === 0) refreshMotionList();
+}
+
+function refreshTaskFieldVisibility() {
+  const task = trainTask.value;
+  if (!task) { applyTaskFieldVisibility(true, false); return Promise.resolve(); }
+  // Returns the promise (same reasoning as refreshRewardScaleFields()) so
+  // restoreTrainFormConfig() can wait for the Motion-clip select to exist/
+  // be populated before writing a saved clip path into it.
+  return call('task_defaults', { task }).then((d) => {
+    applyTaskFieldVisibility(Object.keys(d.variables || {}).length > 0, !!d.needs_motion_file);
+  }).catch(() => applyTaskFieldVisibility(true, false));
 }
 
 // Resolves one variable's target from its Absolute/% change pair:
@@ -2482,6 +2643,7 @@ function snapshotTrainFormConfig() {
     push: trainPush.value, pushVel: trainPushVel.value, pushInterval: trainPushInterval.value, pushDir: trainPushDir.value,
     entropyCoef: trainEntropyCoef.value,
     rewardScales,
+    motionFile: trainMotion.value,
   };
 }
 
@@ -2532,6 +2694,12 @@ function restoreTrainFormConfig() {
 
   renderVariableChrome();
   refreshTargetReferences();
+  refreshTaskFieldVisibility().then(() => {
+    if (cfg.motionFile && motionClipsCache.some((c) => c.path === cfg.motionFile)) {
+      trainMotion.value = cfg.motionFile;
+      updateCommandPreview();
+    }
+  });
   refreshNamePlaceholder();
   refreshCloneFromMismatchWarning();
   updateEnvsHint(); // backend-dependent hint text — see setTrainBackend() above
@@ -2610,6 +2778,7 @@ function refreshTrainingCatalog() {
     renderVariableChrome();
     refreshTargetReferences();
     refreshRewardScaleFields();
+    refreshTaskFieldVisibility();
     refreshNamePlaceholder();
     refreshCloneFromMismatchWarning();
     updateCommandPreview();
@@ -2661,10 +2830,11 @@ function composeTrainingParams() {
   const entropyCoefRaw = trainEntropyCoef.value.trim();
   const entropyCoef = entropyCoefRaw === '' ? null : parseFloat(entropyCoefRaw);
   const rewardScales = rewardScaleOverrides();
+  const motionFile = trainMotion.value || null;
   return {
     name, task, iterations: Number.isFinite(iterations) ? iterations : null,
     minutes: Number.isFinite(minutes) ? minutes : null, numEnvs, base, cmdVx, cmdVy, cmdYaw,
-    targets, push, pushVel, pushInterval, pushDir, entropyCoef, rewardScales,
+    targets, push, pushVel, pushInterval, pushDir, entropyCoef, rewardScales, motionFile,
     backend: trainBackend,
   };
 }
@@ -2687,6 +2857,7 @@ function updateCommandPreview() {
   if (p.iterations === null && p.minutes === null) parts.push('--max_iterations <or> --max_minutes <required>');
   if (p.base) parts.push(`--from_policy ${p.base}`);
   if (p.backend === 'kaggle') parts.push('--backend kaggle');
+  if (currentTaskNeedsMotion) parts.push(`--motion_file ${p.motionFile || '<pick a clip>'}`);
   if (p.cmdVx) parts.push(`--cmd_vx_range ${p.cmdVx[0]} ${p.cmdVx[1]}`);
   if (p.cmdVy) parts.push(`--cmd_vy_range ${p.cmdVy[0]} ${p.cmdVy[1]}`);
   if (p.cmdYaw) parts.push(`--cmd_yaw_range ${p.cmdYaw[0]} ${p.cmdYaw[1]}`);
@@ -2730,7 +2901,7 @@ const targetVarInputs = TARGET_VAR_KEYS.flatMap((key) => [targetVarEls[key].abs,
 [trainName, trainBase, trainTask, trainIters, trainMinutes, trainEnvs,
  trainVxLo, trainVxHi, trainVyLo, trainVyHi, trainYawLo, trainYawHi,
  ...targetVarInputs, trainPush, trainPushVel, trainPushInterval, trainPushDir,
- trainEntropyCoef].forEach((el) => {
+ trainEntropyCoef, trainMotion].forEach((el) => {
   el.addEventListener('input', updateCommandPreview);
   el.addEventListener('change', updateCommandPreview);
 });
@@ -2742,6 +2913,11 @@ const targetVarInputs = TARGET_VAR_KEYS.flatMap((key) => [targetVarEls[key].abs,
     refreshCloneFromMismatchWarning();
   });
 });
+trainTask.addEventListener('change', refreshTaskFieldVisibility);
+// A task change can move the estimate into a different backend/simulator
+// history bucket (local-genesis vs local-mjlab) even with backend/envs/
+// iterations unchanged — see estimate_training_time's `task` param.
+trainTask.addEventListener('change', updateEstimate);
 [trainIters, trainMinutes, trainEnvs].forEach((el) => {
   el.addEventListener('input', updateEstimate);
   el.addEventListener('change', updateEstimate);
@@ -2777,6 +2953,9 @@ createPolicyForm.addEventListener('submit', (e) => {
       return showTrainError(`No reference for ${label} yet — pick a task or a clone-from base.`);
     }
   }
+  if (currentTaskNeedsMotion && !p.motionFile) {
+    return showTrainError('Pick a motion clip — this task has no default reference motion to train against.');
+  }
 
   showTrainError('');
   btnStartTraining.disabled = true;
@@ -2788,6 +2967,7 @@ createPolicyForm.addEventListener('submit', (e) => {
     lin_vel_z_target: p.targets.lin_vel_z,
     ang_vel_xy_target: p.targets.ang_vel_xy,
     orientation_tilt_target: p.targets.orientation_tilt,
+    motion_file: p.motionFile,
     push_robots: p.push === null ? null : p.push === 'on',
     max_push_vel_xy: p.pushVel, push_interval_s: p.pushInterval, push_dir: p.pushDir,
     entropy_coef: p.entropyCoef, reward_scale_overrides: p.rewardScales,

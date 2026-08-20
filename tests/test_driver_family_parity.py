@@ -55,10 +55,16 @@ DRIVER_TARGET = REPO_ROOT / "legged_gym" / "scripts" / "rugiar_driver_target.py"
 #   - _relaunch_for_family()  must pick a different INTERPRETER (back to
 #                             .venv + SIMULATOR=genesis), not just a script.
 #   - _sibling_meta_simulator / _bare_g1_policy_specs /
-#     _encode_camera_frame_jpeg / drain_finished_training
+#     _encode_camera_frame_jpeg
 #                             don't exist there at all (no Genesis policy
-#                             catalog conventions, no camera, and training
-#                             runs on the Genesis side only).
+#                             catalog conventions, no camera).
+#   - drain_finished_training exists in all three, but the mjlab one is a
+#                             MODULE-LEVEL function taking its collaborators
+#                             as arguments (so it can be unit-tested without
+#                             an mjlab env — see tests/test_mjlab_training_
+#                             hotload.py), while the Genesis pair's is a
+#                             closure over env_cfg/hidden_size nested inside
+#                             main(). Same job, structurally different call.
 # Contorting either side to make a textual diff pass would make BOTH worse.
 # What protects this file's real invariant instead: the check below asserts
 # the mjlab driver is not silently expected to be here, so a future editor

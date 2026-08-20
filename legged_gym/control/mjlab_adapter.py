@@ -49,7 +49,14 @@ class MjlabAdapter:
     """
 
     backend_name = "mjlab"
-    capabilities = {"restart": True}
+    # "motion": True gates the web UI's Motion panel — see
+    # ControlService.status()'s docstring on capabilities being
+    # adapter-declared, not UI-hardcoded, and web/app.js's applyStatus(),
+    # which follows the same "absent key means unsupported" convention the
+    # Command/Stimuli panels already use for 'command'/'random_events' in
+    # status() itself. SimAdapter's capabilities has no 'motion' key at all
+    # — Genesis has no reference-motion command term to switch.
+    capabilities = {"restart": True, "motion": True}
 
     #: Which observation group feeds the policy. mjlab's tracking env
     #: returns a dict ({'actor': [N,154], 'critic': [N,286]}); everything
