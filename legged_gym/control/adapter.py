@@ -74,6 +74,10 @@ class RobotState:
                                           # in sim, so "ground truth exists" is all that's required
                                           # there — the caveat only matters for what real-robot
                                           # *inference* could ever condition on.
+    base_pos_xy: Optional[torch.Tensor]  # (num_envs, 2) — world-frame x,y. Simulator ground
+                                          # truth, same real-hardware caveat as base_height above —
+                                          # None on real hardware (not directly sensed). Feeds
+                                          # ControlService.get_odometry()'s distance-traveled tracking.
     commands: torch.Tensor         # (num_envs, 3) — requested lin_x, lin_y, ang_yaw
     action_scale: float
     lifecycle: Lifecycle
@@ -209,6 +213,7 @@ class SimAdapter:
             base_lin_vel=sim.base_lin_vel,
             projected_gravity=sim.projected_gravity,
             base_height=sim.base_pos[:, 2],
+            base_pos_xy=sim.base_pos[:, :2],
             commands=self.env.commands[:, :3],
             action_scale=self.env.cfg.control.action_scale,
             lifecycle=self._lifecycle,

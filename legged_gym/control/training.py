@@ -20,6 +20,7 @@ loop.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 import platform
@@ -144,6 +145,98 @@ def _legged_gym_registered_tasks() -> Optional[set]:
     # read the registry", and answering "mjlab" by exclusion off an empty set
     # would misroute every Genesis job. Say "unknown" instead.
     return set(tasks) if tasks else None
+
+
+def _mjlab_registry_probe_source() -> str:
+    """The one-shot script run via `_mjlab_registry_snapshot()`'s subprocess
+    fallback. Run as a SCRIPT FILE (not `python -c`) — `-c` makes Python
+    insert cwd as sys.path[0], which if cwd is REPO_ROOT reintroduces the
+    exact R1 collision `_mjlab_prepare_env()`'s PYTHONPATH-stripping exists
+    to avoid (the repo's own vendored rsl_rl/ shadowing .venv-mjlab's PyPI
+    rsl-rl-lib — see docs/mjlab_migration.md R1). As a script file, sys.path[0]
+    is the script's own directory instead, so REPO_ROOT only needs to go back
+    on sys.path explicitly, LAST, exactly like mjlab_train.py's own header —
+    see that file's module docstring for the same reasoning."""
+    return (
+        "import json\n"
+        "import sys\n"
+        f"sys.path.append({str(REPO_ROOT)!r})  # LAST -- see this function's docstring\n"
+        "import mjlab_tasks  # noqa: F401,E402 - import side effect: registers this repo's own tasks\n"
+        "from mjlab.tasks import registry\n"
+        "out = {}\n"
+        "for t in registry.list_tasks():\n"
+        "    cfg = registry.load_env_cfg(t)\n"
+        "    out[t] = {\n"
+        "        'reward_scales': {n: term.weight for n, term in cfg.rewards.items()},\n"
+        "        'needs_motion_file': 'motion' in getattr(cfg, 'commands', {}),\n"
+        "    }\n"
+        "print(json.dumps(out))\n"
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _mjlab_registry_snapshot() -> Optional[dict]:
+    """{task_id: {'reward_scales': {...}, 'needs_motion_file': bool}} for
+    every mjlab-registered task — computed in-process when mjlab is
+    importable here, otherwise via a one-shot subprocess into
+    `.venv-mjlab` (the same interpreter `_mjlab_interpreter()` dispatches
+    training to), so a process that can't import mjlab itself (e.g.
+    rugiar's own `.venv` install, where `rugiar` the console-script
+    actually lives) still gets real reward-term data instead of an empty
+    result — this is what task_defaults() and rugiar's `--list_tasks`/
+    `--list_reward_scales` rely on. Returns None only when mjlab isn't set
+    up on this machine at all (no MJLAB_PYTHON) or the probe fails
+    outright (treated as "can't validate", not "no mjlab tasks exist" —
+    same reasoning as _mjlab_registered_tasks()/_legged_gym_registered_tasks()).
+
+    Cached per-process (@lru_cache) — task/reward-scale defaults don't
+    change during a single CLI invocation or driver session; tests that
+    monkeypatch the probe must call `_mjlab_registry_snapshot.cache_clear()`
+    first."""
+    try:
+        import mjlab_tasks  # noqa: F401 - import side effect: registers this repo's own tasks
+        from mjlab.tasks import registry
+    except ImportError:
+        if not MJLAB_PYTHON.exists():
+            return None
+        env = dict(os.environ)
+        _mjlab_prepare_env(env)
+        # A real script FILE, not `python -c` -- see _mjlab_registry_probe_source()'s
+        # docstring for why (-c would put REPO_ROOT on sys.path[0] via cwd,
+        # reintroducing the R1 vendored-rsl_rl shadowing this whole dance avoids).
+        try:
+            with tempfile.NamedTemporaryFile(
+                    "w", suffix="_mjlab_registry_probe.py", delete=False) as f:
+                f.write(_mjlab_registry_probe_source())
+                probe_path = f.name
+            proc = subprocess.run(
+                [str(MJLAB_PYTHON), probe_path],
+                capture_output=True, text=True, timeout=90, env=env, cwd=str(REPO_ROOT),
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        finally:
+            try:
+                os.unlink(probe_path)
+            except OSError:
+                pass
+        if proc.returncode != 0:
+            return None
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return None
+    tasks = registry.list_tasks()
+    if not tasks:
+        return None
+    out = {}
+    for t in tasks:
+        cfg = registry.load_env_cfg(t)
+        out[t] = {
+            "reward_scales": {name: term.weight for name, term in cfg.rewards.items()},
+            "needs_motion_file": "motion" in getattr(cfg, "commands", {}),
+        }
+    return out
 
 
 def training_backend_for_task(task: str) -> str:
@@ -975,7 +1068,8 @@ class TrainingManager:
     def register_source(self, name: str, task: str, checkpoint: Optional[str],
                          train_checkpoint: Optional[str] = None,
                          simulator: str = "genesis",
-                         category: Optional[str] = None) -> None:
+                         category: Optional[str] = None,
+                         motion_file: Optional[str] = None) -> None:
         """`train_checkpoint` is the raw rsl_rl checkpoint to resume PPO
         from (see finalize_policy()'s docstring for how a fresh training
         job gets one). Pass None (the --policy CLI path, via
@@ -1008,6 +1102,7 @@ class TrainingManager:
             "train_checkpoint": train_checkpoint or self._train_checkpoint_from_export(checkpoint),
             "simulator": simulator,
             "category": category,
+            "motion_file": motion_file,
         }
 
     def finalize_policy(self, name: str, task: str, checkpoint: str,
@@ -1552,11 +1647,29 @@ class TrainingManager:
         # base-height/tilt-style targets exist for a motion-tracking task —
         # so 'variables' comes back empty (see docstring above), not
         # full-keyed-with-None.
-        if _mjlab_registered_tasks() is not None and training_backend_for_task(task) == "mjlab":
-            import mjlab_tasks  # noqa: F401 - import side effect: registers this repo's own tasks
-            from mjlab.tasks import registry
-            cfg = registry.load_env_cfg(task)
-            reward_scales = {name: term.weight for name, term in cfg.rewards.items()}
+        #
+        # training_backend_for_task() (not _mjlab_registered_tasks() alone)
+        # decides whether `task` IS an mjlab task, so this branch is also
+        # taken from a process that can't import mjlab itself (e.g. rugiar's
+        # own `.venv` install — see _mjlab_registry_snapshot()'s docstring).
+        # A neither-registry-importable ValueError is treated the same as
+        # the Genesis except-ImportError branch below: "can't validate",
+        # not "this task has no reward terms".
+        try:
+            is_mjlab_task = training_backend_for_task(task) == "mjlab"
+        except ValueError:
+            is_mjlab_task = False
+        if is_mjlab_task:
+            if _mjlab_registered_tasks() is not None:
+                import mjlab_tasks  # noqa: F401 - import side effect: registers this repo's own tasks
+                from mjlab.tasks import registry
+                cfg = registry.load_env_cfg(task)
+                reward_scales = {name: term.weight for name, term in cfg.rewards.items()}
+                needs_motion_file = "motion" in getattr(cfg, "commands", {})
+            else:
+                info = (_mjlab_registry_snapshot() or {}).get(task)
+                reward_scales = info["reward_scales"] if info else {}
+                needs_motion_file = info["needs_motion_file"] if info else True
             return {
                 "variables": {},
                 "reward_scales": reward_scales,
@@ -1564,7 +1677,7 @@ class TrainingManager:
                     term: note for term, note in self.REWARD_SCALE_NOTES.items()
                     if term in reward_scales
                 },
-                "needs_motion_file": "motion" in getattr(cfg, "commands", {}),
+                "needs_motion_file": needs_motion_file,
             }
 
         # Guarded for the same reason as catalog()'s: unimportable under

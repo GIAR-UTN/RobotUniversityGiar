@@ -103,6 +103,7 @@ class MjlabAdapter:
             # threshold applies unchanged.
             projected_gravity=data.projected_gravity_b,
             base_height=data.root_link_pos_w[:, 2],
+            base_pos_xy=data.root_link_pos_w[:, :2],
             # No velocity command exists on a tracking task (see this
             # module's docstring) — a zero triple keeps RobotState's shape
             # contract for any consumer that reads it positionally, and

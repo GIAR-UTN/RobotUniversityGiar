@@ -12,11 +12,15 @@ was made (Aug 12) and this file has NOT been corrected yet — confirm before re
 
 ## Unamos nuestro conocimiento y energía.
 
-Un fork de `unitree_rl_gym` que entrena, transforma y maneja policies de RL para
-humanoides Unitree — con una base sólida ya funcionando y siete frentes abiertos
-esperando a la persona indicada. Sí, vos, vos que estás leyendo esto.
+**GIAR** es un grupo abierto de gente que se junta a resolver, en serio, el problema de
+enseñarle a caminar y moverse a un robot de patas — hoy con humanoides Unitree como banco
+de pruebas concreto, con la ambición puesta más allá de un solo fabricante. **RUgiar** es
+nuestra solución a ese problema: nació como fork de `unitree_rl_gym`, pero ya entrena,
+transforma y opera policies de RL sobre más de un simulador, con una base sólida ya
+funcionando y ocho frentes abiertos esperando a la persona indicada. Sí, vos, vos que estás
+leyendo esto.
 
-`7 áreas · elegí la tuya` &nbsp; `Ramas cortas, PR simple` &nbsp; `Arrancás hoy`
+`8 áreas · elegí la tuya` &nbsp; `Ramas cortas, PR simple` &nbsp; `Arrancás hoy`
 
 > Lo que hace atractivo este momento para colaborar es que RUgiar recién está arrancando
 > en serio. Hay una base sólida — entrenamiento funcionando, control en vivo funcionando,
@@ -30,9 +34,57 @@ esperando a la persona indicada. Sí, vos, vos que estás leyendo esto.
 
 ---
 
+## El problema que nadie terminó de resolver
+
+*CONTEXTO · POR QUÉ ESTO IMPORTA, MÁS ALLÁ DE ESTE REPO*
+
+Enseñarle a caminar a un robot con dos piernas dejó de ser ciencia ficción hace pocos años
+— y sigue siendo, hoy, un problema abierto. No es una curva que ya se resolvió en un paper y
+ahora solo falta implementar: cada equipo que lo intenta — Unitree, Boston Dynamics, Figure,
+la comunidad académica detrás de Isaac Gym/Isaac Lab, los grupos que arrancaron mjlab en
+DeepMind — se choca con las mismas preguntas de fondo, cada uno con su propia pila de
+herramientas, casi nunca compatibles entre sí:
+
+- **Entrenar es caro y frágil.** Un humanoide real no aprende por prueba y error contra el
+  piso — se rompe. Todo el aprendizaje pasa por simulación (miles de copias virtuales de un
+  robot, cayéndose millones de veces sin costo) antes de tocar hardware real. Pero cada
+  simulador tiene su propia física, su propio formato de robot, sus propias mañas — y una
+  policy entrenada en uno no necesariamente camina igual en otro.
+- **Sim2real sigue siendo la parte que nadie garantiza.** Que algo funcione en simulación no
+  prueba que funcione en el robot físico — ese salto (sim2real) es donde más proyectos se
+  estancan, y donde más se necesita evidencia real, no solo una curva de reward prolija.
+- **El ecosistema está fragmentado a propósito y por necesidad.** Genesis, Isaac Gym, Isaac
+  Lab, MuJoCo/mjlab — no son intercambiables, cada uno resuelve un pedazo distinto del
+  problema (GPU vs. CPU, licenciamiento, qué tan realista es el contacto físico, qué tan rápido
+  itera un equipo chico). Ningún fork de `unitree_rl_gym`, ni el proyecto de ningún otro
+  fabricante, resolvió esto de una vez y para siempre — y probablemente no hay una única
+  respuesta correcta, sino una capa de orquestación que sepa moverse entre todos.
+- **Entrenar una policy es solo el primer tercio del problema real.** Después viene
+  fusionarlas, destilarlas, hacerlas convivir con otras, decidir cuál usar y cuándo, operarlas en
+  vivo con seguridad, y — cada vez más — dejar que un agente de IA las maneje en nombre de
+  un humano. Casi ningún proyecto de RL para robots piensa en ese ciclo completo desde el
+  día uno; la mayoría se queda en "entrenamos una policy que camina" y ahí termina.
+
+**Esto no es un problema de Unitree, ni un problema que empieza o termina en este repo.**
+Es el mismo problema que enfrentaría cualquier equipo trabajando con cualquier robot de
+patas — Go2, G1, un cuadrúpedo genérico, un humanoide de otro fabricante el día de mañana.
+La solución que vale la pena construir es una que no dependa de qué robot específico tenés
+enfrente.
+
+---
+
+> A partir de acá arranca lo nuestro: **RUgiar** es la respuesta de GIAR a ese problema —
+> no "otro fork más de `unitree_rl_gym`", sino la capa que orquesta todo el ciclo (entrenar →
+> transformar → operar → dejar que un agente lo use) sobre múltiples simuladores, múltiples
+> robots, y múltiples formas de acceder al sistema — CLI, web, y ahora también agentes de IA
+> vía MCP. Lo que sigue es el estado real de esa solución hoy, y las ocho puertas todavía
+> abiertas para quien quiera construirla con nosotros.
+
+---
+
 ## Elegí una y tomá la posta
 
-*LAS 7 ÁREAS*
+*LAS 8 ÁREAS*
 
 El proyecto se divide siguiendo el ciclo de vida de una policy: entrenarla → transformarla →
 manejar con ella un robot. Pensadas para trabajarse en paralelo — cada una tiene dueño
@@ -59,7 +111,10 @@ de crecimiento.
 `web/index.html` · `web/app.js`
 
 ### §5 · CLI
-La herramienta de terminal — entrenar, fusionar, destilar sin abrir un navegador.
+La herramienta de terminal — entrenar, fusionar, destilar sin abrir un navegador. Mismo
+comando para una task de locomoción (Genesis) que para una de motion-tracking (mjlab,
+`Rugiar-G1-Mimic`) — el CLI detecta y despacha al backend correcto solo, vos no elegís venv
+ni intérprete a mano.
 `legged_gym/cli/rugiar.py`
 
 ### §6 · Driver del robot
@@ -86,10 +141,29 @@ panel de rewards con las 9 variables de tracking de este mundo (`motion_body_pos
 > datasets de motion capture, captura desde el robot mismo — sigue siendo terreno real para
 > quien se sume. `tu nombre acá`
 
+### §8 · shipped-parcial — MCP, para que un agente de IA maneje el robot
+
+Existe y funciona: un servidor MCP (`rugiar_mcp/`) que expone una sesión YA CORRIENDO —
+`switch_policy`, `set_velocity`, `get_status`/`get_telemetry`/`get_odometry`,
+`get_command_limits`, `get_camera_frame_base64` — sobre el mismo protocolo WebSocket que
+ya habla la web y `examples/joystick_controller.py`. Cualquier cliente MCP (Claude, Hermes,
+otro agente) puede hoy mismo preguntarle a un robot en vivo qué está haciendo y decirle
+hacia dónde moverse, sin que nadie tenga que escribir un segundo protocolo.
+
+**La frontera real:** vive en la rama `mcp-base`, no mergeada a `main` — quedó desactualizada
+respecto al trabajo de mjlab (§7). No expone NADA de entrenamiento — el CLI y el MCP se
+reparten el motor de este proyecto sin pisarse: uno solo entrena (offline, nunca toca una
+sesión viva), el otro solo opera (en vivo, nunca entrena) — ver el diagrama más abajo. Mergear
+esta rama, ponerla al día, y decidir si conviene sumarle herramientas de entrenamiento (el
+camino ya existe — Control ya reenvía esas RPCs para la web) es terreno abierto entero.
+`rugiar_mcp/server.py` · `rugiar_mcp/control_client.py`
+
 > **Antes de arrancar:** Entrenamiento produce carpetas `policies/<nombre>/` — ese
 > directorio es el contrato con el resto del sistema. Control no se instancia solo, lo arma el
 > Driver. La UI Web solo habla WebSocket contra Control, sin otro camino de entrada. El CLI
-> no toca Control ni el Driver — cero imports, la frontera más limpia del repo.
+> no toca Control ni el Driver — cero imports, la frontera más limpia del repo. El MCP es el
+> espejo del CLI: solo habla WebSocket contra Control (igual que la UI Web), cero imports de
+> Entrenamiento — ninguna de las dos puertas de agente pisa a la otra.
 
 ---
 
@@ -135,13 +209,14 @@ El resto son sugerencias, no obligaciones:
 
 ---
 
-## Cómo se conectan las siete áreas
+## Cómo se conectan las ocho áreas
 
 *EL MAPA*
 
 ```mermaid
 graph TD
     CLI["CLI (rugiar.py)"]
+    MCP["MCP (rugiar_mcp/)"]
     Entrenamiento["Entrenamiento (TrainingManager)"]
     OpsPolicies["Operaciones sobre policies"]
     Driver["Driver del robot"]
@@ -155,12 +230,61 @@ graph TD
     Driver -->|instancia y tiquea| Control
     Control -->|reenvía RPCs de entrenamiento| Entrenamiento
     UIWeb -->|RPC WebSocket: único canal de entrada| Control
+    MCP -->|RPC WebSocket: mismo protocolo que la UI| Control
     Terceros -.->|planeado, no construido| UIWeb
 ```
 
-Leído en una frase: el Driver es el único que arma Control; Control es la única puerta de
-entrada de la UI; el CLI y la UI llegan a Entrenamiento por caminos distintos que nunca se
-cruzan; y todo lo que las áreas comparten en disco son las carpetas `policies/<nombre>/`.
+Leído en una frase: el Driver es el único que arma Control; Control es la puerta de entrada
+tanto de la UI como del MCP; el CLI llega a Entrenamiento por un camino que nunca se cruza
+con el del MCP; y todo lo que las áreas comparten en disco son las carpetas
+`policies/<nombre>/`.
+
+### CLI vs. MCP — quién maneja qué (y por qué no se pisan)
+
+*EL DIAGRAMA QUE RESUELVE LA PREGUNTA "¿ESTO NO ESTÁ DUPLICADO?"*
+
+Las dos puertas pensadas para que un agente/proceso externo maneje el sistema sin
+navegador — CLI y MCP — a primera vista parecen candidatas a solaparse. Revisando el código
+de las dos (`legged_gym/cli/rugiar.py` vs. `rugiar_mcp/server.py`), la respuesta es que no se
+solapan en absoluto — cada una llega a una mitad distinta del engine, sin cruzarse:
+
+```mermaid
+graph LR
+    subgraph "CLI -- rugiar.py -- offline / batch"
+        direction TB
+        C1["rugiar train"]
+        C2["rugiar fuse"]
+        C3["rugiar distill"]
+        C4["rugiar order"]
+    end
+    subgraph "MCP -- rugiar_mcp/server.py -- online / live"
+        direction TB
+        M1["list_policies / switch_policy"]
+        M2["set_velocity"]
+        M3["get_status / get_telemetry / get_odometry"]
+        M4["get_command_limits"]
+        M5["get_camera_frame_base64"]
+    end
+    C1 & C2 & C3 & C4 -->|import directo, sin red| Entrenamiento[("TrainingManager")]
+    M1 & M2 & M3 & M4 & M5 -->|WebSocket RPC| Control[("ControlService, vía Control")]
+    Entrenamiento -.->|escribe| Policies[["policies/&lt;nombre&gt;/"]]
+    Control -.->|carga| Policies
+```
+
+- **El CLI nunca necesita un robot corriendo** — entrena, fusiona, destila, todo offline, y
+  escribe el resultado a disco. Cero conocimiento de si hay una sesión viva en algún lado.
+- **El MCP nunca entrena nada** — todas sus herramientas asumen una sesión YA corriendo y
+  solo la operan (cambiar de policy, moverla, leer su estado). Cero conocimiento de
+  `TrainingManager`.
+- **El único punto de contacto entre ambos mundos es el filesystem** — `policies/<nombre>/`,
+  el mismo contrato que conecta cualquier otra área de este mapa. Una policy que el CLI
+  terminó de entrenar aparece disponible para que el MCP la seleccione en la próxima sesión
+  (o en caliente, si el Driver ya la detectó — ver §Driver del robot).
+- **La única puerta que sí toca ambos mundos es la UI Web** — porque Control reenvía las RPCs
+  de entrenamiento que el panel "Create Policy" dispara. Si el MCP algún día necesita lanzar
+  entrenamientos también, ese camino ya existe del lado de Control — hoy simplemente no está
+  expuesto como tool de MCP. Extenderlo (o decidir deliberadamente no hacerlo) es parte de la
+  frontera abierta de §8.
 
 ---
 
@@ -175,6 +299,7 @@ cruzan; y todo lo que las áreas comparten en disco son las carpetas `policies/<
 | Control | `ARCHITECTURE.md` §3, después `service.py` | Diagrama de secuencia y nota de concurrencia: lectura obligatoria antes de la primera línea. |
 | UI Web | `send()`, `call()`, `applyStatus()` | Más espacio para crecer, más impacto visible, hoy. |
 | CLI | `rugiar.py` | Preservá la ausencia de imports de Control/Driver. |
+| MCP | `rugiar_mcp/server.py` | Empezá poniendo la rama `mcp-base` al día contra `main` — está atrasada, no rota. |
 | Driver del robot | `rugiar_driver.py` | Cambios en helpers compartidos van también a `_gaze.py`. |
 | Hardware real | `deploy_real/real_adapter.py` | Sin probar en robot físico — si tenés acceso a un G1, sos quien puede cerrar esa brecha. |
 | Integraciones de terceros | Nada todavía | Hablá con quien hace el retargeting, o proponé vos el contrato. |
@@ -328,6 +453,33 @@ servicio, solo generarlo y usarlo consistentemente.
 > Sin `--token`, el handshake se acepta de cualquiera en la red del robot — sin secreto, sin
 > login, sin nada. Es aceptable solo para una sesión de simulación local y de confianza
 > (localhost); nunca para `--real`. Detalle completo del protocolo: `docs/index.html` §13.
+
+---
+
+## Hacia dónde va esto
+
+*VISIÓN*
+
+Ningún robot con patas hoy tiene un "sistema operativo" real — algo que entrene su
+comportamiento, lo transforme, lo opere con seguridad, y lo deje disponible para que un
+humano o un agente de IA lo maneje, todo bajo una misma capa coherente, sin importar
+sobre qué simulador nació ni sobre qué hardware termina corriendo. Lo que existe hoy —
+acá y en cualquier otro proyecto del ecosistema — son piezas sueltas: un fork que entrena
+bien, un protocolo que controla bien, un dataset de motion capture por un lado, un servidor
+MCP experimental por otro, cada uno resolviendo su pedazo sin hablarle al resto.
+
+**Eso es exactamente lo que RUgiar ya empezó a ser, y lo que se propone terminar de ser:**
+el alma del robot — no el chasis, no los motores, sino la capa que decide cómo se mueve,
+cómo aprende a moverse mejor, y quién (humano o agente) tiene permiso de decírselo en cada
+momento. Genesis y mjlab hoy, Isaac Lab/NVIDIA mañana, cualquier robot de patas que llegue
+después — no porque haya que soportar todo a la fuerza, sino porque la capa de orquestación
+en el medio (`TrainingManager`, `ControlService`, el protocolo, ahora CLI y MCP como puertas
+de entrada) ya está pensada para no romperse cada vez que cambia lo que hay debajo o arriba.
+
+La ambición no es "otro fork mejor" — es que dentro de un tiempo, cuando alguien piense en
+entrenar y operar un humanoide, RUgiar sea la respuesta obvia, sin importar de qué fabricante
+sea el robot. Eso no lo construye una persona ni un fin de semana — se construye área por
+área, PR por PR, con quien se sume ahora mientras las ocho puertas siguen abiertas.
 
 ---
 

@@ -17,6 +17,7 @@ write-up in the README.
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -34,6 +35,45 @@ from .training import TrainingManager, REPO_ROOT
 # Genesis has no equivalent concept -- see both methods' NotImplementedError
 # guard via _require_motion_capable().
 MOTION_DIR = REPO_ROOT / "resources" / "reference_motion" / "unitree_g1" / "mjlab_run"
+
+
+def motion_clip_rows(discovered: dict, task: Optional[str] = None) -> list:
+    """The has_policy-annotated clip list behind list_motions() — a bare
+    module function (not a method) so rugiar's CLI can call it directly
+    with its own `TrainingManager.discover_local_policies()` result,
+    without needing a live ControlService/driver session (mirrors why
+    task_defaults()/catalog() live on TrainingManager itself rather than
+    ControlService: no adapter/session is actually needed to answer this).
+    `discovered` is the name->info dict from discover_local_policies(),
+    passed in rather than re-fetched here so a caller that already has a
+    copy doesn't pay for a second disk scan. `task`, if given, scopes
+    has_policy to only that task's local policies — see list_motions()'s
+    own docstring for the exact-field-vs-heuristic precedence, unchanged
+    here."""
+    if task is not None:
+        discovered = {n: i for n, i in discovered.items() if i.get("task") == task}
+    clips = sorted(MOTION_DIR.glob("*.npz")) if MOTION_DIR.is_dir() else []
+
+    exact_motion_files = set()
+    for info in discovered.values():
+        recorded = info.get("motion_file")
+        if recorded:
+            path = Path(recorded)
+            exact_motion_files.add(str((path if path.is_absolute() else REPO_ROOT / path).resolve()))
+
+    policy_stems = [n.lower() for n, i in discovered.items() if not i.get("motion_file")]
+
+    result = []
+    for clip in clips:
+        stem = clip.stem.lower()
+        has_policy = str(clip.resolve()) in exact_motion_files or \
+            any(stem in name or name in stem for name in policy_stems)
+        result.append({
+            "name": clip.stem,
+            "path": str(clip.relative_to(REPO_ROOT)),
+            "has_policy": has_policy,
+        })
+    return result
 
 
 class ControlService:
@@ -97,6 +137,11 @@ class ControlService:
         # rugiar_driver.py's loop rather than here. See restart()'s
         # docstring.
         self.restart_requested = False
+        # Odometry tracking (simulator ground-truth position deltas) — see
+        # get_odometry() below.
+        self._last_odometry_pos: Optional[torch.Tensor] = None
+        self._odometry_distance: float = 0.0
+        self._odometry_start_time: Optional[float] = None
 
     # ---- the "human or autonomous, same call" surface ----
 
@@ -279,6 +324,46 @@ class ControlService:
                 "note": "Not directly sensed on real hardware (no IMU measures velocity, only "
                         "acceleration) — simulator ground truth only, None on RealAdapter.",
             },
+        }
+
+    def get_odometry(self) -> Optional[dict]:
+        """Cumulative distance traveled, elapsed time, and average speed
+        since the first call (or since the last detected reset) — computed
+        from simulator ground-truth base position deltas (RobotState's
+        `base_pos_xy`, see its own docstring). Returns None on a backend
+        where that's not available (real hardware — nothing directly senses
+        world-frame position there), same "None means genuinely unavailable,
+        not zero" rule as `base_height`/`base_lin_vel` above. Primarily for
+        an external agent (e.g. rugiar_mcp) to answer "how far have I
+        moved?" without integrating velocity itself tick by tick."""
+        state = self.adapter.get_state()
+        pos = getattr(state, "base_pos_xy", None)
+        if pos is None:
+            return None
+        now = time.time()
+        if self._odometry_start_time is None:
+            self._odometry_start_time = now
+            self._last_odometry_pos = pos.clone()
+            self._odometry_distance = 0.0
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        delta = pos[0] - self._last_odometry_pos[0]
+        step_dist = float(torch.norm(delta))
+        # A jump this large in one tick means a reset/teleport happened
+        # underneath us (restart(), family switch, episode reset) rather
+        # than real motion — re-baseline instead of counting it as travel.
+        if step_dist > 1.0:
+            self._odometry_start_time = now
+            self._last_odometry_pos = pos.clone()
+            self._odometry_distance = 0.0
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        self._odometry_distance += step_dist
+        self._last_odometry_pos = pos.clone()
+        elapsed = now - self._odometry_start_time
+        avg_speed = self._odometry_distance / elapsed if elapsed > 0 else 0.0
+        return {
+            "distance_traveled": round(self._odometry_distance, 3),
+            "time_elapsed": round(elapsed, 3),
+            "average_speed": round(avg_speed, 3),
         }
 
     # ---- training a new policy (see legged_gym/control/training.py) ----
@@ -600,40 +685,13 @@ class ControlService:
         purely an informational badge.
 
         Raises NotImplementedError on a backend with no motion-clip concept
-        (e.g. Genesis) — see _require_motion_capable()."""
+        (e.g. Genesis) — see _require_motion_capable(). The clip/has_policy
+        computation itself lives in the module-level motion_clip_rows() —
+        see its docstring for why (rugiar's CLI calls it directly, with no
+        live session)."""
         self._require_motion_capable()
-        clips = sorted(MOTION_DIR.glob("*.npz")) if MOTION_DIR.is_dir() else []
-
-        discovered = {}
-        if self.training is not None:
-            discovered = self.training.discover_local_policies()
-        if self.task_name is not None:
-            discovered = {n: i for n, i in discovered.items() if i.get("task") == self.task_name}
-
-        # Exact matches (new): resolve each explicit motion_file to its own
-        # absolute path once, so a policy recorded with a relative or
-        # differently-rooted path still compares equal to MOTION_DIR's glob.
-        exact_motion_files = set()
-        for info in discovered.values():
-            recorded = info.get("motion_file")
-            if recorded:
-                path = Path(recorded)
-                exact_motion_files.add(str((path if path.is_absolute() else REPO_ROOT / path).resolve()))
-
-        # Legacy heuristic fallback: only policies with no explicit
-        # motion_file recorded (trained before this field existed).
-        policy_stems = [n.lower() for n, i in discovered.items() if not i.get("motion_file")]
-
-        result = []
-        for clip in clips:
-            stem = clip.stem.lower()
-            has_policy = str(clip.resolve()) in exact_motion_files or \
-                any(stem in name or name in stem for name in policy_stems)
-            result.append({
-                "name": clip.stem,
-                "path": str(clip.relative_to(REPO_ROOT)),
-                "has_policy": has_policy,
-            })
+        discovered = self.training.discover_local_policies() if self.training is not None else {}
+        result = motion_clip_rows(discovered, self.task_name)
         return {"clips": result, "current": self.motion_file}
 
     def switch_motion(self, path: str) -> None:

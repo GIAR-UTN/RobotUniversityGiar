@@ -452,6 +452,7 @@ class RealAdapter:
             base_lin_vel=None,  # not directly sensed on real hardware
             projected_gravity=torch.from_numpy(gravity.astype(np.float32)).unsqueeze(0),
             base_height=None,  # no sensor measures this directly — see RobotState's own docstring
+            base_pos_xy=None,  # not directly sensed on real hardware
             commands=torch.tensor([self._manual_command], dtype=torch.float32),
             action_scale=cfg.action_scale,
             lifecycle=self._lifecycle,
