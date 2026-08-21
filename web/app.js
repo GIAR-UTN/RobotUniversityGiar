@@ -62,6 +62,7 @@ const policyList = $('#policy-list');
 
 const chkPush = $('#chk-push');
 const chkAutoCmd = $('#chk-auto-cmd');
+const chkLocalControl = $('#chk-local-control');
 const simPushDir = $('#sim-push-dir');
 const chkEpisodeTimeout = $('#chk-episode-timeout');
 const episodeTimeoutRow = $('#episode-timeout-row');
@@ -202,6 +203,13 @@ let cruiseVx = 0, cruiseVy = 0, cruiseYaw = 0; // the single source of truth for
                                                 // WASD, and mouse-look all read
                                                 // and write these same three
 let mouseLookActive = false;
+// When false, this page stops driving the velocity command at all — no
+// keyboard/drag/mouse-look input is applied, and the "sync from server"
+// path in applyStatus() always wins (see its activelyDriving check) instead
+// of racing another client's command against this page's own decel-to-zero
+// coast. Flip off whenever a different client (MCP server, gamepad, a
+// home-made controller) is the one actually driving.
+let localControlEnabled = true;
 
 function send(method, params = {}) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -879,7 +887,8 @@ function applyStatus(status) {
   // with a ~100ms-stale echo of what we just sent. This sync is
   // intentionally immediate (no damping) — direct drag and server echo
   // must both feel 1:1, with no added lag; only accel/decel get smoothing.
-  const activelyDriving = draggingCommand || heldMoveKeys.size > 0 || mouseLookActive || (!auto && !isSettled());
+  const activelyDriving = localControlEnabled &&
+    (draggingCommand || heldMoveKeys.size > 0 || mouseLookActive || (!auto && !isSettled()));
   if (status.command && !activelyDriving) {
     cruiseVx = status.command.vx;
     cruiseVy = status.command.vy;
@@ -1191,8 +1200,10 @@ function frame(now) {
 
   // While "Random Movement" is on, the server drives these axes itself and
   // the HUDs are a read-only display (see applyStatus) — don't fight it
-  // with local accel/decel.
-  if (latestStatus?.random_events?.auto_commands !== true) {
+  // with local accel/decel. Same when local control is switched off: skip
+  // the whole held-key/decel-coast loop so this page never sends its own
+  // set_command while another client is driving.
+  if (localControlEnabled && latestStatus?.random_events?.auto_commands !== true) {
     const dvx = heldDirection('vx');
     const dvy = heldDirection('vy');
     const dyaw = heldDirection('yaw');
@@ -1251,6 +1262,20 @@ chkAutoCmd.addEventListener('change', () => {
   if (!chkAutoCmd.checked) sendCruiseCommand();
 });
 
+chkLocalControl.addEventListener('change', () => {
+  localControlEnabled = chkLocalControl.checked;
+  if (!localControlEnabled) {
+    // Release any input this page currently has "grabbed" so nothing gets
+    // stuck active — frame()/applyStatus() already stop reading these once
+    // localControlEnabled is false, this just clears the visible state too.
+    heldMoveKeys.clear();
+    draggingCommand = false;
+    mouseLookActive = false;
+    lookPad.classList.remove('active');
+    document.querySelectorAll('.keycap.active').forEach((cap) => cap.classList.remove('active'));
+  }
+});
+
 // ---- directional HUD indicators: drag-to-set ----
 
 function bindVerticalHud(hud, axis) {
@@ -1267,7 +1292,7 @@ function bindVerticalHud(hud, axis) {
     sendCruiseCommand();
   };
   track.addEventListener('pointerdown', (e) => {
-    if (hud.classList.contains('disabled')) return;
+    if (hud.classList.contains('disabled') || !localControlEnabled) return;
     draggingCommand = true; pointerId = e.pointerId;
     track.setPointerCapture(e.pointerId);
     setFromEvent(e);
@@ -1331,7 +1356,7 @@ function bindDialHud(hud, axis) {
     sendCruiseCommand();
   };
   svg.addEventListener('pointerdown', (e) => {
-    if (hud.classList.contains('disabled')) return;
+    if (hud.classList.contains('disabled') || !localControlEnabled) return;
     draggingCommand = true; pointerId = e.pointerId;
     svg.setPointerCapture(e.pointerId);
     setFromEvent(e);
@@ -1362,6 +1387,7 @@ let lookPadLastX = 0;
 const MOUSE_YAW_SENSITIVITY = 0.006; // rad/s of yaw per pixel dragged
 
 lookPad.addEventListener('pointerdown', (e) => {
+  if (!localControlEnabled) return;
   mouseLookActive = true;
   lookPadLastX = e.clientX;
   lookPad.setPointerCapture(e.pointerId);
@@ -1470,6 +1496,7 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   setKeycapActive(e.key, true);
   if (binding?.action === 'move') {
+    if (!localControlEnabled) return;
     if (heldMoveKeys.has(e.key)) return; // ignore OS key-repeat, already engaged
     heldMoveKeys.add(e.key);
     engageManualIfNeeded();
@@ -1506,6 +1533,7 @@ function bindKeycapActions() {
     if (!binding && !POLICY_SHORTCUT_KEYS.includes(key)) return;
     if (binding?.action === 'move') {
       cap.addEventListener('pointerdown', () => {
+        if (!localControlEnabled) return;
         cap.classList.add('active');
         heldMoveKeys.add(key);
         engageManualIfNeeded();

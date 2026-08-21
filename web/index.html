@@ -888,6 +888,10 @@
           </div>
         </div>
         <div id="look-pad">click + drag to turn <span class="hint-inline">(yaw, same as &#8592;/&#8594;)</span></div>
+        <label class="toggle-row"><input type="checkbox" id="chk-local-control" checked> Keyboard/mouse control on this page</label>
+        <p class="field-hint">Turn off if another client (a gamepad, the MCP server, a home-made controller) is
+          driving this robot from elsewhere — this page's own keys/drag/mouse-look stop sending commands and stop
+          echoing the server's command back into a local decel-to-zero coast, so it won't fight the other client.</p>
         <div class="field-row" id="speed-limit-row">
           <label for="speed-limit-slider">Max speed <span class="hud-val" id="speed-limit-val">100%</span></label>
           <input type="range" id="speed-limit-slider" min="10" max="300" step="5" value="100">
