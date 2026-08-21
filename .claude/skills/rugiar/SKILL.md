@@ -1,6 +1,6 @@
 ---
 name: rugiar
-description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI (BOTH Genesis locomotion tasks like `g1` and mjlab motion-tracking tasks like `Rugiar-G1-Mimic`, auto-dispatched to whichever backend a task needs, same flags either way — see "Training an mjlab motion-tracking task" below), fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy (locomotion or motion-tracking), fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies/reference-motion clips, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
+description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI (BOTH Genesis locomotion tasks like `g1` and mjlab motion-tracking tasks like `Rugiar-G1-Mimic`, auto-dispatched to whichever backend a task needs, same flags either way — see "Training an mjlab motion-tracking task" below), fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller, or the `rugiar_mcp` MCP server — see "rugiar_mcp — controlling the robot via MCP" below) can speak. Use whenever the user wants to train/fine-tune a policy (locomotion or motion-tracking), fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies/reference-motion clips, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol or the `rugiar_mcp` MCP tools, or anything else about using this system day to day.
 allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_target.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_target.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
 ---
 
@@ -148,6 +148,65 @@ minimal reference client (connects, authenticates, streams `set_command`
 from a gamepad or a `--demo` scripted loop) is `examples/joystick_controller.py`
 — read it before writing a new client from scratch, the connect/send loop
 doesn't need to change, only where the (vx, vy, yaw) numbers come from.
+
+## rugiar_mcp — controlling the robot via MCP instead of raw WebSocket
+
+`rugiar_mcp/` (repo root) wraps a *running* `rugiar_driver.py`'s ControlServer
+as an MCP server, so an MCP client (this assistant, Hermes, any other agent)
+can call typed tools instead of hand-rolling the WebSocket protocol from
+"The control protocol" section above. It's a thin client on top of the same
+`/ws` connection `examples/joystick_controller.py` uses — **it does not
+replace `rugiar_driver.py`, it needs one already running** with
+`--control_port` reachable at the host/port this MCP server is pointed at.
+
+### Prerequisite: a `rugiar_driver.py` already running with `--control_port`
+
+```bash
+python legged_gym/scripts/rugiar_driver.py --policy ... --control_port 9017
+```
+
+`rugiar_mcp` is only a client — check `las ports audit` (or `ps aux | grep
+rugiar_driver`) for an existing instance before assuming you need to start
+one; reuse it rather than launching a second driver on a different port
+(same guidance as "Picking up policies trained outside the web" above).
+
+### Running the MCP server
+
+```bash
+cd rugiar_mcp/.. # repo root
+pip install -e ".[mcp]"        # one-time, if not already installed
+cp rugiar_mcp/.env.example rugiar_mcp/.env   # then edit CONTROL_HOST/PORT/TOKEN
+python -m rugiar_mcp.server
+```
+
+Env vars (`rugiar_mcp/.env` or exported directly) — **`CONTROL_PORT` must
+match the target driver's own `--control_port`**, not necessarily the 9013
+default:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CONTROL_HOST` | `localhost` | host of the running `rugiar_driver.py`'s ControlServer |
+| `CONTROL_PORT` | `9013` | its `--control_port` |
+| `CONTROL_TOKEN` | `""` | must match the driver's `--token` if it set one |
+| `MCP_TRANSPORT` | `stdio` | `stdio` (local subprocess client) or `streamable-http` (remote clients, e.g. Hermes) |
+| `MCP_PORT` | `9014` | port for `streamable-http`/`sse` — **claim it via `las ports claim` before treating it as permanent**, same port hygiene as any other server in this repo |
+| `CAMERA_CACHE_MS` | `100` | camera-frame cache TTL |
+
+For `streamable-http`, point a client at `http://<host>:<MCP_PORT>/mcp`
+(single endpoint — **not** `/sse`, that's the legacy transport).
+
+### Tools (verified working against a live driver, 2026-08-21)
+
+| Tool | Verified behavior |
+|---|---|
+| `list_policies` | Returns `active`/`pending`/`ramping`/full `policies` list/`safety_tripped`. Works. |
+| `get_status` | Full snapshot incl. `telemetry` (base height, gravity vector, ang/lin vel). Works. |
+| `get_telemetry` | Just the `telemetry` sub-object of `get_status`. Works. |
+| `get_odometry` | `{"available": true, "distance_traveled", "time_elapsed", "average_speed"}` in sim. Works. |
+| `get_command_limits` | Trained vs. effective (speed-limit-scaled) command ranges + current command. Works. |
+| `set_velocity(vx, vy, yaw, accel?)` | Immediate mode confirmed (`accel` omitted); `accel` set spawns an async ramp task that cancels any prior ramp. Works. |
+| `switch_policy(name)` | An unknown `name` comes back as a tool **error result** (not a protocol-level exception) — client code should check for that rather than assuming success. |
+| `get_camera_frame_base64` | **Was broken as shipped — fixed 2026-08-21.** `/camera.mjpg` is an unbounded MJPEG stream that never closes; the original code called `httpx.get()` waiting for a complete response body, which hung forever (confirmed: `curl` only stopped because of a client-side `-m` timeout, not server EOF — data was still flowing). Fixed in `rugiar_mcp/server.py` to stream and cut as soon as one full JPEG (`\xff\xd8`...`\xff\xd9`) is seen — now returns in well under a second. If this tool ever hangs again after a future edit, suspect a regression back to non-streaming reads on this endpoint first. |
 
 ### Reviewing a specific checkpoint before trusting it
 

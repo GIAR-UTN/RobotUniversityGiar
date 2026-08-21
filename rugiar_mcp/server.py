@@ -199,17 +199,24 @@ async def get_camera_frame_base64() -> dict:
     host = os.getenv("CONTROL_HOST", "localhost")
     port = os.getenv("CONTROL_PORT", "9013")
     url = f"http://{host}:{port}/camera.mjpg"
+    # /camera.mjpg is an unbounded MJPEG stream (server never closes the
+    # connection) — httpx.get() would block forever waiting for a body that
+    # never ends. Stream instead and stop as soon as one full JPEG is seen.
     async with httpx.AsyncClient(timeout=5.0) as http:
-        r = await http.get(url)
-        r.raise_for_status()
-        # MJPEG stream: first boundary then JPEG
-        content = r.content
-        # find first JPEG start/end
-        start = content.find(b"\xff\xd8")
-        end = content.find(b"\xff\xd9", start)
-        if start == -1 or end == -1:
-            raise RuntimeError("No JPEG found in camera stream")
-        jpeg = content[start:end+2]
+        buf = b""
+        async with http.stream("GET", url) as r:
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes():
+                buf += chunk
+                start = buf.find(b"\xff\xd8")
+                end = buf.find(b"\xff\xd9", start) if start != -1 else -1
+                if start != -1 and end != -1:
+                    jpeg = buf[start:end + 2]
+                    break
+                if len(buf) > 5_000_000:
+                    raise RuntimeError("No JPEG found in first 5MB of camera stream")
+            else:
+                raise RuntimeError("Camera stream ended before a full JPEG frame arrived")
         b64 = base64.b64encode(jpeg).decode("ascii")
         _camera_cache["data"] = b64
         _camera_cache["ts"] = now
