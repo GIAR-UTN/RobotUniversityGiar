@@ -43,7 +43,7 @@ This codebase splits into seven areas along a policy's lifecycle: train it, tran
 | **Control** | The live-robot engine: policy switching, safety gating, WebSocket transport, sim/real adapters — the subject of §3–§5 below. `legged_gym/control/`. |
 | **Web UI** | The browser client: the unified control page plus the Training/Fuse/Distill forms. `web/`. |
 | **CLI** | `rugiar` — a thin, side-effect-free frontend onto Training and Policy Operations only; never touches the live-robot layer. |
-| **Robot Driver** | The process that wires Control, an adapter, and a simulator or real robot together and runs the main loop. `legged_gym/scripts/rugiar_driver.py` (and `rugiar_driver_gaze.py`). |
+| **Robot Driver** | The process that wires Control, an adapter, and a simulator or real robot together and runs the main loop. `legged_gym/scripts/rugiar_driver.py` (and `rugiar_driver_target.py`). |
 | **Third-Party Integrations** | Placeholder — no integration surface exists in this repo yet. Real upstream work to eventually draw from: a G1 motion-capture retargeting pipeline ([dataset](https://huggingface.co/datasets/exptech/g1-moves), [release](https://github.com/jvillalba007/GIAR-moves/releases/tag/1.0.0)), a browser-based [Motion Viewer](https://giar-mv.9zteam.pp.ua/) for previewing motion clips, and the official [unitreerobotics](https://github.com/unitreerobotics) ecosystem. See `ARCHITECTURE.md` §7 for details. Most likely lands in the Web UI. |
 
 ---
@@ -83,8 +83,10 @@ No GPU required. On Apple Silicon, Genesis will report `Running on [Apple M1/M2/
 # 3. Build and run (works on any host arch — amd64 or arm64/Apple Silicon)
 docker compose up --build
 # then open http://localhost:9006  (viser viewer)
-# and   http://localhost:9013  (unified control web)
+# and   http://localhost:9017  (unified control web)
 ```
+
+These ports are registered in the Local Agent Society port registry (`las ports ls`, under "CLI") as "GIAR docker-compose viser" (9006) and "GIAR docker-compose control" (9017). If you change `CONTROL_PORT`/`VISER_PORT`, update the registry too (`las ports release <old>` + `las ports claim`) so it doesn't drift from what's actually configured.
 
 The image builds and runs on any host architecture: on `linux/amd64` it installs the CUDA 12.8 (sm_120) build of PyTorch; everywhere else (e.g. `linux/arm64` under Colima/Docker Desktop on Apple Silicon) it keeps the generic CPU build, since NVIDIA doesn't publish CUDA wheels for non-amd64.
 
@@ -102,7 +104,7 @@ Key environment variables (set in `.env`):
 | `ACTIVE_POLICY` | *(first alphabetically)* | Filename (without `.pt`) in `./policies/` to start active |
 | `HEADLESS` | `0` | Set `1` for a smoke test without the browser viewer |
 | `SPEED` | `0.35` | Playback speed multiplier (`1.0` = real-time 50 Hz) |
-| `CONTROL_PORT` | `9013` | Port for the unified control WebSocket server |
+| `CONTROL_PORT` | `9017` | Port for the unified control WebSocket server |
 | `VISER_PORT` | `9006` | Port for the viser 3D viewer |
 
 The compose file mounts `./policies:/workspace/policies:ro` so checkpoint files are available inside the container without copying them into the image.
@@ -229,8 +231,8 @@ python legged_gym/scripts/rugiar_driver.py \
     --policy scratch_wobbly:./policies/scratch_wobbly.pt \
     --policy undertrained_dummy:./policies/undertrained_dummy.pt \
     --policy crouch:./policies/crouch.pt \
-    --active stable --control_port 9013
-# then open http://localhost:9013
+    --active stable --control_port 9017
+# then open http://localhost:9017
 ```
 
 ---

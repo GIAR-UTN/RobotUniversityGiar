@@ -122,7 +122,15 @@ def process_single_motion_file(env, motion_file_path, output_dir):
         # record the caculated key body pos
         cur_key_body_pos_relative_to_base = cur_key_body_pos[0] - cur_base_pos[0].unsqueeze(0)
         key_body_pos_relative_to_base_list.append(cur_key_body_pos_relative_to_base)
-        env.simulator.draw_debug_vis(cur_key_body_pos)
+        # Pure visualization — the computed key-body positions above already
+        # went into key_body_pos_relative_to_base_list regardless. Genesis's
+        # debug-sphere draw needs an attached viewer/scene context that
+        # doesn't exist under --headless (AttributeError: 'RasterizerContext'
+        # object has no attribute 'scene') — this was never exercised
+        # headless before (this script's own directory-mode path forces
+        # --headless=True, so any directory run has always hit this).
+        if not env.headless:
+            env.simulator.draw_debug_vis(cur_key_body_pos)
         
         # sleep for the remainder of the frame budget to match real-time playback
         elapsed = time.perf_counter() - t_start

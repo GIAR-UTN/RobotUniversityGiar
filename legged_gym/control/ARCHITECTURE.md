@@ -11,7 +11,7 @@ RobotUniversityGiar (RUgiar) is a Genesis/Isaac-Gym-based fork of `unitree_rl_gy
 3. **Control** — the live-robot engine: policy switching, safety, WebSocket transport, adapters.
 4. **Web UI** — the browser client for Control, plus the Training/Fuse/Distill forms.
 5. **CLI** — `rugiar` command-line entry point onto Training and Policy Operations only.
-6. **Robot Driver** — the process (`rugiar_driver.py` / `rugiar_driver_gaze.py`) that wires Control, an adapter, and a simulator or real robot together and runs the main loop.
+6. **Robot Driver** — the process (`rugiar_driver.py` / `rugiar_driver_target.py`) that wires Control, an adapter, and a simulator or real robot together and runs the main loop.
 7. **Third-Party Integrations** — placeholder. A collaborator is building human motion-capture retargeting in a separate repo; the plan is for it to eventually feed into RUgiar, most likely as a new panel/data source in the Web UI (e.g. driving a policy or providing reference motion). No integration surface exists yet — treat any code path here as unclaimed until that work lands.
 
 ---
@@ -124,7 +124,7 @@ This is the cleanest boundary in the repo and worth preserving deliberately: if 
 
 ### 6. Robot Driver
 
-**Owns:** `legged_gym/scripts/rugiar_driver.py` (ordinary walking tasks, g1 family) and `legged_gym/scripts/rugiar_driver_gaze.py` (target-aware tasks, g1_gaze family) — two independent scripts, not modes of one script, because Genesis cannot rebuild its scene in-process; switching task families spawns a fresh driver process (~15-20s startup).
+**Owns:** `legged_gym/scripts/rugiar_driver.py` (ordinary walking tasks, g1 family) and `legged_gym/scripts/rugiar_driver_target.py` (target-aware tasks, g1_target family) — two independent scripts, not modes of one script, because Genesis cannot rebuild its scene in-process; switching task families spawns a fresh driver process (~15-20s startup).
 
 **Entry points:** `python rugiar_driver.py [--real] [--control_port ...] [--policy ...]` — builds the simulator (or `RealAdapter`), the `ControlService`/`ControlServer` stack, loads policies (explicit `--policy` flags plus auto-discovery from `policies/<name>/`), and runs the main loop: drain web commands → policy tick → render/publish, at a configurable playback speed.
 
@@ -133,7 +133,7 @@ This is the cleanest boundary in the repo and worth preserving deliberately: if 
 - **Training** — calls `TrainingManager.start()`, `.poll()`, `.finalize_policy()` on the sim thread each tick (`drain_finished_training`), then hot-loads the result via `PolicySupervisor.add_policy()`. Never calls `fuse_policies` or `start_distillation` directly.
 - **Web UI** — indirectly, as the process hosting `ControlServer`'s WebSocket/HTTP endpoints the UI connects to.
 
-**Duplication note:** the two driver scripts are guarded against silent divergence by `test_driver_family_parity.py`, which AST-parses and enforces text-identical bodies for 8 helpers that are not supposed to be gaze-specific. Gaze-only logic (e.g. `_inject_target_obs()`) is deliberately excluded from that check.
+**Duplication note:** the two driver scripts are guarded against silent divergence by `test_driver_family_parity.py`, which AST-parses and enforces text-identical bodies for 8 helpers that are not supposed to be target-specific. Target-only logic (e.g. `_inject_target_obs()`) is deliberately excluded from that check.
 
 **Real-hardware caveat:** several correctness properties (motor wiring order, IMU mount/quaternion convention, checkpoint-vs-robot-config scale match) can only be verified by a human with the physical robot; the driver's pre-flight check fails loudly on detectable mismatches but cannot catch all of them statically.
 
@@ -251,7 +251,7 @@ Files below are grouped by area. "Collision risk" flags concurrency invariants, 
 **CLI** — `legged_gym/cli/rugiar.py`.
 - Low risk by design: every subcommand is pure argv→kwargs forwarding into `TrainingManager`, with zero logic duplicated elsewhere. The valuable thing to protect here is the *absence* of imports from Control/Robot Driver — treat any PR that adds one as a boundary violation to question.
 
-**Robot Driver** — `legged_gym/scripts/rugiar_driver.py`, `legged_gym/scripts/rugiar_driver_gaze.py`, `legged_gym/scripts/test_driver_family_parity.py`.
+**Robot Driver** — `legged_gym/scripts/rugiar_driver.py`, `legged_gym/scripts/rugiar_driver_target.py`, `legged_gym/scripts/test_driver_family_parity.py`.
 - Risk: the two driver scripts are intentionally duplicated (Genesis can't rebuild its scene in-process), guarded only by an AST-based parity test over 8 specific helpers. Changing a helper's signature or behavior in one driver without updating the other, or without checking whether the parity test's helper list still applies, will pass review-by-eye but fail CI.
 - Risk: training jobs are orphaned as background subprocesses if a family switch relaunches the driver process mid-run — no persistent daemon exists yet to survive that.
 

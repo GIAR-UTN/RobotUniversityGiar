@@ -95,6 +95,29 @@ class InternalStatePolicy:
         self.module.cell_state.zero_()
 
 
+class StatelessPolicy:
+    """forward(obs) -> action, no state at all — a plain (non-recurrent)
+    MLP actor, exactly what helpers.py's plain PolicyExporter produces for
+    any task whose actor_critic.is_recurrent is False (e.g. g1_deepmimic,
+    g1_motion_vis — every g1-family policy before this one was recurrent,
+    so this jit shape was never actually loaded through this control stack
+    until g1_deepmimic's first real checkpoint surfaced it). Same forward()
+    signature as InternalStatePolicy, but MUST NOT be confused with it: an
+    InternalStatePolicy module owns hidden_state/cell_state buffers this
+    class's module simply doesn't have — reset() here is a no-op rather
+    than reaching for buffers that don't exist."""
+
+    def __init__(self, module):
+        self.module = module
+
+    def step(self, obs: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            return self.module(obs.detach())
+
+    def reset(self) -> None:
+        pass
+
+
 def _fixed_dim(dim, fallback: int) -> int:
     """onnxruntime reports symbolic batch dims (e.g. 'batch') as non-int —
     fall back to 1 (this whole control stack runs num_envs=1, see
@@ -198,9 +221,17 @@ def load_policy_backend(path: str, hidden_size: int, num_envs: int, device: str 
     if path.endswith(".onnx"):
         return load_onnx_backend(path, num_envs)
     module = torch.jit.load(path, map_location=device)
+    # forward()'s own declared arg count is what actually distinguishes the
+    # three jit shapes — hidden_state/cell_state hasattr() alone isn't
+    # enough, since a plain (non-recurrent) PolicyExporter export also has
+    # a 2-argument forward(self, obs) but neither buffer at all. 4 args
+    # (self, obs, hidden_state, cell_state) is unambiguous either way.
+    num_forward_args = len(module.forward.schema.arguments)
+    if num_forward_args >= 4:
+        return ExplicitStatePolicy(module, hidden_size, num_envs, device=device)
     if hasattr(module, "hidden_state") and hasattr(module, "cell_state"):
         return InternalStatePolicy(module)
-    return ExplicitStatePolicy(module, hidden_size, num_envs, device=device)
+    return StatelessPolicy(module)
 
 
 @dataclasses.dataclass

@@ -417,6 +417,7 @@ class ViserViewer:
 
         self._body_handles: Dict[str, object] = {}
         self._env_frames: List[object] = []
+        self._ghost_handle = None  # reference-motion overlay, see update_reference_motion()
 
         self._build_scene()
 
@@ -777,6 +778,51 @@ class ViserViewer:
             if self._camera_tracking_enabled:
                 self._apply_camera_tracking(base_pos)
 
+        self.server.flush()
+
+        # Reference-motion "ghost" overlay for deepmimic-style tasks (e.g.
+        # g1_deepmimic): the same key-body target positions g1_deepmimic.py
+        # already computes for its own (Genesis-native-viewer-only, never
+        # actually seen through this control web) draw_debug_vis() call —
+        # same formula, mirrored here so it also reaches viser, which is
+        # what the web UI actually renders. See docs/motion_imitation_
+        # integration.md for why the Genesis-native path doesn't count as
+        # "visible" for this control stack.
+        motion_loader = getattr(env, "motion_loader", None)
+        if motion_loader is not None:
+            ref_key_body_pos = (
+                motion_loader.get_ref_key_body_pos()
+                + motion_loader.get_ref_base_pos().unsqueeze(1)
+                + env.simulator.env_origins.unsqueeze(1)
+            )[robot_index].detach().cpu().numpy()
+            self.update_reference_motion(ref_key_body_pos)
+
+    def update_reference_motion(self, points: Optional[np.ndarray]) -> None:
+        """Shows/moves the reference-motion ghost overlay: one red dot per
+        key body's TARGET position this tick, distinct from the robot's own
+        mesh (which renders wherever the active policy actually put it) —
+        the same "reference in one color, real robot in its own" split
+        Javier's own mimic work uses. viser's PointCloudHandle has no
+        in-place point-position update (see its attribute list — only
+        position/wxyz/scale move the whole cloud as one rigid body, not
+        individual points), so this removes and re-adds a small (num_key_
+        bodies-point) cloud each tick rather than mutating one — proven
+        cheap enough at this point count and control-loop rate already
+        (mirrors how genesis_simulator.py's own draw_debug_spheres() is
+        called fresh every frame too, same underlying constraint).
+        Pass None or an empty array to just hide it (e.g. no motion loaded)."""
+        with self.server.atomic():
+            if self._ghost_handle is not None:
+                self._ghost_handle.remove()
+                self._ghost_handle = None
+            if points is not None and len(points) > 0:
+                self._ghost_handle = self.server.scene.add_point_cloud(
+                    "/reference_motion_ghost",
+                    points.astype(np.float32),
+                    colors=(255, 60, 60),
+                    point_size=0.035,
+                    point_shape="circle",
+                )
         self.server.flush()
 
     def stop(self) -> None:

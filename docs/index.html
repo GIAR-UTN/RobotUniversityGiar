@@ -928,6 +928,11 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
           Kaggle's free tier hands out a Tesla P100 (Pascal-generation, compute capability 6.0). Genesis's GPU backend JIT-compiles kernels that need a hardware feature (<code>warp.sync</code>) only present from Volta onward (capability 7.0+) — Pascal simply doesn't have it, no driver update fixes that. Isaac Gym's PhysX GPU pipeline has no such requirement, and was confirmed running for real on Kaggle's P100 (<code>GPU Pipeline: enabled</code> — see <code>HANDOFF_kaggle_cloud_gpu.md</code>). So: local stays on Genesis for the GPU-less-Mac use case this fork exists for; Kaggle stays on Isaac Gym because it's the only one of the two that actually gets GPU speed on the hardware Kaggle hands out.
         </div>
 
+        <div class="aside">
+          <div class="label">Update: a third simulator, mjlab — for motion <em>tracking</em>, not locomotion</div>
+          Genesis vs. Isaac Gym above is a split along <em>where the job runs</em> (local Mac vs. Kaggle GPU) for the <strong>same kind of task</strong> — walk at a commanded velocity. <a href="https://github.com/mujocolab/mjlab" target="_blank" rel="noopener">mjlab</a> (Google DeepMind/community, MuJoCo + <code>mujoco-warp</code>) is a split along a different axis entirely: a <strong>different kind of task</strong> — motion <em>imitation</em> (track a reference-motion clip's exact trajectory — a dance, a specific gait — instead of "go this fast in this direction"). It runs local, CPU-only, no NVIDIA GPU needed, same "works on a GPU-less Mac" property Genesis has. <code>Rugiar-G1-Mimic</code> is this fork's own motion-tracking task, trained against reference clips converted from motion-capture data (<code>legged_gym/scripts/process_reference_motion_mjlab.py</code>); its reward vocabulary is entirely different from anything in this section — <code>motion_body_pos</code>, <code>motion_global_root_ori</code>, and six siblings, tracking-error terms rather than velocity-tracking ones. Genesis and mjlab are two separate Python virtual environments on purpose (<code>.venv</code> / <code>.venv-mjlab</code>) — neither can import the other's simulator in the same process, so <code>rugiar</code>/<code>TrainingManager</code> pick the right interpreter and entrypoint script per task automatically (a small backend registry, extensible to a future NVIDIA-local or second-cloud backend the same way). Full narrative: <code>docs/mjlab_migration.md</code>; the training-backend design: <code>docs/mjlab_training_contract.md</code>.
+        </div>
+
         <p>Selection isn't an environment variable alone — <code>legged_gym/__init__.py</code> hardcodes <code>SIMULATOR=isaacgym</code> under Python ≤3.8 and only reads <code>SIMULATOR=genesis</code> under 3.10+, so it's really <strong>which Python interpreter runs the job</strong> that decides:</p>
         <div class="tabwrap">
           <table>
@@ -1136,7 +1141,7 @@ def step(self, obs):
 
         <div class="plate">
           <img class="tool-screenshot" src="assets/widgets/command-camera-family.png"
-               alt="Command, Camera, and Family panels from the control web during an active walking+turning session: Family shows task g1 selected next to g1_gaze, Camera shows a robot-POV view of a red ball prop on a checkered floor with two raised hands, and Command shows Linear X 0.84 (FWD slider raised) and Yaw -0.39 on a turn dial, live values from the exact same set_command channel a custom client would drive.">
+               alt="Command, Camera, and Family panels from the control web during an active walking+turning session: Family shows task g1 selected next to g1_target, Camera shows a robot-POV view of a red ball prop on a checkered floor with two raised hands, and Command shows Linear X 0.84 (FWD slider raised) and Yaw -0.39 on a turn dial, live values from the exact same set_command channel a custom client would drive.">
           <div class="cap">The Command panel is literally the on-screen equivalent of the joystick described below — the FWD/BACK slider and yaw dial issue the exact same <code>set_command</code> calls a home-made gamepad client would, at the same clamped envelope. This session's live values (vx=0.84, yaw=-0.39) are a real robot mid-walk, mid-turn — next to it, the Family panel (switches which registered task/driver is running — see the <code>rugiar</code> skill's "Family panel" section) and a live robot-POV Camera feed.</div>
         </div>
 
@@ -1393,11 +1398,11 @@ python legged_gym/scripts/web_train.py --task g1 --name stable_home_made_2c \
 
       <section id="toolkit">
         <div class="num">§16 — this fork</div>
-        <h2>The toolkit: <code>rugiar</code> CLI, the Claude Code skill, and the control web</h2>
-        <p>Everything in §11–§15 — training, fine-tuning, fusing, switching policies live, driving a real robot — is one engine (<code>TrainingManager</code> / <code>ControlService</code>, <a href="#control-protocol">§13</a>) reachable through three doors that all stay in sync by construction, not by hand-maintained duplication: a terminal command, an AI coding assistant that already knows this system, and a browser tab.</p>
+        <h2>The toolkit: <code>rugiar</code> CLI, <code>rugiar_mcp</code>, the Claude Code skill, and the control web</h2>
+        <p>Everything in §11–§15 — training, fine-tuning, fusing, switching policies live, driving a real robot — is one engine (<code>TrainingManager</code> / <code>ControlService</code>, <a href="#control-protocol">§13</a>) reachable through <strong>four doors</strong> that all stay in sync by construction, not by hand-maintained duplication: a terminal command, an MCP server for AI agents, an AI coding assistant that already knows this system, and a browser tab.</p>
 
         <h3><code>rugiar</code> — the command line</h3>
-        <p><code>legged_gym/cli/rugiar.py</code> is a thin wrapper that turns argv straight into the same keyword arguments <code>TrainingManager</code> already accepts — nothing about how a policy gets built, fine-tuned, or fused lives twice, so the CLI's flags and the control web's form fields can't drift apart. Three subcommands:</p>
+        <p><code>legged_gym/cli/rugiar.py</code> is a thin wrapper that turns argv straight into the same keyword arguments <code>TrainingManager</code> already accepts — nothing about how a policy gets built, fine-tuned, or fused lives twice, so the CLI's flags and the control web's form fields can't drift apart. It never imports <code>ControlService</code>/the driver at all — the cleanest boundary in the repo: this door only ever reaches <em>training</em>, never a <em>live</em> robot session. Same command shape for a Genesis locomotion task and an mjlab motion-tracking one — <code>TrainingManager</code>'s backend registry (see the mjlab aside in §11) picks the right interpreter/entrypoint per task, transparently:</p>
         <details class="code-box">
           <summary><span>Train, fuse, and manage the local catalog — all from a terminal</span> <span class="file">rugiar</span></summary>
           <pre><code># train from scratch, stop after 15 minutes
@@ -1406,16 +1411,50 @@ rugiar train --task g1 --name crouch --max_minutes 15 --base_height_target 0.45
 # fine-tune an existing local policy
 rugiar train --task g1 --name crouch_v2 --from_policy crouch --max_iterations 500
 
+# an mjlab motion-tracking task — same shape, plus a required reference clip
+rugiar train --task Rugiar-G1-Mimic --name mimic_dance --max_iterations 3000 \
+    --motion_file resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz
+
 # merge two already-trained policies' weights into a new one (§13's Fuse policies)
 rugiar fuse --policies stable_home_made_3 stable_home_made_4 --name blended
 
-# discover what's available before committing to any of the above
+# discover what's available before committing to any of the above — works for
+# mjlab tasks too, even run from the Genesis venv (a one-shot probe into
+# .venv-mjlab fills in real data when this process can't import mjlab itself)
 rugiar train --list_tasks
+rugiar train --list_motions --task Rugiar-G1-Mimic
 rugiar train --list_policies
 rugiar fuse --list_fusion_methods
 rugiar order --show   # the display order a downstream control layer offers policies in</code></pre>
         </details>
         <p>The live, authoritative reference for every flag is always <code>rugiar &lt;subcommand&gt; --help</code> — see the <code>rugiar</code> skill below for a maintained snapshot, and the root <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">README</a> for the full quick-start.</p>
+
+        <h3><code>rugiar_mcp</code> — talking to a <em>live</em> robot from an AI agent</h3>
+        <p>Where the CLI only ever reaches training, <code>rugiar_mcp</code> is the exact mirror image: an <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a> server exposing a <em>running</em> session — <code>rugiar_driver.py</code>, already up and driving a robot — as tools any MCP-speaking agent can call, over the identical WebSocket JSON-RPC protocol the control web and <code>examples/joystick_controller.py</code> already speak (<a href="#control-protocol">§13</a>) — no new wire format, no second implementation of "how to talk to a robot" to keep in sync.</p>
+
+        <div class="tabwrap">
+          <table>
+            <tr><th>Tool</th><th>What it does</th></tr>
+            <tr><td class="k"><code>list_policies</code></td><td>every loaded policy, and which one is active</td></tr>
+            <tr><td class="k"><code>switch_policy(name)</code></td><td>request a live switch — same cross-fade path as §12, whoever's asking</td></tr>
+            <tr><td class="k"><code>set_velocity(vx, vy, yaw, accel?)</code></td><td>drive a velocity command, optionally ramped smoothly instead of a step change</td></tr>
+            <tr><td class="k"><code>get_status</code> / <code>get_telemetry</code></td><td>the same status push §13 documents, or just the sensor-like fields</td></tr>
+            <tr><td class="k"><code>get_odometry</code></td><td>cumulative distance/time since the last reset — "how far have I gone" for an LLM without it having to integrate velocity itself</td></tr>
+            <tr><td class="k"><code>get_command_limits</code></td><td>the trained velocity envelope and the current operator speed cap, so an agent doesn't have to guess a safe command</td></tr>
+            <tr><td class="k"><code>get_camera_frame_base64</code></td><td>one JPEG frame off the robot-POV camera feed, base64, cached 100ms</td></tr>
+          </table>
+        </div>
+
+        <div class="plate">
+          <div class="flow" style="flex-direction:column; align-items:flex-start; gap:10px;">
+            <div class="flow"><span class="chip">rugiar (CLI)</span><span class="chip">rugiar_mcp</span><span class="chip">control web</span></div>
+            <div style="align-self:center; color:var(--muted); font-size:18px;">↓ three separate doors, two separate destinations ↓</div>
+            <div class="flow"><span class="chip hot">TrainingManager<br><small style="color:var(--muted)">train / fuse / distill — offline, no live session needed</small></span><span class="chip hot">ControlService<br><small style="color:var(--muted)">policy switch / velocity / telemetry — needs a running session</small></span></div>
+          </div>
+          <div class="cap">CLI reaches ONLY Training (zero imports of Control — see §16's CLI paragraph above). MCP reaches ONLY Control, via the same WebSocket the control web uses — no training tool exists in <code>rugiar_mcp</code> today. The control web is the one door that reaches both (it drives Control live, and Control forwards Create-Policy's training RPCs through to Training) — CLI and MCP don't overlap with each other, they split the same engine along the exact same "offline build" vs. "live operate" line the rest of this repo draws everywhere else.</div>
+        </div>
+
+        <p style="font-size:14px; color:var(--muted);"><code>rugiar_mcp</code> is a real, working prototype — built and proven against this same control protocol — currently on its own branch (<code>mcp-base</code>), not yet merged/kept current with the mjlab work in §11. Merging it, and deciding whether it should eventually gain training tools too (the path already exists — Control already forwards those RPCs for the web UI, see above), is open work, not a finished door yet.</p>
 
         <h3>The <code>rugiar</code> skill</h3>
         <p><code>.claude/skills/rugiar/SKILL.md</code> is a packaged set of instructions <a href="https://claude.com/claude-code" target="_blank" rel="noopener">Claude Code</a> loads automatically whenever a conversation touches training, fusing, or driving a robot in this repo — the assistant doesn't have to be re-taught this system's gotchas every session. It captures things a plain <code>--help</code> output can't: that reward/episode-length numbers alone don't prove a policy walks (a real past mistake here, see §13), the exact recipe for training a crouched-but-mobile policy without it turning wobbly, how to set up Kaggle cloud training, the fusion methods (weighted average and Git Re-Basin, and which policies each one supports), and the full WebSocket control protocol for anyone building a custom client. Kept next to the code it documents, in the same repo, so it's expected to be updated alongside a feature rather than drifting into stale advice.</p>

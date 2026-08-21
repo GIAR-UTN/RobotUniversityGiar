@@ -22,6 +22,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -39,7 +40,11 @@ def _stub_package(dotted_name: str):
 for _pkg in ("legged_gym", "legged_gym.control"):
     _stub_package(_pkg)
 
-from legged_gym.control.training import TrainingManager, TrainingJob
+import legged_gym.control.training as training_mod
+from legged_gym.control.training import (
+    BACKENDS, REQUESTABLE_BACKENDS, TrainingBackend, TrainingManager, TrainingJob,
+    _history_entry_backend_id,
+)
 
 
 def _manager_with_history(history):
@@ -97,6 +102,116 @@ class TestEstimate(unittest.TestCase):
         self.assertAlmostEqual(est["seconds"], 20.0, places=2)
 
 
+def _pin_registries(mjlab_tasks, genesis_tasks):
+    """Same helper as tests/test_training_backend_registry.py's -- pins what
+    each registry probe reports so resolve_training_backend()/estimate()'s
+    `task` disambiguation can be exercised without a real mjlab or Genesis
+    venv importable in this pure-logic test process."""
+    return mock.patch.multiple(
+        training_mod,
+        _mjlab_registered_tasks=mock.Mock(return_value=mjlab_tasks),
+        _legged_gym_registered_tasks=mock.Mock(return_value=genesis_tasks),
+    )
+
+
+class TestEstimateBackendSimulatorGrouping(unittest.TestCase):
+    """estimate()'s real point: local-genesis and local-mjlab history must
+    never be pooled together even though both persist backend="local" (see
+    TrainingBackend.job_backend's docstring) -- only `simulator` (recorded
+    per job since this change) tells them apart. Task 1 of
+    HANDOFF_mimic_motion_library_ux.md's ETA-calibration follow-up."""
+
+    def _history(self):
+        return [
+            # genesis rate: 100 / (50*64) = 0.03125 s per (iter*env)
+            {"task": "g1", "backend": "local", "simulator": "genesis",
+             "max_iterations": 50, "num_envs": 64, "elapsed_s": 100.0},
+            # mjlab rate: ~1.27 s per (iter*env), the real measured number
+            # from HANDOFF's validation session -- deliberately NOT
+            # hardcoded anywhere in estimate() itself, only in this fixture.
+            {"task": "Rugiar-G1-Mimic", "backend": "local", "simulator": "mjlab",
+             "max_iterations": 10, "num_envs": 8, "elapsed_s": 101.6},
+        ]
+
+    def test_genesis_and_mjlab_estimates_use_only_their_own_sample(self):
+        mgr = _manager_with_history(self._history())
+        with _pin_registries(None, {"g1"}):
+            est_genesis = mgr.estimate(num_envs=64, max_iterations=100, backend="local", task="g1")
+        with _pin_registries({"Rugiar-G1-Mimic"}, None):
+            est_mjlab = mgr.estimate(num_envs=8, max_iterations=10, backend="local", task="Rugiar-G1-Mimic")
+        self.assertEqual(est_genesis["basis"], "measured")
+        self.assertEqual(est_mjlab["basis"], "measured")
+        # Each bucket saw exactly its OWN history entry -- 2 total in
+        # history, but pooling would make samples=2 for both.
+        self.assertEqual(est_genesis["samples"], 1)
+        self.assertEqual(est_mjlab["samples"], 1)
+        self.assertAlmostEqual(est_genesis["seconds"], 0.03125 * 100 * 64, places=2)
+        self.assertAlmostEqual(est_mjlab["seconds"], (101.6 / (10 * 8)) * 10 * 8, places=2)
+        # The two regimes' per-unit rates are genuinely different (not
+        # coincidentally similar, and not one masquerading as the other).
+        self.assertNotAlmostEqual(est_genesis["seconds"] / (100 * 64), est_mjlab["seconds"] / (10 * 8), places=3)
+
+    def test_no_task_falls_back_to_legacy_pooled_by_raw_backend(self):
+        """Back-compat: a caller that doesn't pass `task` (every caller
+        before this change) gets the OLD behavior -- everything with
+        backend="local" pooled together, regardless of simulator."""
+        mgr = _manager_with_history(self._history())
+        est = mgr.estimate(num_envs=64, max_iterations=100, backend="local")
+        self.assertEqual(est["basis"], "measured")
+        self.assertEqual(est["samples"], 2)  # both entries, unfiltered by simulator
+
+    def test_mjlab_with_no_history_yet_degrades_to_basis_none_not_genesis_numbers(self):
+        """A fresh checkout with only Genesis history must never let an
+        mjlab estimate silently borrow Genesis's rate."""
+        mgr = _manager_with_history([self._history()[0]])  # genesis only
+        with _pin_registries({"Rugiar-G1-Mimic"}, None):
+            est_mjlab = mgr.estimate(num_envs=8, max_iterations=10, backend="local", task="Rugiar-G1-Mimic")
+        self.assertEqual(est_mjlab, {"basis": "none", "samples": 0, "seconds": None, "iterations": None})
+
+    def test_a_brand_new_backend_starts_feeding_its_own_bucket_automatically(self):
+        """Extensibility claim: register a synthetic third backend (mirrors
+        tests/test_training_backend_registry.py's 'pretend-gpu' pattern) and
+        confirm estimate() buckets its history separately with ZERO changes
+        to estimate()'s own code -- exactly what a future local-NVIDIA or
+        second-cloud backend needs."""
+        fake = TrainingBackend(
+            id="local-pretend-gpu", requested_as="pretend-gpu", task_stack="genesis",
+            job_backend="pretend", simulator="pretend-sim",
+            command_prefix="rugiar train --backend pretend-gpu ",
+            script=training_mod.TRAIN_SCRIPT,
+        )
+        history = self._history() + [
+            {"task": "g1", "backend": "pretend", "simulator": "pretend-sim",
+             "max_iterations": 5, "num_envs": 4, "elapsed_s": 2.0},  # rate: 0.1 s/(iter*env)
+        ]
+        mgr = _manager_with_history(history)
+        with mock.patch.object(training_mod, "BACKENDS", BACKENDS + [fake]), \
+                mock.patch.object(training_mod, "REQUESTABLE_BACKENDS", REQUESTABLE_BACKENDS + ("pretend-gpu",)), \
+                _pin_registries(None, {"g1"}):
+            est_pretend = mgr.estimate(num_envs=4, max_iterations=5, backend="pretend-gpu", task="g1")
+            est_genesis = mgr.estimate(num_envs=64, max_iterations=100, backend="local", task="g1")
+        self.assertEqual(est_pretend["basis"], "measured")
+        self.assertEqual(est_pretend["samples"], 1)
+        self.assertAlmostEqual(est_pretend["seconds"], 0.1 * 5 * 4, places=2)
+        # The pretend backend's one sample never leaked into local-genesis's bucket.
+        self.assertEqual(est_genesis["samples"], 1)
+
+
+class TestHistoryEntryBackendId(unittest.TestCase):
+    def test_resolves_known_pair(self):
+        self.assertEqual(
+            _history_entry_backend_id({"backend": "local", "simulator": "mjlab"}), "local-mjlab")
+
+    def test_missing_simulator_backfills_as_genesis(self):
+        """History entries written before this change (every local job
+        predating mjlab training) have no "simulator" key at all -- and
+        every one of them really was a Genesis run."""
+        self.assertEqual(_history_entry_backend_id({"backend": "local"}), "local-genesis")
+
+    def test_unknown_pair_returns_none(self):
+        self.assertIsNone(_history_entry_backend_id({"backend": "local", "simulator": "nonsense"}))
+
+
 class TestTrainCheckpointFromExport(unittest.TestCase):
     def test_none_export_path_returns_none(self):
         self.assertIsNone(TrainingManager._train_checkpoint_from_export(None))
@@ -145,6 +260,55 @@ class TestTrainCheckpointFromExport(unittest.TestCase):
             mgr.policy_sources = {}
             mgr.register_source("croucher", task="g1", checkpoint=str(export_dir / "policy_lstm_1.pt"))
             self.assertEqual(mgr.policy_sources["croucher"]["train_checkpoint"], str(log_dir / "model_500.pt"))
+
+
+class TestFinalizePolicyMotionFile(unittest.TestCase):
+    """finalize_policy() must persist the job's exact --motion_file into the
+    resulting policy's meta.json (Task 2 of HANDOFF_mimic_motion_library_ux.
+    md's follow-ups) -- and must NOT invent a key when the job had none
+    (any non-motion task)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig_policies_dir = training_mod.POLICIES_DIR
+        training_mod.POLICIES_DIR = Path(self._tmp.name)
+
+    def tearDown(self):
+        training_mod.POLICIES_DIR = self._orig_policies_dir
+        self._tmp.cleanup()
+
+    def _job(self, motion_file):
+        return TrainingJob(
+            id="abc", policy_name="dancer", task="Rugiar-G1-Mimic", command="rugiar train ...",
+            log_path="/dev/null", result_path="/dev/null", progress_path="/dev/null",
+            started_at=0.0, finished_at=1.0, max_iterations=3, max_minutes=None, num_envs=8,
+            iterations_done=3, backend="local", simulator="mjlab", motion_file=motion_file,
+        )
+
+    def test_records_the_exact_motion_file_used(self):
+        mgr = TrainingManager.__new__(TrainingManager)
+        mgr.policy_sources = {}
+        with tempfile.TemporaryDirectory() as src:
+            checkpoint = Path(src) / "policy.onnx"
+            checkpoint.write_bytes(b"fake onnx export")
+            clip = "resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz"
+            mgr.finalize_policy("dancer", "Rugiar-G1-Mimic", str(checkpoint), None, job=self._job(clip))
+
+        with open(training_mod.POLICIES_DIR / "dancer" / "meta.json") as f:
+            meta = json.load(f)
+        self.assertEqual(meta["motion_file"], clip)
+
+    def test_no_motion_file_on_a_non_motion_job_stays_none(self):
+        mgr = TrainingManager.__new__(TrainingManager)
+        mgr.policy_sources = {}
+        with tempfile.TemporaryDirectory() as src:
+            checkpoint = Path(src) / "policy.pt"
+            checkpoint.write_bytes(b"fake checkpoint")
+            mgr.finalize_policy("walker", "g1", str(checkpoint), None, job=self._job(None))
+
+        with open(training_mod.POLICIES_DIR / "walker" / "meta.json") as f:
+            meta = json.load(f)
+        self.assertIsNone(meta["motion_file"])
 
 
 class TestRefreshProgress(unittest.TestCase):

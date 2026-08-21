@@ -17,6 +17,8 @@ write-up in the README.
 from __future__ import annotations
 
 import re
+import time
+from pathlib import Path
 from typing import Callable, Optional
 
 import torch
@@ -25,7 +27,53 @@ from .adapter import RobotAdapter, Lifecycle
 from .safety import SafetyGovernor
 from .selector import Selector
 from .supervisor import PolicySupervisor
-from .training import TrainingManager
+from .training import TrainingManager, REPO_ROOT
+
+# Where mjlab reference-motion clips live on disk -- the glob root for
+# list_motions() and the only directory switch_motion() will ever resolve a
+# path into (see its docstring for why that's enforced, not just assumed).
+# Genesis has no equivalent concept -- see both methods' NotImplementedError
+# guard via _require_motion_capable().
+MOTION_DIR = REPO_ROOT / "resources" / "reference_motion" / "unitree_g1" / "mjlab_run"
+
+
+def motion_clip_rows(discovered: dict, task: Optional[str] = None) -> list:
+    """The has_policy-annotated clip list behind list_motions() — a bare
+    module function (not a method) so rugiar's CLI can call it directly
+    with its own `TrainingManager.discover_local_policies()` result,
+    without needing a live ControlService/driver session (mirrors why
+    task_defaults()/catalog() live on TrainingManager itself rather than
+    ControlService: no adapter/session is actually needed to answer this).
+    `discovered` is the name->info dict from discover_local_policies(),
+    passed in rather than re-fetched here so a caller that already has a
+    copy doesn't pay for a second disk scan. `task`, if given, scopes
+    has_policy to only that task's local policies — see list_motions()'s
+    own docstring for the exact-field-vs-heuristic precedence, unchanged
+    here."""
+    if task is not None:
+        discovered = {n: i for n, i in discovered.items() if i.get("task") == task}
+    clips = sorted(MOTION_DIR.glob("*.npz")) if MOTION_DIR.is_dir() else []
+
+    exact_motion_files = set()
+    for info in discovered.values():
+        recorded = info.get("motion_file")
+        if recorded:
+            path = Path(recorded)
+            exact_motion_files.add(str((path if path.is_absolute() else REPO_ROOT / path).resolve()))
+
+    policy_stems = [n.lower() for n, i in discovered.items() if not i.get("motion_file")]
+
+    result = []
+    for clip in clips:
+        stem = clip.stem.lower()
+        has_policy = str(clip.resolve()) in exact_motion_files or \
+            any(stem in name or name in stem for name in policy_stems)
+        result.append({
+            "name": clip.stem,
+            "path": str(clip.relative_to(REPO_ROOT)),
+            "has_policy": has_policy,
+        })
+    return result
 
 
 class ControlService:
@@ -38,6 +86,7 @@ class ControlService:
         training: Optional[TrainingManager] = None,
         policy_loader: Optional[Callable[[str, str, str], "Policy"]] = None,  # noqa: F821 - see refresh_local_policies()
         task_name: Optional[str] = None,
+        motion_file: Optional[str] = None,
     ):
         self.adapter = adapter
         self.supervisor = supervisor
@@ -45,17 +94,30 @@ class ControlService:
         self.selector = selector
         self.training = training
         # Which registered task THIS process's Genesis scene was built for —
-        # e.g. "g1" or "g1_gaze". Only used to answer list_families()'s
+        # e.g. "g1" or "g1_target". Only used to answer list_families()'s
         # `current` field and to validate switch_family() requests; None on a
         # caller that doesn't pass it (e.g. RealAdapter setups, or tests)
         # simply means family-switching isn't offered.
         self.task_name = task_name
+        # Which reference-motion clip (repo-root-relative path) THIS mjlab
+        # process's tracking command term was built against — only used to
+        # answer list_motions()'s `current` field. None on any non-mjlab
+        # caller (motion clips aren't a Genesis concept — see
+        # _require_motion_capable()) or one that doesn't pass it.
+        self.motion_file = motion_file
         # Set by switch_family() to the requested task name, drained (and
         # acted on) once per tick by rugiar_driver.py's main loop — same
         # "record intent, sim loop owns the actual work" split as
         # restart_requested below, except a family switch's "actual work" is
         # a process self-relaunch (see switch_family()'s docstring for why).
         self.family_switch_requested: Optional[str] = None
+        # Set by switch_motion() to the requested clip's repo-root-relative
+        # path, drained once per tick by rugiar_driver_mjlab.py's control_tick
+        # — same split as family_switch_requested above, and for the same
+        # reason: mjlab can't rebuild its motion command term without a
+        # fresh env, so a motion switch is also a process self-relaunch (see
+        # switch_motion()'s docstring). Always None on a non-mjlab session.
+        self.motion_switch_requested: Optional[str] = None
         # Turns a (name, checkpoint_path, task) triple into a loaded, in-process
         # Policy compatible with THIS running sim's obs/action space — see
         # refresh_local_policies() below. Lives outside ControlService/
@@ -75,6 +137,11 @@ class ControlService:
         # rugiar_driver.py's loop rather than here. See restart()'s
         # docstring.
         self.restart_requested = False
+        # Odometry tracking (simulator ground-truth position deltas) — see
+        # get_odometry() below.
+        self._last_odometry_pos: Optional[torch.Tensor] = None
+        self._odometry_distance: float = 0.0
+        self._odometry_start_time: Optional[float] = None
 
     # ---- the "human or autonomous, same call" surface ----
 
@@ -128,6 +195,7 @@ class ControlService:
                 name, task=info["task"], checkpoint=info["checkpoint"],
                 train_checkpoint=info.get("train_checkpoint"),
                 simulator=info.get("simulator", "genesis"),
+                category=info.get("category"),
             )
             added.append(name)
         return added
@@ -258,6 +326,46 @@ class ControlService:
             },
         }
 
+    def get_odometry(self) -> Optional[dict]:
+        """Cumulative distance traveled, elapsed time, and average speed
+        since the first call (or since the last detected reset) — computed
+        from simulator ground-truth base position deltas (RobotState's
+        `base_pos_xy`, see its own docstring). Returns None on a backend
+        where that's not available (real hardware — nothing directly senses
+        world-frame position there), same "None means genuinely unavailable,
+        not zero" rule as `base_height`/`base_lin_vel` above. Primarily for
+        an external agent (e.g. rugiar_mcp) to answer "how far have I
+        moved?" without integrating velocity itself tick by tick."""
+        state = self.adapter.get_state()
+        pos = getattr(state, "base_pos_xy", None)
+        if pos is None:
+            return None
+        now = time.time()
+        if self._odometry_start_time is None:
+            self._odometry_start_time = now
+            self._last_odometry_pos = pos.clone()
+            self._odometry_distance = 0.0
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        delta = pos[0] - self._last_odometry_pos[0]
+        step_dist = float(torch.norm(delta))
+        # A jump this large in one tick means a reset/teleport happened
+        # underneath us (restart(), family switch, episode reset) rather
+        # than real motion — re-baseline instead of counting it as travel.
+        if step_dist > 1.0:
+            self._odometry_start_time = now
+            self._last_odometry_pos = pos.clone()
+            self._odometry_distance = 0.0
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        self._odometry_distance += step_dist
+        self._last_odometry_pos = pos.clone()
+        elapsed = now - self._odometry_start_time
+        avg_speed = self._odometry_distance / elapsed if elapsed > 0 else 0.0
+        return {
+            "distance_traveled": round(self._odometry_distance, 3),
+            "time_elapsed": round(elapsed, 3),
+            "average_speed": round(avg_speed, 3),
+        }
+
     # ---- training a new policy (see legged_gym/control/training.py) ----
 
     def _compatible_training_tasks(self) -> Optional[list]:
@@ -307,6 +415,7 @@ class ControlService:
                         push_dir: Optional[str] = None,
                         entropy_coef: Optional[float] = None,
                         reward_scale_overrides: Optional[dict] = None,
+                        motion_file: Optional[str] = None,
                         backend: str = "local") -> str:
         """Launches a new training job; returns its job id. Training runs
         out-of-process (see TrainingManager) — this call returns immediately,
@@ -335,7 +444,15 @@ class ControlService:
         Kaggle GPU kernel instead of a local CPU subprocess — see
         TrainingManager.start()/kaggle_backend.py; only available when
         system_info()['kaggle_available'] is true, and Clone-from
-        (base_policy/from_checkpoint) isn't supported on it yet."""
+        (base_policy/from_checkpoint) isn't supported on it yet.
+        motion_file is the reference-motion clip to train against — REQUIRED
+        for an mjlab motion-tracking task (e.g. Rugiar-G1-Mimic, whose
+        registered command term has no default clip) and ignored by tasks
+        with no motion term. An mjlab task routes to mjlab_train.py under
+        `.venv-mjlab` instead of web_train.py, and does not support
+        backend='kaggle' (that bootstrap is IsaacGym-specific) nor any of the
+        velocity-command/stability/push knobs above — see
+        TrainingManager.start()'s dispatch."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         return self.training.start(
@@ -350,6 +467,7 @@ class ControlService:
             max_push_vel_xy=max_push_vel_xy, push_interval_s=push_interval_s,
             push_dir=push_dir,
             reward_scale_overrides=reward_scale_overrides,
+            motion_file=motion_file,
             backend=backend,
         )
 
@@ -422,17 +540,22 @@ class ControlService:
         return info
 
     def estimate_training_time(self, num_envs: int, max_iterations: Optional[int] = None,
-                                max_minutes: Optional[float] = None, backend: str = "local") -> dict:
+                                max_minutes: Optional[float] = None, backend: str = "local",
+                                task: Optional[str] = None) -> dict:
         """(iterations, seconds) estimate for a would-be training job, from
-        that BACKEND's own history of completed jobs (see
-        TrainingManager.estimate — local and Kaggle are different throughput
-        regimes, never pooled together) — called live as the Create Policy
-        form's fields change, works whether the user filled in iterations,
-        minutes, or both."""
+        that BACKEND+SIMULATOR's own history of completed jobs (see
+        TrainingManager.estimate — local-genesis, local-mjlab and Kaggle are
+        different throughput regimes, never pooled together). `task` is what
+        lets a "local" request disambiguate between local-genesis and
+        local-mjlab history (both persist backend="local" — see
+        TrainingBackend.job_backend's docstring); omitting it falls back to
+        estimate()'s legacy raw-backend filter. Called live as the Create
+        Policy form's fields change, works whether the user filled in
+        iterations, minutes, or both."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         return self.training.estimate(num_envs, max_iterations=max_iterations,
-                                        max_minutes=max_minutes, backend=backend)
+                                        max_minutes=max_minutes, backend=backend, task=task)
 
     def pause(self) -> None:
         self.paused = True
@@ -447,6 +570,41 @@ class ControlService:
         actual reset happens in the sim loop, not here."""
         self.restart_requested = True
 
+    @staticmethod
+    def _registered_task_names() -> list:
+        """Genesis/Isaac task names from legged_gym's own task_registry —
+        or an empty list when that import isn't available at all, which is
+        the normal case under `.venv-mjlab` (mjlab runs from a separate venv
+        with no Genesis and no vendored rsl_rl — see
+        docs/mjlab_migration.md R1). An mjlab session's families then come
+        entirely from the local policy catalog below, which is backend-
+        agnostic (it just reads policies/<name>/meta.json)."""
+        try:
+            from legged_gym.utils import task_registry
+        except ImportError:
+            return []
+        return list(task_registry.task_classes.keys())
+
+    def _switchable_families(self) -> tuple:
+        """(all task names, policies_per_task) — the union of every
+        registered legged_gym task and every task some local policy was
+        trained for. That union is what makes cross-BACKEND family
+        switching work: `Rugiar-G1-Mimic` is an mjlab task and will never
+        appear in legged_gym's task_registry, but Javier's checkpoints
+        under policies/javier_mjlab_*/ declare it in their meta.json, so
+        it shows up as a switchable family from a Genesis session (and,
+        symmetrically, the Genesis families show up from an mjlab one).
+        The driver decides which script/interpreter that task needs — see
+        rugiar_driver.py's _script_for_task()."""
+        policies_per_task: dict = {}
+        if self.training is not None:
+            for name, info in self.training.discover_local_policies().items():
+                policies_per_task.setdefault(info["task"], []).append(name)
+        tasks = set(self._registered_task_names()) | set(policies_per_task)
+        if self.task_name is not None:
+            tasks.add(self.task_name)
+        return sorted(tasks), policies_per_task
+
     def list_families(self) -> dict:
         """Every registered task ('family'), and which local policies exist
         for each — what the control web's Family panel needs to render
@@ -456,20 +614,16 @@ class ControlService:
         obs shape matches the currently running one — the whole point here
         is offering tasks with a DIFFERENT shape, that's what a family
         switch is for."""
-        from legged_gym.utils import task_registry
-        policies_per_task: dict = {}
-        if self.training is not None:
-            for name, info in self.training.discover_local_policies().items():
-                policies_per_task.setdefault(info["task"], []).append(name)
+        tasks, policies_per_task = self._switchable_families()
         return {
-            "tasks": sorted(task_registry.task_classes.keys()),
+            "tasks": tasks,
             "current": self.task_name,
             "policies_per_task": policies_per_task,
         }
 
     def switch_family(self, task: str) -> None:
         """Requests switching this ENTIRE session to a different registered
-        task ('family') — e.g. from 'g1' (walking) to 'g1_gaze' (standing).
+        task ('family') — e.g. from 'g1' (walking) to 'g1_target' (standing).
         Unlike request_switch() (swaps the active POLICY within the current
         task's already-built scene), this can't be done in-process: Genesis
         owns global, once-per-process simulator state (see
@@ -484,17 +638,87 @@ class ControlService:
         mechanism. Validates up front (task registered AND has at least one
         local policy to load) so a switch that can't succeed never kills a
         working session for nothing."""
-        from legged_gym.utils import task_registry
-        if task not in task_registry.task_classes:
-            raise ValueError(f"unknown task '{task}'")
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
-        has_local_policy = any(
-            info["task"] == task for info in self.training.discover_local_policies().values()
-        )
-        if not has_local_policy:
+        tasks, policies_per_task = self._switchable_families()
+        if task not in tasks:
+            raise ValueError(f"unknown task '{task}'")
+        if not policies_per_task.get(task):
             raise ValueError(f"no trained local policies for task '{task}' yet")
         self.family_switch_requested = task
+
+    def _require_motion_capable(self) -> None:
+        """Shared guard for list_motions()/switch_motion() — reference-motion
+        clips are an mjlab-only concept (Genesis has no motion-tracking
+        command term at all today), so both methods must fail cleanly with
+        NotImplementedError rather than glob a directory of clips nobody's
+        session can ever use, or (worse) let an unhandled AttributeError
+        surface as an opaque 500 through ControlServer._dispatch()."""
+        if getattr(self.adapter, "backend_name", None) != "mjlab":
+            raise NotImplementedError(
+                f"{type(self.adapter).__name__} does not support reference-motion clips "
+                f"(mjlab-only concept)")
+
+    def list_motions(self) -> dict:
+        """Every mjlab reference-motion clip on disk under MOTION_DIR, plus
+        a `has_policy` flag for whether at least one local policy trained
+        for THIS session's task targets that specific clip.
+
+        Precedence for the match: a policy's meta.json `motion_file` field
+        (written by TrainingManager.finalize_policy() at the end of any job
+        launched with --motion_file — an EXACT path match, no guessing) wins
+        whenever it's present. Only policies with no such field (trained
+        before this was recorded) fall back to the OLD heuristic — a policy
+        folder name containing the clip's filename stem (e.g.
+        'javier_mjlab_dance1_subject2' <-> 'dance1_subject2.npz'). That
+        heuristic is now legacy-only: it's not a guarantee, deliberately
+        biased toward false positives (a clip wrongly marked "has a policy"
+        is harmless; wrongly marked "no policy" would nudge someone into
+        training a needless duplicate), and superseded by the exact field
+        for every policy trained through this UI from here on (see
+        HANDOFF_mimic_motion_library_ux.md's Item 2 follow-up, now closed).
+        The Motion panel must NOT disable clips with no match either way
+        (unlike list_families()'s policies_per_task, which the web UI DOES
+        use to disable family rows) — previewing a policy-less clip's
+        reference-motion ghost against whatever's already active (even
+        'damping') is exactly the point, see HANDOFF Item 2; this flag is
+        purely an informational badge.
+
+        Raises NotImplementedError on a backend with no motion-clip concept
+        (e.g. Genesis) — see _require_motion_capable(). The clip/has_policy
+        computation itself lives in the module-level motion_clip_rows() —
+        see its docstring for why (rugiar's CLI calls it directly, with no
+        live session)."""
+        self._require_motion_capable()
+        discovered = self.training.discover_local_policies() if self.training is not None else {}
+        result = motion_clip_rows(discovered, self.task_name)
+        return {"clips": result, "current": self.motion_file}
+
+    def switch_motion(self, path: str) -> None:
+        """Requests relaunching this session against a different reference-
+        motion clip — same "record intent, sim loop owns the actual work"
+        split as switch_family() (mjlab can't rebuild its motion command
+        term without a fresh env — see rugiar_driver_mjlab.py's build_env()
+        docstring). Deliberately does NOT require a matching local policy to
+        exist first — previewing a clip's reference-motion ghost with
+        whatever policy happens to be active (including 'damping', see S2)
+        is the whole point, item 2 of HANDOFF_mimic_motion_library_ux.md.
+        Validates only that `path` resolves to a real clip actually inside
+        MOTION_DIR, up front, so this RPC can't be used to read/relaunch
+        against an arbitrary file on disk, and so a switch that can't
+        succeed never kills a working session for nothing (same "validate
+        up front" shape as switch_family())."""
+        self._require_motion_capable()
+        candidate = Path(path)
+        resolved = candidate if candidate.is_absolute() else REPO_ROOT / candidate
+        try:
+            resolved = resolved.resolve()
+            resolved.relative_to(MOTION_DIR.resolve())
+        except ValueError:
+            raise ValueError(f"'{path}' is not a known reference-motion clip under {MOTION_DIR}")
+        if not resolved.is_file():
+            raise ValueError(f"reference-motion clip not found: {resolved}")
+        self.motion_switch_requested = str(resolved.relative_to(REPO_ROOT))
 
     def set_episode_timeout(self, seconds: Optional[float] = None) -> None:
         """Configures/disables legged_robot.py's own timer-based episode

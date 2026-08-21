@@ -1,7 +1,7 @@
 ---
 name: rugiar
-description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI, fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy, fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
-allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_gaze.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_gaze.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
+description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — training/fine-tuning policies with the `rugiar` CLI (BOTH Genesis locomotion tasks like `g1` and mjlab motion-tracking tasks like `Rugiar-G1-Mimic`, auto-dispatched to whichever backend a task needs, same flags either way — see "Training an mjlab motion-tracking task" below), fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller) can speak. Use whenever the user wants to train/fine-tune a policy (locomotion or motion-tracking), fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies/reference-motion clips, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol, or anything else about using this system day to day.
+allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_target.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_target.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
 ---
 
 # RUgiar system — training CLI (`rugiar`) and running/control (`rugiar_driver.py`)
@@ -85,8 +85,8 @@ usage: rugiar_driver.py [-h] --policy POLICY_SPECS [--active ACTIVE]
 
 `rugiar_driver.py` (this section) drives the **"g1" walking family** — every
 `g1`-task policy (`stable_home_made_*`, `walk_gpu_c4*`, etc.). A separate,
-largely-duplicated sibling script, `rugiar_driver_gaze.py`, drives the
-**"target-aware" family** (`g1_gaze` and future siblings whose config sets
+largely-duplicated sibling script, `rugiar_driver_target.py`, drives the
+**"target-aware" family** (`g1_target` and future siblings whose config sets
 `cfg.rewards.target_aware = True`) — same flags/behavior, plus a per-tick
 step that feeds the live `--ball` position into the running task's obs.
 Each registered task is treated as its own **experiment**, deliberately kept
@@ -97,7 +97,7 @@ The control web's **Family** panel (above Policies) lets an operator switch
 which task/driver is running without a terminal: it calls
 `ControlService.switch_family(task)`, which self-relaunches the correct
 script for that task's family (picking `rugiar_driver.py` vs
-`rugiar_driver_gaze.py` via `_script_for_task()`) on the same port — Genesis
+`rugiar_driver_target.py` via `_script_for_task()`) on the same port — Genesis
 can't rebuild its scene in-process (see `training.py`'s module docstring), so
 this is a ~15-20s process handoff, not an instant switch; the browser
 reconnects on its own. Only tasks with at least one local trained policy are
@@ -220,6 +220,77 @@ rugiar train --task g1 --name cloud_walk --backend kaggle --num_envs 4096 --max_
 
 Ctrl-C during a run terminates the training subprocess and leaves the policy
 **unregistered** (nothing gets written to `./policies/`) — safe to interrupt.
+
+## Training an mjlab motion-tracking task (e.g. `Rugiar-G1-Mimic`)
+
+Same `rugiar train --task ... --name ...` command, same flags, same
+`--from_policy`/`--reward_scale`/`--backend` machinery — an mjlab
+motion-tracking task is not a different tool, just a different `--task`.
+`TrainingManager`'s backend registry (see `legged_gym/control/training.py`'s
+module comment on `TrainingBackend`/`BACKENDS`, and
+`docs/mjlab_training_contract.md` for the full design) auto-detects which
+backend a task needs and dispatches to `legged_gym/scripts/mjlab_train.py`
+under `.venv-mjlab` instead of `web_train.py` under `.venv` — you never pick
+this yourself.
+
+```bash
+export SIMULATOR=genesis    # still required — see "Prerequisite" above,
+                             # even though this trains under .venv-mjlab
+rugiar train --list_tasks                                   # both backends: labeled "(genesis)"/"(mjlab)"
+rugiar train --task Rugiar-G1-Mimic --list_reward_scales     # the 9 real motion-tracking reward terms
+rugiar train --list_motions --task Rugiar-G1-Mimic           # which clips exist, which already have a policy
+
+rugiar train --task Rugiar-G1-Mimic --name mimic_dance --max_iterations 3000 \
+    --motion_file resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz
+```
+
+- **`--motion_file` is REQUIRED for a motion-tracking task** — `rugiar train`
+  errors up front (`needs a --motion_file`) rather than launching a doomed
+  subprocess. `--list_motions` is how you find a valid one; a `.npz` under
+  `resources/reference_motion/unitree_g1/mjlab_run/` (not the `.pkl` path
+  Genesis's own `g1_deepmimic` task uses — different format, different dir).
+- **The Genesis-only knobs don't apply and are rejected, not silently
+  ignored**: `--cmd_vx_range`/`--cmd_vy_range`/`--cmd_yaw_range`,
+  `--base_height_target`/`--lin_vel_z_target`/`--ang_vel_xy_target`/
+  `--orientation_tilt_target`, `--push_robots`/`--max_push_vel_xy`/
+  `--push_interval_s`/`--push_dir` — a motion-tracking task has no velocity
+  command, no stability targets, no pushes. Passing any of these errors
+  immediately with a clear message naming which ones don't apply.
+- **`--backend kaggle` is not supported for an mjlab task** — Kaggle's
+  bootstrap is Isaac-Gym-specific (same Pascal-GPU/`mujoco-warp`
+  incompatibility class as Genesis had there); `rugiar` refuses with a clear
+  error rather than attempting it. `--backend local` (the default) is the
+  only supported path today — CPU-only on this machine, measured
+  ~1.27s/PPO-iteration at `num_envs=8`; scale `--num_envs`/iteration budget
+  accordingly (per "Scale matters" below, but note the mjlab throughput
+  numbers are NOT the same as Genesis's — `estimate()`/the control web's ETA
+  reads real recorded history per (backend, simulator), not one shared
+  number).
+- **You never need `.venv-mjlab/bin/rugiar`** — it doesn't exist (`rugiar`
+  is only pip-installed under `.venv`). Every discovery flag
+  (`--list_tasks`/`--list_reward_scales`/`--list_motions`) still returns
+  real mjlab data even run from `.venv`: when this process can't import
+  mjlab itself, `TrainingManager._mjlab_registry_snapshot()` does a one-shot
+  probe into `.venv-mjlab` and caches the result for the rest of this
+  invocation. If `--list_tasks`' mjlab section says "probe failed" instead
+  of listing real task names, `.venv-mjlab` itself is missing/broken on this
+  machine — check `.venv-mjlab/bin/python` exists.
+- **The 9 real reward terms** (current defaults, `Rugiar-G1-Mimic`):
+  `motion_global_root_pos` (0.5), `motion_global_root_ori` (0.5),
+  `motion_body_pos` (1.0), `motion_body_ori` (1.0), `motion_body_lin_vel`
+  (1.0), `motion_body_ang_vel` (1.0), `action_rate_l2` (-0.1), `joint_limit`
+  (-10.0), `self_collisions` (-10.0) — different vocabulary than Genesis
+  tasks' `tracking_lin_vel`-style scales, don't reuse that mental model.
+- A trained mjlab policy's `meta.json` records `"motion_file"` (the exact
+  clip it was trained against, repo-relative) and `"simulator": "mjlab"` —
+  `--list_motions`' `has_policy` flag reads that field directly (exact
+  match), not a name-substring guess, for anything trained through this UI
+  from here on.
+- Same **watch it walk** rule as everything else in this skill — a 9-term
+  reward curve trending the right direction is not evidence the tracked
+  motion looks right; load the resulting `checkpoint.onnx` into
+  `rugiar_driver_mjlab.py`/the control web and actually look at it against
+  the reference-motion ghost overlay before trusting it.
 
 ## Fusing policies (`rugiar fuse`)
 

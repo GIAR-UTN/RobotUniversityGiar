@@ -16,6 +16,17 @@ keyword arguments TrainingManager.start() already accepts, then prints what
 it's doing. This is what keeps rugiar's flags and TrainingManager's params
 impossible to let drift apart.
 
+This one command line covers BOTH backends — a Genesis locomotion task
+(e.g. 'g1') and an mjlab motion-tracking task (e.g. 'Rugiar-G1-Mimic') take
+the exact same `rugiar train --task ... --name ...` shape, dispatched to
+whichever interpreter/entrypoint that task actually needs (see
+TrainingManager's TrainingBackend registry) — you never have to know or
+care which venv you happen to be running `rugiar` from; the discovery
+flags below (--list_tasks/--list_reward_scales/--list_motions) all work
+correctly for an mjlab task even invoked from this (Genesis) venv, via a
+one-shot probe into .venv-mjlab when this process can't import mjlab
+itself.
+
 Usage:
     rugiar train --task g1 --name crouch --max_minutes 15 \\
         --base_height_target 0.45 --push_robots off
@@ -25,6 +36,11 @@ Usage:
 
     rugiar train --list_tasks
     rugiar train --task g1 --list_reward_scales
+
+    # mjlab motion-tracking task: same shape, plus a required --motion_file
+    rugiar train --list_motions --task Rugiar-G1-Mimic
+    rugiar train --task Rugiar-G1-Mimic --name mimic_dance --max_iterations 3000 \\
+        --motion_file resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz
 
     rugiar order --show
     rugiar order --set stable_home_made_4 crouch_walk
@@ -54,7 +70,10 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
         description=(
             "Train a policy from scratch, or fine-tune an existing one, and register the "
             "result as ./policies/<name>/ — exactly what the control web's 'Create Policy' "
-            "panel does, driven from the command line instead of a browser."
+            "panel does, driven from the command line instead of a browser. Works for both "
+            "Genesis locomotion tasks (e.g. 'g1') and mjlab motion-tracking tasks (e.g. "
+            "'Rugiar-G1-Mimic', which additionally needs --motion_file) — same flags, "
+            "auto-dispatched to whichever backend the task actually needs."
         ),
         epilog=(
             "examples:\n"
@@ -67,7 +86,12 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
             "      --max_iterations 500 --reward_scale action_rate -0.1\n\n"
             "  # discover what's available before committing to a run\n"
             "  rugiar train --list_tasks\n"
-            "  rugiar train --task g1 --list_reward_scales\n"
+            "  rugiar train --task g1 --list_reward_scales\n\n"
+            "  # mjlab motion-tracking task: check which clips still need a policy, then train one\n"
+            "  rugiar train --list_motions --task Rugiar-G1-Mimic\n"
+            "  rugiar train --task Rugiar-G1-Mimic --list_reward_scales\n"
+            "  rugiar train --task Rugiar-G1-Mimic --name mimic_dance --max_iterations 3000 \\\n"
+            "      --motion_file resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz\n"
         ),
     )
 
@@ -129,6 +153,13 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
                               "one flag per term (see --list_reward_scales for valid NAMEs and current "
                               "defaults for --task). Positive rewards more of that term, negative penalizes "
                               "it; magnitude is relative to the other terms, not absolute.")
+    reward.add_argument("--motion_file", type=str, default=None, metavar="PATH",
+                         help="reference-motion clip to train against, relative to "
+                              "resources/reference_motion/ — a .pkl for a Genesis motion-imitation task "
+                              "whose env cfg has its own 'motion_file' default (e.g. g1_deepmimic), or a "
+                              ".npz under unitree_g1/mjlab_run/ for an mjlab tracking task (e.g. "
+                              "Rugiar-G1-Mimic — see --list_motions). REQUIRED for an mjlab tracking task; "
+                              "errors on any task that doesn't use one.")
     reward.add_argument("--entropy_coef", type=float, default=None,
                          help="PPO's exploration-noise bonus weight (default: the task's own). Lower this "
                               "if 'Mean action noise std' trends up instead of down over training.")
@@ -140,19 +171,164 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     discover = p.add_argument_group("Discovery (print information and exit — no training)")
     discover.add_argument("--list_tasks", action="store_true",
-                           help="list every registered task name, then exit")
+                           help="list every registered task name, both Genesis (this venv's own "
+                                "task_registry) and mjlab (probed via .venv-mjlab if this process can't "
+                                "import mjlab itself), then exit")
     discover.add_argument("--list_reward_scales", action="store_true",
                            help="list every overridable --reward_scale NAME and its current default for "
-                                "--task, then exit")
+                                "--task, then exit — works for an mjlab --task too (e.g. Rugiar-G1-Mimic), "
+                                "even run from this (Genesis) venv")
     discover.add_argument("--list_policies", action="store_true",
                            help="list every local ./policies/<name>/ available as a --from_policy base, "
                                 "then exit")
+    discover.add_argument("--list_motions", action="store_true",
+                           help="list every reference-motion .npz clip under "
+                                "resources/reference_motion/unitree_g1/mjlab_run/, each flagged whether a "
+                                "local policy already targets it (see --motion_file) — pass --task to scope "
+                                "the has_policy flag to just that task, then exit")
 
     execu = p.add_argument_group("Execution")
     execu.add_argument("--poll_interval", type=float, default=2.0, metavar="SECONDS",
                         help="how often to check on the running job and flush its log to this terminal")
 
     return p
+
+
+DRIVE_PRESETS = {
+    "genesis": {
+        "script": "legged_gym/scripts/rugiar_driver.py",
+        "python": ".venv/bin/python",
+        "default_task": "g1",
+        "env": {"SIMULATOR": "genesis"},
+        "extra_args": [],
+    },
+    "mjlab": {
+        "script": "legged_gym/scripts/rugiar_driver_mjlab.py",
+        "python": ".venv-mjlab/bin/python",
+        "default_task": "Rugiar-G1-Mimic",
+        # CUDA_VISIBLE_DEVICES="" matches this driver's own documented launch line
+        # (see rugiar_driver_mjlab.py's module docstring) -- this repo's mjlab setup
+        # is CPU-only on Mac, same reasoning as genesis's own cpu-backend default.
+        "env": {"SIMULATOR": "mjlab", "CUDA_VISIBLE_DEVICES": ""},
+        "extra_args": ["--ramp_ticks", "15"],
+    },
+}
+
+
+def _build_drive_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "drive",
+        formatter_class=_HelpFormatter,
+        help="Launch the control web (Genesis or mjlab) without hand-composing rugiar_driver.py flags",
+        description=(
+            "Thin launcher around 'python legged_gym/scripts/rugiar_driver.py' (Genesis) / "
+            "'rugiar_driver_mjlab.py' (mjlab) -- picks the right venv's interpreter, the right "
+            "SIMULATOR/env vars, and a sensible default --task per backend, so switching which "
+            "system is running doesn't require remembering both scripts' full flag set. Local "
+            "policies under ./policies/ are auto-discovered at startup either way -- no need to "
+            "list them with --policy. If something is already listening on --control_port, it's "
+            "stopped first (same 'one session per port' rule the Family panel's own switch uses) "
+            "so this never leaves two drivers fighting over the same port."
+        ),
+        epilog=(
+            "examples:\n"
+            "  # Genesis backend, default task 'g1', default ports\n"
+            "  rugiar drive genesis\n\n"
+            "  # mjlab backend, a specific task\n"
+            "  rugiar drive mjlab --task g1_target\n\n"
+            "  # preview a different reference-motion clip before training against it\n"
+            "  rugiar drive mjlab --motion_file resources/reference_motion/unitree_g1/mjlab_run/g1moves_B_DadDance.npz\n\n"
+            "  # custom ports (e.g. running a second, unrelated session)\n"
+            "  rugiar drive genesis --task g1_deepmimic --control_port 9018 --viser_port 9007\n"
+        ),
+    )
+    p.add_argument("system", choices=sorted(DRIVE_PRESETS), help="which backend/driver to launch")
+    p.add_argument("--task", type=str, default=None,
+                    help="registered task to drive (default: 'g1' for genesis, 'Rugiar-G1-Mimic' for mjlab)")
+    p.add_argument("--control_port", type=int, default=9017,
+                    help="control web + WebSocket port (default: 9017, the LAS port-registry value)")
+    p.add_argument("--viser_port", type=int, default=9006, help="raw 3D viewer port (default: 9006)")
+    p.add_argument("--headless", action="store_true", default=False,
+                    help="no viewer/control web -- runs a scripted smoke test instead")
+    p.add_argument("--motion_file", type=str, default=None,
+                    help="mjlab only -- reference-motion .npz to preview/track instead of the task's "
+                         "default (see resources/reference_motion/unitree_g1/mjlab_run/*.npz). Lets you "
+                         "sanity-check a new clip retargets/plays sensibly on the robot before spending "
+                         "a training run on it. Errors if passed with --system genesis.")
+    p.add_argument("--no_replace", action="store_true", default=False,
+                    help="don't stop an existing process on --control_port first -- fail instead "
+                         "if the port's already taken")
+    return p
+
+
+def _pids_listening_on(port: int) -> list:
+    import subprocess
+    try:
+        out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                              capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        return []
+    return [int(pid) for pid in out.stdout.split() if pid.strip()]
+
+
+def run_drive(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    import os
+    import shlex
+    import signal
+    import time
+
+    preset = DRIVE_PRESETS[args.system]
+    repo_root = Path.cwd()
+    python_bin = repo_root / preset["python"]
+    script = repo_root / preset["script"]
+    if not python_bin.is_file():
+        parser.error(
+            f"{preset['python']} not found under {repo_root} -- run this from the repo root, "
+            f"with the '{args.system}' venv already set up (see README)."
+        )
+    if not script.is_file():
+        parser.error(f"{preset['script']} not found under {repo_root} -- run this from the repo root.")
+    if args.motion_file and args.system != "mjlab":
+        parser.error("--motion_file only applies to --system mjlab")
+
+    existing = _pids_listening_on(args.control_port)
+    if existing:
+        if args.no_replace:
+            parser.error(f"port {args.control_port} is already in use by pid(s) {existing} "
+                         f"(pass without --no_replace to stop it automatically)")
+        print(f"[rugiar] stopping existing process on port {args.control_port}: pid(s) {existing}")
+        for pid in existing:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        deadline = time.time() + 8
+        while time.time() < deadline and _pids_listening_on(args.control_port):
+            time.sleep(0.3)
+        for pid in _pids_listening_on(args.control_port):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    task = args.task or preset["default_task"]
+    argv = [str(python_bin), str(script), "--task", task,
+            "--viser_port", str(args.viser_port), "--control_port", str(args.control_port)]
+    argv += preset["extra_args"]
+    if args.headless:
+        argv.append("--headless")
+    if args.motion_file:
+        argv += ["--motion_file", args.motion_file]
+
+    env = os.environ.copy()
+    env.update(preset["env"])
+
+    print(f"[rugiar] launching {args.system} — {' '.join(shlex.quote(a) for a in argv)}")
+    if not args.headless:
+        print(f"[rugiar] control web: http://localhost:{args.control_port}/")
+    os.chdir(repo_root)
+    os.execvpe(argv[0], argv, env)  # replaces this process -- Ctrl-C behaves exactly like a direct launch
+    return 0  # unreachable, execvpe never returns on success
 
 
 def _build_order_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -454,15 +630,15 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog=PROG,
         formatter_class=_HelpFormatter,
-        description="rugiar — command-line interface for RobotUniversityGiar policy creation.",
+        description="rugiar — command-line interface for RobotUniversityGiar policy creation and driving.",
         epilog=(
-            "Scope: rugiar only trains, fine-tunes, fuses, and distills policies — it has\n"
-            "no path into the live-robot layer (no policy switching, no driving, no joystick\n"
-            "control). For that, see 'python legged_gym/scripts/rugiar_driver.py --help'\n"
-            "(--control_port serves both a browser control web and a WebSocket protocol any\n"
-            "custom client, e.g. a home-made joystick, can speak — docs/index.html's\n"
-            "'Talking to the robot' section has the full wire format). For the system-wide\n"
-            "area map, see legged_gym/control/ARCHITECTURE.md."
+            "Scope: rugiar trains, fine-tunes, fuses, and distills policies, and launches the\n"
+            "control web/driver ('rugiar drive') -- for anything beyond that (raw --policy-by-\n"
+            "--policy control, --real hardware flags), see\n"
+            "'python legged_gym/scripts/rugiar_driver.py --help' directly (--control_port serves\n"
+            "both a browser control web and a WebSocket protocol any custom client, e.g. a\n"
+            "home-made joystick, can speak — docs/index.html's 'Talking to the robot' section has\n"
+            "the full wire format). For the system-wide area map, see legged_gym/control/ARCHITECTURE.md."
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -470,7 +646,9 @@ def build_parser():
     order_parser = _build_order_parser(subparsers)
     fuse_parser = _build_fuse_parser(subparsers)
     distill_parser = _build_distill_parser(subparsers)
-    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser, "distill": distill_parser}
+    drive_parser = _build_drive_parser(subparsers)
+    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser,
+                     "distill": distill_parser, "drive": drive_parser}
 
 
 def _print_lines(title: str, rows) -> None:
@@ -479,9 +657,53 @@ def _print_lines(title: str, rows) -> None:
         print(f"  {row}")
 
 
-def _list_tasks() -> None:
-    from legged_gym.utils import task_registry
-    _print_lines("Registered tasks:", sorted(task_registry.task_classes.keys()))
+def _list_tasks(mgr) -> None:
+    # _legged_gym_registered_tasks() (not a bare `from legged_gym.utils import
+    # task_registry`) on purpose: `rugiar` is only ever pip-installed under
+    # `.venv` today, so this practically always succeeds there — but the CLI
+    # module is still directly importable/callable from `.venv-mjlab` (e.g.
+    # by tests, or a future `.venv-mjlab/bin/rugiar` install), where
+    # legged_gym.utils doesn't import cleanly (docs/mjlab_migration.md
+    # R1-adjacent), AND `from legged_gym.utils import task_registry` can
+    # resolve to the bare SUBMODULE instead of the re-exported TaskRegistry
+    # instance depending on import order — this shared helper already
+    # handles both failure modes instead of re-deriving them here.
+    from legged_gym.control.training import _legged_gym_registered_tasks, _mjlab_registry_snapshot
+
+    genesis_tasks_set = _legged_gym_registered_tasks()
+    if genesis_tasks_set is not None:
+        genesis_tasks = sorted(genesis_tasks_set)
+        _print_lines("Registered tasks (genesis):", genesis_tasks)
+    else:
+        _print_lines("Registered tasks (genesis — not importable from this process):", [])
+        genesis_tasks = []
+
+    mjlab_tasks_ = _mjlab_registry_snapshot()
+    if mjlab_tasks_ is not None:
+        _print_lines("Registered tasks (mjlab):", sorted(mjlab_tasks_))
+        return
+    # Probe failed outright (no .venv-mjlab on this machine, or it errored) —
+    # fall back to whatever mjlab tasks local policies already declare, so
+    # e.g. Rugiar-G1-Mimic still shows up via Javier's imported checkpoints
+    # even when the mjlab venv/registry itself can't be reached at all.
+    fallback = sorted({info["task"] for info in mgr.discover_local_policies().values()
+                        if info.get("task") not in genesis_tasks})
+    _print_lines(
+        "Registered tasks (mjlab — probe failed, showing tasks known only via local policies):",
+        fallback or ["(none — no .venv-mjlab found and no local mjlab policies either)"],
+    )
+
+
+def _list_motions(mgr, task: Optional[str]) -> None:
+    from legged_gym.control.service import MOTION_DIR, motion_clip_rows
+
+    if not MOTION_DIR.is_dir():
+        _print_lines(f"Reference-motion clips ({MOTION_DIR}):", ["(directory not found)"])
+        return
+    rows = motion_clip_rows(mgr.discover_local_policies(), task)
+    lines = [f"{r['name']}  (has_policy={'yes' if r['has_policy'] else 'no'})  — {r['path']}" for r in rows]
+    title = f"Reference-motion clips under {MOTION_DIR}" + (f" (task={task})" if task else "") + ":"
+    _print_lines(title, lines or ["(none found)"])
 
 
 def _list_reward_scales(mgr, task: str) -> None:
@@ -536,10 +758,13 @@ def run_train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         mgr.register_source(name, **info)
 
     if args.list_tasks:
-        _list_tasks()
+        _list_tasks(mgr)
         return 0
     if args.list_policies:
         _list_policies(mgr)
+        return 0
+    if args.list_motions:
+        _list_motions(mgr, args.task)
         return 0
     if args.list_reward_scales:
         if not args.task:
@@ -568,6 +793,7 @@ def run_train(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
             push_robots=push_robots, max_push_vel_xy=args.max_push_vel_xy,
             push_interval_s=args.push_interval_s, push_dir=args.push_dir,
             entropy_coef=args.entropy_coef, reward_scale_overrides=reward_scale_overrides,
+            motion_file=args.motion_file,
             backend=args.backend,
         )
     except ValueError as e:
@@ -635,6 +861,8 @@ def main(argv: Optional[list] = None) -> None:
         sys.exit(run_fuse(args, subparsers["fuse"]))
     elif args.command == "distill":
         sys.exit(run_distill(args, subparsers["distill"]))
+    elif args.command == "drive":
+        sys.exit(run_drive(args, subparsers["drive"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)

@@ -109,11 +109,14 @@
      switch — "Switch"/"Cancel", no spinner, nothing has been sent to
      the server yet); LOADING is purely informational for something already
      in flight (post-confirm family switch reconnect, or a training run
-     that already started — spinner, single "Got it" dismiss). Covers
-     the simulator (never the #panel sidebar). z-index above .drawer (5)
-     since a drawer can be open underneath when this fires. */
+     that already started — spinner, single "Got it" dismiss). position:fixed
+     (not absolute) so it covers the WHOLE page, #panel sidebar included --
+     a family switch relaunches the whole process, so Family/Policies/etc.
+     are just as unusable mid-switch as the simulator is, and clicking them
+     while a switch is in flight (e.g. requesting a second switch) races
+     against the first. z-index above .drawer (5) and #panel's own popovers. */
   #transition-overlay{
-    position:absolute; inset:0; z-index:10;
+    position:fixed; inset:0; z-index:50;
     display:flex; align-items:center; justify-content:center;
     background:color-mix(in srgb, var(--bg) 78%, transparent);
     backdrop-filter:blur(2px);
@@ -430,6 +433,12 @@
   }
   #speed-limit-slider{width:100%; accent-color:var(--accent2);}
 
+  #episode-timeout-row{
+    flex-direction:row; align-items:center; justify-content:space-between; gap:.5rem;
+  }
+  #episode-timeout-row label{margin-bottom:0;}
+  #episode-timeout-row input{width:4.5rem; flex:none; text-align:right;}
+
   .toggle-row{
     display:flex; align-items:center; gap:.45rem; font-size:.85rem;
     margin-bottom:.4rem; cursor:pointer; user-select:none;
@@ -500,6 +509,15 @@
   }
   .tele-badge.sim_ground_truth{background:color-mix(in srgb, var(--accent) 20%, transparent); color:var(--accent);}
   .tele-badge.sensor{background:color-mix(in srgb, var(--accent2) 20%, transparent); color:var(--accent2);}
+  /* Motion panel's "no policy yet" badge — same visual language as the
+     Telemetry source badges above, deliberately NEUTRAL (not a warning
+     color): previewing a clip with no trained policy is expected and
+     fine, not an error state — see #motion-list's row markup in app.js. */
+  .tele-badge.no_policy{background:color-mix(in srgb, var(--muted) 25%, transparent); color:var(--muted);}
+  .policy-row .motion-current-badge{
+    font-size:.62rem; text-transform:uppercase; letter-spacing:.03em; flex:none;
+    color:var(--accent); border:1px solid var(--accent); border-radius:4px; padding:.05rem .3rem;
+  }
   .tele-note{font-size:.66rem; color:var(--muted); margin:.15rem 0 0;}
   #train-cmd-row{
     display:flex; align-items:flex-start; gap:.35rem;
@@ -523,6 +541,15 @@
     border:1px dashed var(--line); background:none; color:var(--ink-soft); cursor:pointer; font:inherit;
   }
   #create-policy-form[hidden]{display:none;}
+  /* S11: Genesis-only field-groups hidden for a task whose task_defaults()
+     'variables' comes back empty (a motion-tracking task) — see
+     refreshTaskFieldVisibility()/applyTaskFieldVisibility() in app.js. Both
+     .field-row and #train-target-vars-group have their own display override
+     above, which would otherwise beat the [hidden] attribute's UA default. */
+  #train-command-envelope-row[hidden],
+  #train-target-vars-group[hidden],
+  #train-push-row[hidden],
+  #train-motion-row[hidden]{display:none;}
 
   /* ---- fuse-policy form ---- */
   #btn-fuse-policy{
@@ -878,7 +905,7 @@
                 title="If the Simulator view looks frozen after a family switch, click to reconnect it — does a real WebGL reload, so only do this when the robot isn't mid-maneuver, it competes for the same CPU as the sim.">&#8635;</button>
         <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
         <div class="help-popover" role="dialog" hidden>
-          <p>Which registered task this whole session is running (e.g. "g1" walking vs "g1_gaze" standing) &mdash;
+          <p>Which registered task this whole session is running (e.g. "g1" walking vs "g1_target" standing) &mdash;
           different from picking a Policy below, which only switches WITHIN the current family. Switching family
           restarts this server's process for the new task (10-20s) &mdash; the page reconnects on its own once
           it's back. Only tasks with at least one trained local policy are shown. If the Simulator view stays frozen
@@ -889,6 +916,27 @@
       </div>
       <div class="section-body">
         <div id="family-list"></div>
+      </div>
+    </section>
+
+    <section class="panel-section" data-section="motion">
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Motion</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>Reference-motion clips this task can track (mjlab's <code>Rugiar-G1-Mimic</code> only —
+          hidden entirely on a backend with no motion-tracking concept, e.g. Genesis). Picking a clip
+          restarts this server's process against it, same 10-20s reconnect as a Family switch above.</p>
+          <p>Clips marked <span class="tele-badge no_policy">no policy</span> have no local policy
+          trained against them yet &mdash; picking one is NOT disabled: the reference-motion "ghost"
+          overlay plays regardless of what's driving the robot mesh, so you can preview a clip (the
+          robot holding a neutral pose, or whatever policy happens to be active) before ever training
+          anything against it.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <div id="motion-list"></div>
       </div>
     </section>
 
@@ -975,6 +1023,11 @@
               <label for="train-task">Task</label>
               <select id="train-task"></select>
             </div>
+            <div class="field-row" id="train-motion-row" hidden>
+              <label for="train-motion">Motion clip <span class="hint-inline">(reference motion to train against)</span></label>
+              <select id="train-motion"><option value="">&mdash; pick a clip &mdash;</option></select>
+              <p class="field-hint">Required for this task &mdash; its command term has no default clip. Clips come from <code>resources/reference_motion/unitree_g1/mjlab_run/</code> (same list as the Motion panel above).</p>
+            </div>
             <div class="field-row">
               <label>Time budget <span class="hint-inline">(fill either or both — whichever is reached first stops training)</span></label>
               <div class="range-pair">
@@ -995,7 +1048,7 @@
             <p class="field-group-label"><span class="dot"></span>Target — what the trained policy should do</p>
             <p class="field-group-note">Command envelope, Target variable, Push disturbances and Exploration noise below are the guided fields — each is one specific, explained knob. Reward weights (advanced), at the bottom, is the raw fallback: every term this task's reward defines, unexplained unless a term has a note. Prefer the guided fields; drop to the raw grid only for what they don't cover yet.</p>
 
-            <div class="field-row">
+            <div class="field-row" id="train-command-envelope-row">
               <label>Command envelope — velocity command range (m/s, m/s, rad/s)</label>
               <p class="field-hint">Not a fixed target like the Target variable below — during training the robot is given a fresh random command from this range every few seconds (like a moving joystick input), and the reward is for matching whatever was commanded at that moment. Widening the range trains a policy that handles more commands; narrowing it trains a more specialized one.</p>
               <p class="field-hint">Linear X range</p>
@@ -1019,6 +1072,7 @@
               <p class="field-hint">Leave blank to keep the task's default ranges.</p>
             </div>
 
+            <div id="train-target-vars-group">
             <div class="field-row">
               <p class="field-hint">Target variables — unlike Command envelope above, each is one fixed value the policy is trained to converge to and hold, not a range it samples from. Every field below is optional and independent: fill in as many or as few as you want. Leave BOTH fields of a variable blank to keep the task's own default for it (shown as "Reference" — not necessarily 0; e.g. base height's task default is a standing height, not the ground).</p>
             </div>
@@ -1078,8 +1132,9 @@
               </div>
               <p class="field-hint" id="target-warn-orientation_tilt" hidden></p>
             </div>
+            </div>
 
-            <div class="field-row">
+            <div class="field-row" id="train-push-row">
               <label>Push disturbances (a.k.a. Stress Stimuli — see the panel above)</label>
               <select id="train-push">
                 <option value="">— task default —</option>

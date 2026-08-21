@@ -144,8 +144,8 @@ class Go2RoughCommonCfg(Go2FlatCommonCfg):
 
 
 #----- Common configuration for Unitree G1 on flat terrain (12DOF) -----#
-# "Target-aware" convention for tasks built on this common cfg (see g1_gaze/ and
-# the "G1 gaze" plan): a task that sets `cfg.rewards.target_aware = True` and
+# "Target-aware" convention for tasks built on this common cfg (see g1_target/ and
+# the "G1 target" plan): a task that sets `cfg.rewards.target_aware = True` and
 # ends its observation vector with 2 slots meaning (pitch_target, roll_target)
 # -- "the orientation needed to face the current target" -- is understood by
 # rugiar_driver.py's driver loop, which overwrites those 2 slots every tick

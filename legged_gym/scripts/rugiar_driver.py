@@ -24,8 +24,8 @@ here is treated as a separate EXPERIMENT, not a live mode to hot-swap within
 one process (see the "Family selector" plan and its follow-up discussion for
 why: Genesis can't rebuild its scene in-process, and more importantly, the
 user explicitly wants experiments kept architecturally separate, not unified
-into one policy). `legged_gym/scripts/rugiar_driver_gaze.py` is the sibling
-driver for the "target-aware" family (g1_gaze and future siblings) — same
+into one policy). `legged_gym/scripts/rugiar_driver_target.py` is the sibling
+driver for the "target-aware" family (g1_target and future siblings) — same
 plumbing, plus the per-tick target-bearing injection that family's tasks
 expect. The control web's Family panel switches between them by relaunching
 the correct one for the chosen task — see _relaunch_for_family()/
@@ -37,20 +37,20 @@ Usage:
         --policy crouch:logs/g1/<run>/exported/policy_lstm_1.pt \
         --active stable
 
-DUPLICATION WARNING: rugiar_driver_gaze.py is a largely-duplicated sibling of
+DUPLICATION WARNING: rugiar_driver_target.py is a largely-duplicated sibling of
 this file, not a caller of it (see above for why). Standalone helper
 functions shared verbatim between the two (_encode_camera_frame_jpeg,
 parse_policy_args, _sibling_meta_simulator, _script_for_task,
 _bare_g1_policy_specs, _relaunch_for_family, _sibling_meta_task,
 drain_finished_training) are checked for drift automatically by
 tests/test_driver_family_parity.py — if you change one of those here, that
-test will fail until you mirror the change into rugiar_driver_gaze.py too.
-main() itself is NOT covered by that test (the gaze driver legitimately
-interleaves target-aware obs injection into it) — if you change non-gaze
+test will fail until you mirror the change into rugiar_driver_target.py too.
+main() itself is NOT covered by that test (the target driver legitimately
+interleaves target-aware obs injection into it) — if you change non-target
 control flow inside main() here (argparse setup, policy loading,
 supervisor/safety setup, ControlServer/web mount setup, the restart/
 family-switch/training-poll main loop, camera frame capture/publish), mirror
-that change into rugiar_driver_gaze.py's main() by hand.
+that change into rugiar_driver_target.py's main() by hand.
 """
 import argparse
 import glob
@@ -124,14 +124,25 @@ def _sibling_meta_simulator(checkpoint_path: str) -> str:
 
 def _script_for_task(task: str) -> str:
     """Which driver script implements `task`'s family -- rugiar_driver.py
-    (this file, the default) for ordinary tasks, or rugiar_driver_gaze.py
+    (this file, the default) for ordinary tasks, rugiar_driver_target.py
     for the "target-aware" family (any task with cfg.rewards.target_aware =
-    True, e.g. g1_gaze and future siblings). Dynamic (inspects the task's
-    own cfg) rather than a hardcoded task-name list, so a new target-aware
-    sibling task works here with no change to this function."""
+    True, e.g. g1_target and future siblings), or rugiar_driver_mjlab.py for
+    an mjlab (MuJoCo Warp) task. Dynamic (inspects the task's own cfg)
+    rather than a hardcoded task-name list, so a new target-aware sibling
+    task works here with no change to this function.
+
+    A task legged_gym's own registry has never heard of is, by
+    construction, not a Genesis/Isaac task at all -- it's an mjlab one
+    (e.g. 'Rugiar-G1-Mimic', registered through mjlab's registry by the
+    repo-root mjlab_tasks/ package, see docs/mjlab_migration.md phase 3).
+    Those surface in the Family panel via their policies' own meta.json
+    (ControlService._switchable_families()), so this has to answer for
+    them too rather than KeyError on get_cfgs()."""
+    if task not in task_registry.task_classes:
+        return "rugiar_driver_mjlab.py"
     env_cfg, _ = task_registry.get_cfgs(name=task)
     if getattr(env_cfg.rewards, "target_aware", False):
-        return "rugiar_driver_gaze.py"
+        return "rugiar_driver_target.py"
     return "rugiar_driver.py"
 
 
@@ -144,7 +155,7 @@ def _bare_g1_policy_specs() -> list:
     docker-entrypoint.sh already uses for its own automatic launch. Only
     offered for --task g1: these predate the multi-task system entirely (all
     pretrained/legacy G1 checkpoints) and, unlike folder-based policies, have
-    no sibling meta.json to check a task against -- g1_gaze's obs size
+    no sibling meta.json to check a task against -- g1_target's obs size
     happens to coincide with g1's (see _sibling_meta_task's docstring on why
     that coincidence is exactly the dangerous case), so blindly offering
     these to every family would risk a silent wrong-shape load for a
@@ -188,29 +199,56 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
     caller can omit it) is read for its LIVE operator_speed_limit -- an
     operator who already dialed this down mid-session should stay at that
     same limit after switching families, not silently snap back to
-    whatever --cruise_limit this process happened to be launched with."""
-    script = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), _script_for_task(new_task))
-    cruise_limit = getattr(adapter, "operator_speed_limit", cli.cruise_limit)
-    argv = [sys.executable, script, "--task", new_task,
-            "--viser_port", str(cli.viser_port), "--speed", str(cli.speed),
-            "--ramp_ticks", str(cli.ramp_ticks), "--cruise_limit", str(cruise_limit)]
-    if new_task == "g1":
-        argv += _bare_g1_policy_specs()
-    if cli.control_port is not None:
-        argv += ["--control_port", str(cli.control_port)]
-    if cli.ball:
-        argv.append("--ball")
-    if cli.camera:
-        argv.append("--camera")
-    if cli.real:
-        argv.append("--real")
-        argv += ["--net_interface", cli.net_interface, "--robot_config", cli.robot_config]
-    if cli.token:
-        argv += ["--token", cli.token]
+    whatever --cruise_limit this process happened to be launched with.
+
+    An mjlab family (see _script_for_task) needs a DIFFERENT INTERPRETER
+    too, not just a different script: mjlab lives in its own .venv-mjlab
+    (incompatible mujoco pin + an rsl_rl name collision with this repo's
+    vendored copy -- docs/mjlab_migration.md R1), so relaunching it with
+    this process's sys.executable would fail on `import mjlab`. Returns
+    (instead of exiting) if that venv isn't present, leaving this session
+    running rather than killing it for a switch that can't work."""
+    script_name = _script_for_task(new_task)
+    script = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), script_name)
+    env = os.environ.copy()
+    if script_name == "rugiar_driver_mjlab.py":
+        interpreter = str(Path(__file__).resolve().parents[2] / ".venv-mjlab" / "bin" / "python")
+        if not os.path.exists(interpreter):
+            print(f"[family switch] cannot switch to {new_task!r}: no mjlab venv at {interpreter} "
+                  f"(see docs/mjlab_migration.md phase 0) -- staying on the current family.")
+            return
+        env["SIMULATOR"] = "mjlab"
+        # No --cruise_limit/--ball/--camera/--real: a tracking task has no
+        # velocity command to cap (see MjlabAdapter's docstring), and the
+        # mjlab driver has no Genesis props/camera/DDS path at all.
+        argv = [interpreter, script, "--task", new_task,
+                "--viser_port", str(cli.viser_port), "--ramp_ticks", str(cli.ramp_ticks)]
+        if cli.control_port is not None:
+            argv += ["--control_port", str(cli.control_port)]
+        if cli.token:
+            argv += ["--token", cli.token]
+    else:
+        cruise_limit = getattr(adapter, "operator_speed_limit", cli.cruise_limit)
+        argv = [sys.executable, script, "--task", new_task,
+                "--viser_port", str(cli.viser_port), "--speed", str(cli.speed),
+                "--ramp_ticks", str(cli.ramp_ticks), "--cruise_limit", str(cruise_limit)]
+        if new_task == "g1":
+            argv += _bare_g1_policy_specs()
+        if cli.control_port is not None:
+            argv += ["--control_port", str(cli.control_port)]
+        if cli.ball or new_task == "g1":
+            argv.append("--ball")
+        if cli.camera or new_task == "g1":
+            argv.append("--camera")
+        if cli.real:
+            argv.append("--real")
+            argv += ["--net_interface", cli.net_interface, "--robot_config", cli.robot_config]
+        if cli.token:
+            argv += ["--token", cli.token]
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
     sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
-    subprocess.Popen(argv, start_new_session=True)
+    subprocess.Popen(argv, start_new_session=True, env=env)
     os._exit(0)  # immediate -- release the port now, no cleanup needed
 
 
@@ -243,7 +281,7 @@ def main():
                               "already registered that way (e.g. unitree_rl_gym's own pretrained checkpoints).")
     parser.add_argument('--task', type=str, default='g1',
                          help="registered task this server's Genesis scene (and every --policy's "
-                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_gaze'. "
+                              "obs/action space) is built for — e.g. 'g1' (walking) or 'g1_target'. "
                               "All --policy specs must have been trained on this same task.")
     parser.add_argument('--active', type=str, default=None, help="which --policy name starts active (default: first one given)")
     parser.add_argument('--ramp_ticks', type=int, default=15, help="control ticks to cross-fade over on a switch")
@@ -418,8 +456,10 @@ def main():
     for name, path in policy_paths.items():
         train_checkpoint = discovered.get(name, {}).get("train_checkpoint")
         simulator = discovered.get(name, {}).get("simulator") or _sibling_meta_simulator(path)
+        category = discovered.get(name, {}).get("category")
         training.register_source(name, task=args.task, checkpoint=path,
-                                  train_checkpoint=train_checkpoint, simulator=simulator)
+                                  train_checkpoint=train_checkpoint, simulator=simulator,
+                                  category=category)
 
     hidden_size_for_new_policies = hidden_size  # matches G1RoughCfgPPO.policy.rnn_hidden_size (see above)
 
@@ -611,7 +651,13 @@ def main():
                 viser_viewer.resync_camera_tracking()
 
         if service.family_switch_requested is not None:
-            _relaunch_for_family(cli, service.family_switch_requested, adapter)  # never returns
+            # Cleared BEFORE the call: _relaunch_for_family() normally never
+            # returns (it execs a fresh process and os._exit()s), but it does
+            # return when the target family's venv is missing -- leaving the
+            # flag set would retry that same impossible switch every tick.
+            requested_task = service.family_switch_requested
+            service.family_switch_requested = None
+            _relaunch_for_family(cli, requested_task, adapter)  # normally never returns
 
         drain_finished_training()
 

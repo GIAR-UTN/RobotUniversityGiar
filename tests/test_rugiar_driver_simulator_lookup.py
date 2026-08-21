@@ -10,7 +10,7 @@ to a hardcoded default instead of reading the meta.json sitting right next
 to the checkpoint. This fed a false "sources were trained on different
 simulators" warning into the Fuse policies panel for any such policy pair.
 See _sibling_meta_simulator() (legged_gym/scripts/rugiar_driver.py — also
-duplicated verbatim in rugiar_driver_gaze.py, the target-aware family's
+duplicated verbatim in rugiar_driver_target.py, the target-aware family's
 sibling driver, since the two scripts are deliberately independent; this
 test only covers the copy in rugiar_driver.py).
 

@@ -20,6 +20,7 @@ loop.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 import platform
@@ -38,6 +39,13 @@ from legged_gym.control import kaggle_backend
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TRAIN_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_train.py"
 DISTILL_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "web_distill.py"
+# mjlab tasks train through their own entrypoint under their own interpreter —
+# neither venv can import the other's simulator (docs/mjlab_migration.md R1),
+# so this is an interpreter choice, not just a script choice. Mirrors
+# rugiar_driver_mjlab.py's _script_for_task()/_argv_for_family_switch() pair.
+MJLAB_TRAIN_SCRIPT = REPO_ROOT / "legged_gym" / "scripts" / "mjlab_train.py"
+MJLAB_PYTHON = REPO_ROOT / ".venv-mjlab" / "bin" / "python"
+GENESIS_PYTHON = REPO_ROOT / ".venv" / "bin" / "python"
 JOBS_DIR = REPO_ROOT / "logs" / "_web_training"
 HISTORY_PATH = JOBS_DIR / "history.json"
 # One self-contained folder per policy trained through this UI — see
@@ -85,15 +93,458 @@ def _total_ram_bytes() -> Optional[int]:
     return None
 
 
+# ---- which training stack a task belongs to ----
+#
+# Neither venv can import the other's registry: under `.venv-mjlab`,
+# `from legged_gym.utils import task_registry` raises (no Genesis), and under
+# the main `.venv`, `import mjlab` raises (no mjlab). So whichever registry IS
+# importable here is authoritative, and the other side is decided by exclusion
+# — the same asymmetry rugiar_driver_mjlab.py's _script_for_task() relies on.
+
+
+def _mjlab_registered_tasks() -> Optional[set]:
+    """Task ids in mjlab's registry, or None if mjlab isn't importable here."""
+    try:
+        import mjlab_tasks  # noqa: F401 - import side effect: registers this repo's own tasks
+        from mjlab.tasks import registry
+    except ImportError:
+        return None
+    tasks = registry.list_tasks()
+    # Same "empty means unknown, not none-exist" reasoning as
+    # _legged_gym_registered_tasks() below.
+    return set(tasks) if tasks else None
+
+
+def _legged_gym_registered_tasks() -> Optional[set]:
+    """Genesis/Isaac task names, or None if legged_gym's registry isn't
+    importable here (the normal case under `.venv-mjlab` — same
+    try/except ImportError shape as ControlService._registered_task_names()).
+
+    `legged_gym.envs` is imported for its SIDE EFFECT: task_registry starts
+    empty and every task_registry.register() call lives in that module. A
+    bare `from legged_gym.utils import task_registry` yields an empty dict
+    in a process that hasn't imported envs yet — which would make
+    training_backend_for_task() answer "mjlab" (by exclusion) for every
+    Genesis task, silently routing e.g. `g1` to the mjlab entrypoint. The
+    long-running drivers happen to import envs before ever calling this,
+    which is exactly what would have hidden it."""
+    try:
+        import legged_gym.envs  # noqa: F401 - import side effect: populates task_classes
+        from legged_gym.utils import task_registry
+    except ImportError:
+        return None
+    # `from legged_gym.utils import task_registry` normally yields the
+    # TaskRegistry INSTANCE that legged_gym/utils/__init__.py re-exports, but
+    # resolves to the SUBMODULE of the same name whenever that __init__ hasn't
+    # run its re-export (e.g. a partially-stubbed legged_gym package). Accept
+    # either shape rather than depending on which one this process ended up with.
+    tasks = getattr(task_registry, "task_classes", None)
+    if tasks is None:
+        tasks = getattr(getattr(task_registry, "task_registry", None), "task_classes", None)
+    # Empty is NOT "there are no Genesis tasks" — it's "this process couldn't
+    # read the registry", and answering "mjlab" by exclusion off an empty set
+    # would misroute every Genesis job. Say "unknown" instead.
+    return set(tasks) if tasks else None
+
+
+def _mjlab_registry_probe_source() -> str:
+    """The one-shot script run via `_mjlab_registry_snapshot()`'s subprocess
+    fallback. Run as a SCRIPT FILE (not `python -c`) — `-c` makes Python
+    insert cwd as sys.path[0], which if cwd is REPO_ROOT reintroduces the
+    exact R1 collision `_mjlab_prepare_env()`'s PYTHONPATH-stripping exists
+    to avoid (the repo's own vendored rsl_rl/ shadowing .venv-mjlab's PyPI
+    rsl-rl-lib — see docs/mjlab_migration.md R1). As a script file, sys.path[0]
+    is the script's own directory instead, so REPO_ROOT only needs to go back
+    on sys.path explicitly, LAST, exactly like mjlab_train.py's own header —
+    see that file's module docstring for the same reasoning."""
+    return (
+        "import json\n"
+        "import sys\n"
+        f"sys.path.append({str(REPO_ROOT)!r})  # LAST -- see this function's docstring\n"
+        "import mjlab_tasks  # noqa: F401,E402 - import side effect: registers this repo's own tasks\n"
+        "from mjlab.tasks import registry\n"
+        "out = {}\n"
+        "for t in registry.list_tasks():\n"
+        "    cfg = registry.load_env_cfg(t)\n"
+        "    out[t] = {\n"
+        "        'reward_scales': {n: term.weight for n, term in cfg.rewards.items()},\n"
+        "        'needs_motion_file': 'motion' in getattr(cfg, 'commands', {}),\n"
+        "    }\n"
+        "print(json.dumps(out))\n"
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _mjlab_registry_snapshot() -> Optional[dict]:
+    """{task_id: {'reward_scales': {...}, 'needs_motion_file': bool}} for
+    every mjlab-registered task — computed in-process when mjlab is
+    importable here, otherwise via a one-shot subprocess into
+    `.venv-mjlab` (the same interpreter `_mjlab_interpreter()` dispatches
+    training to), so a process that can't import mjlab itself (e.g.
+    rugiar's own `.venv` install, where `rugiar` the console-script
+    actually lives) still gets real reward-term data instead of an empty
+    result — this is what task_defaults() and rugiar's `--list_tasks`/
+    `--list_reward_scales` rely on. Returns None only when mjlab isn't set
+    up on this machine at all (no MJLAB_PYTHON) or the probe fails
+    outright (treated as "can't validate", not "no mjlab tasks exist" —
+    same reasoning as _mjlab_registered_tasks()/_legged_gym_registered_tasks()).
+
+    Cached per-process (@lru_cache) — task/reward-scale defaults don't
+    change during a single CLI invocation or driver session; tests that
+    monkeypatch the probe must call `_mjlab_registry_snapshot.cache_clear()`
+    first."""
+    try:
+        import mjlab_tasks  # noqa: F401 - import side effect: registers this repo's own tasks
+        from mjlab.tasks import registry
+    except ImportError:
+        if not MJLAB_PYTHON.exists():
+            return None
+        env = dict(os.environ)
+        _mjlab_prepare_env(env)
+        # A real script FILE, not `python -c` -- see _mjlab_registry_probe_source()'s
+        # docstring for why (-c would put REPO_ROOT on sys.path[0] via cwd,
+        # reintroducing the R1 vendored-rsl_rl shadowing this whole dance avoids).
+        try:
+            with tempfile.NamedTemporaryFile(
+                    "w", suffix="_mjlab_registry_probe.py", delete=False) as f:
+                f.write(_mjlab_registry_probe_source())
+                probe_path = f.name
+            proc = subprocess.run(
+                [str(MJLAB_PYTHON), probe_path],
+                capture_output=True, text=True, timeout=90, env=env, cwd=str(REPO_ROOT),
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        finally:
+            try:
+                os.unlink(probe_path)
+            except OSError:
+                pass
+        if proc.returncode != 0:
+            return None
+        try:
+            return json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return None
+    tasks = registry.list_tasks()
+    if not tasks:
+        return None
+    out = {}
+    for t in tasks:
+        cfg = registry.load_env_cfg(t)
+        out[t] = {
+            "reward_scales": {name: term.weight for name, term in cfg.rewards.items()},
+            "needs_motion_file": "motion" in getattr(cfg, "commands", {}),
+        }
+    return out
+
+
+def training_backend_for_task(task: str) -> str:
+    """'mjlab' | 'genesis' — which training entrypoint/interpreter `task` needs."""
+    mjlab_tasks_ = _mjlab_registered_tasks()
+    if mjlab_tasks_ is not None:                 # we ARE in .venv-mjlab: authoritative
+        return "mjlab" if task in mjlab_tasks_ else "genesis"
+    genesis_tasks = _legged_gym_registered_tasks()
+    if genesis_tasks is not None:                # we ARE in .venv: authoritative by exclusion
+        return "genesis" if task in genesis_tasks else "mjlab"
+    raise ValueError(f"cannot determine a training backend for task '{task}': neither "
+                     f"mjlab's nor legged_gym's task registry is importable here")
+
+
+# ---- the training-backend registry ----
+#
+# WHAT THIS IS. A training backend is one answer to "where and how does a
+# training job actually run": which interpreter, which entrypoint script,
+# which subprocess env, which simulator ends up recorded on the resulting
+# policy, and which tasks it can serve at all. There are three today —
+# `local-genesis`, `local-mjlab`, `kaggle` — and TrainingManager.start()
+# contains ZERO knowledge of any of them: it validates the request, resolves
+# ONE descriptor out of BACKENDS, and drives that descriptor's hooks. This
+# replaced a set of scattered `if backend == "kaggle" / if train_backend ==
+# "mjlab"` branches that had to be edited in five places at once.
+#
+# HOW TO ADD A NEW BACKEND (e.g. a CUDA-enabled "local-nvidia", or a second
+# cloud provider). Nothing in start()/poll()/the validation block changes —
+# adding one is these three steps and no others:
+#
+#   1. Write the hooks it needs, next to the existing ones below:
+#        - an interpreter resolver `(manager, task) -> str` (raise ValueError
+#          with a human explanation if that venv isn't installed here);
+#        - a `prepare_env(env)` that mutates the subprocess env in place
+#          (PYTHONPATH/SIMULATOR/CUDA_VISIBLE_DEVICES/...);
+#        - optionally a `validate_params(params)` that rejects knobs this
+#          backend has no analogue for, and a `preflight()` for credentials
+#          or other "can this even run here" checks.
+#      A REMOTE backend (runs off this machine) skips interpreter/script/env
+#      entirely and supplies `launch_remote(manager, job, ctx)` instead —
+#      see kaggle's, which hands the job to a KaggleRunner thread.
+#   2. Append one TrainingBackend(...) entry to BACKENDS, declaring which
+#      `requested_as` value selects it and which `task_stack` it serves.
+#      `(requested_as, task_stack)` is the lookup key and must be unique.
+#   3. If it's requestable by a NEW name (not "local"/"kaggle"),
+#      that name becomes valid automatically — REQUESTABLE_BACKENDS and
+#      start()'s "unknown backend" message are both derived from BACKENDS.
+#
+# Deliberately NOT a plugin system: no dynamic imports, no config files, no
+# entry points. A new backend is a Python literal in this list, which is
+# exactly as much extensibility as three-to-five backends warrant.
+
+
+def _genesis_interpreter(manager: "TrainingManager", task: str) -> str:
+    """This process's own interpreter — unless it's the mjlab venv, which
+    has no Genesis at all. Same 'switch venv, or refuse' shape as
+    rugiar_driver_mjlab.py's family switch."""
+    interpreter = manager.python_exe
+    # Compared UNRESOLVED on purpose: a venv's bin/python is a symlink
+    # to the base interpreter, so .resolve() throws away the very
+    # ".venv-mjlab" marker this needs to see.
+    if ".venv-mjlab" in str(interpreter):
+        if not GENESIS_PYTHON.exists():
+            raise ValueError(f"no Genesis venv at {GENESIS_PYTHON} — can't train "
+                             f"task '{task}' from an mjlab session")
+        interpreter = str(GENESIS_PYTHON)
+    return interpreter
+
+
+def _mjlab_interpreter(manager: "TrainingManager", task: str) -> str:
+    """Always .venv-mjlab: neither venv can import the other's simulator
+    (docs/mjlab_migration.md R1), so this is an interpreter choice, not just
+    a script choice."""
+    if not MJLAB_PYTHON.exists():
+        raise ValueError(f"no mjlab venv at {MJLAB_PYTHON} — mjlab training isn't "
+                         f"set up on this machine")
+    return str(MJLAB_PYTHON)
+
+
+def _genesis_prepare_env(env: Dict[str, str]) -> None:
+    """Pin PYTHONPATH to THIS repo checkout explicitly rather than trusting
+    whatever the parent process happened to be launched with — an editable
+    `pip install -e` of legged_gym elsewhere (e.g. a sibling checkout of this
+    same repo) would otherwise silently win, running web_train.py's file from
+    here against a DIFFERENT legged_gym package. Bit us once already getting
+    the control server itself to run against the right checkout — not
+    leaving it to chance twice."""
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
+    # Explicit: an mjlab session's inherited SIMULATOR=mjlab would
+    # otherwise make legged_gym/__init__.py skip the Genesis import.
+    env["SIMULATOR"] = "genesis"
+
+
+def _mjlab_prepare_env(env: Dict[str, str]) -> None:
+    """The exact OPPOSITE of the Genesis case: REPO_ROOT must NOT be
+    prepended here. The repo vendors a top-level rsl_rl/ that would shadow
+    .venv-mjlab's PyPI rsl-rl-lib (docs/mjlab_migration.md R1). mjlab_train.py
+    puts REPO_ROOT back on sys.path itself — LAST — so `mjlab_tasks`/
+    `legged_gym` still resolve while rsl-rl-lib wins."""
+    existing = env.get("PYTHONPATH", "")
+    stripped = [p for p in existing.split(os.pathsep) if p and p != str(REPO_ROOT)]
+    if stripped:
+        env["PYTHONPATH"] = os.pathsep.join(stripped)
+    else:
+        env.pop("PYTHONPATH", None)
+    env["SIMULATOR"] = "mjlab"
+    # mjlab's own run_train() reads this to decide cpu vs cuda; the
+    # jobs launched here are CPU unless a CUDA device was requested.
+    env["CUDA_VISIBLE_DEVICES"] = ""
+
+
+# Every start() knob that only means something for a Genesis locomotion task —
+# a motion-tracking task has no velocity command, no stability targets and no
+# pushes, so passing one is a mistake worth reporting in the panel rather than
+# 10 seconds later as "the subprocess exited with code 2".
+_GENESIS_ONLY_PARAMS = (
+    "cmd_vx", "cmd_vy", "cmd_yaw",
+    "base_height_target", "lin_vel_z_target", "ang_vel_xy_target",
+    "orientation_tilt_target",
+    "push_robots", "max_push_vel_xy", "push_interval_s", "push_dir",
+)
+
+
+def _mjlab_validate_params(params: Dict[str, object]) -> None:
+    inapplicable = [name for name in _GENESIS_ONLY_PARAMS if params.get(name) is not None]
+    if inapplicable:
+        raise ValueError(
+            f"{', '.join(inapplicable)} don't apply to mjlab task '{params['task']}' "
+            f"(motion-tracking task: no velocity command, no stability targets, "
+            f"no pushes)")
+    if not params.get("motion_file"):
+        raise ValueError(f"task '{params['task']}' needs a --motion_file (reference-motion clip)")
+
+
+def _kaggle_preflight() -> None:
+    if not kaggle_backend.kaggle_credentials_available():
+        raise ValueError(
+            "no Kaggle credentials found at ~/.kaggle/kaggle.json — the Kaggle backend "
+            "isn't set up on this machine")
+
+
+def _kaggle_launch_remote(manager: "TrainingManager", job: "TrainingJob", ctx: dict) -> None:
+    runner = kaggle_backend.KaggleRunner(
+        job_id=job.id, train_flags=ctx["train_flags"],
+        result_path=ctx["result_path"], log_path=ctx["log_path"],
+        base_checkpoint_path=Path(ctx["from_checkpoint"]) if ctx["from_checkpoint"] else None,
+    )
+    # kaggle_kernel_slug stays None until poll() sees runner.kernel_ref
+    # populated (set inside the background thread once its push succeeds).
+    manager._kaggle_runners[job.id] = runner
+    runner.start()
+
+
+@dataclasses.dataclass(frozen=True)
+class TrainingBackend:
+    """One place a training job can run. See the registry's own comment
+    above for the "how do I add one" walkthrough."""
+
+    id: str                     # registry key / display name, e.g. "local-mjlab"
+    requested_as: str           # the start(backend=...) value that selects this one
+    task_stack: str             # which training_backend_for_task() answer it serves
+    job_backend: str            # what lands in TrainingJob.backend — PERSISTED SHAPE,
+                                # keep it stable ("local"/"kaggle") for meta.json/UI compat
+    simulator: str              # what lands in TrainingJob.simulator / meta.json
+    command_prefix: str         # the `rugiar` CLI equivalent shown to the user
+    script: Path                # entrypoint the job actually runs (remotely, for a remote backend)
+    remote: bool = False        # runs off this machine: no local subprocess to launch or poll
+    fixed_flags: tuple = ()     # argv flags this entrypoint always takes (e.g. --headless --cpu)
+    interpreter: Optional[object] = None     # (manager, task) -> str; None for a remote backend
+    prepare_env: Optional[object] = None     # (env: dict) -> None, mutated in place
+    validate_params: Optional[object] = None  # (params: dict) -> None, raises ValueError
+    preflight: Optional[object] = None       # () -> None, "can this even run here" check
+    launch_remote: Optional[object] = None   # (manager, job, ctx) -> None; remote backends only
+    # Whether a local --from_checkpoint absolute path is meaningful to this
+    # backend. False for anything running off this machine — it has no access
+    # to this filesystem (KaggleRunner uploads the file as a private Dataset
+    # and adds its own --from_checkpoint pointing at the /kaggle/input/ mount).
+    accepts_local_checkpoint: bool = True
+    # Message for "this backend exists but can't serve this task's stack".
+    # None falls back to a generic sentence.
+    unsupported_task_stack_error: Optional[str] = None
+
+
+BACKENDS: List[TrainingBackend] = [
+    TrainingBackend(
+        id="local-genesis",
+        requested_as="local",
+        task_stack="genesis",
+        job_backend="local",
+        simulator="genesis",
+        command_prefix="rugiar train ",
+        script=TRAIN_SCRIPT,
+        fixed_flags=("--headless", "--cpu"),
+        interpreter=_genesis_interpreter,
+        prepare_env=_genesis_prepare_env,
+    ),
+    TrainingBackend(
+        id="local-mjlab",
+        requested_as="local",
+        task_stack="mjlab",
+        job_backend="local",
+        simulator="mjlab",
+        command_prefix="rugiar train ",
+        script=MJLAB_TRAIN_SCRIPT,
+        # No --cpu/--headless prefix: mjlab_train.py never opens a viewer
+        # and takes --device instead (it defaults to cpu).
+        fixed_flags=(),
+        interpreter=_mjlab_interpreter,
+        prepare_env=_mjlab_prepare_env,
+        validate_params=_mjlab_validate_params,
+    ),
+    TrainingBackend(
+        id="kaggle",
+        requested_as="kaggle",
+        # Genesis-only, and not by omission: the kernel bootstrap installs
+        # Isaac Gym specifically (see kaggle_backend._build_kernel_script).
+        task_stack="genesis",
+        job_backend="kaggle",
+        # Genesis's GPU JIT needs Volta+ (sm_70+) hardware Kaggle's free-tier
+        # P100 (Pascal, sm_60) doesn't have — see TrainingJob.simulator.
+        simulator="isaacgym",
+        command_prefix="rugiar train --backend kaggle ",
+        script=TRAIN_SCRIPT,
+        remote=True,
+        preflight=_kaggle_preflight,
+        launch_remote=_kaggle_launch_remote,
+        accepts_local_checkpoint=False,
+        unsupported_task_stack_error=(
+            "the Kaggle backend doesn't support mjlab tasks (its bootstrap is "
+            "IsaacGym-specific)"),
+    ),
+]
+
+# What start(backend=...) accepts, derived — never hand-maintained.
+REQUESTABLE_BACKENDS = tuple(dict.fromkeys(b.requested_as for b in BACKENDS))
+
+
+def resolve_training_backend(task: str, requested: str) -> TrainingBackend:
+    """The one lookup: (what the caller asked for, what stack this task needs)
+    -> the descriptor that serves it. Raises ValueError with the same
+    messages start() used to raise inline — an unknown `requested` name, or a
+    known one that can't serve this task's stack."""
+    if requested not in REQUESTABLE_BACKENDS:
+        raise ValueError(f"unknown backend '{requested}' — must be "
+                         f"{' or '.join(repr(b) for b in REQUESTABLE_BACKENDS)}")
+    stack = training_backend_for_task(task)
+    for backend in BACKENDS:
+        if backend.requested_as == requested and backend.task_stack == stack:
+            return backend
+    # The requested backend exists, it just can't serve this task's stack.
+    candidate = next(b for b in BACKENDS if b.requested_as == requested)
+    raise ValueError(candidate.unsupported_task_stack_error
+                     or f"the {candidate.id} backend doesn't support {stack} tasks")
+
+
+def _backend_descriptor(job_backend: str, simulator: str) -> Optional[TrainingBackend]:
+    """(job_backend, simulator) -> the one BACKENDS entry that combination
+    identifies, or None if nothing matches (an unknown simulator recorded by
+    an older/newer build). This pair is the real "throughput regime" key —
+    two backends can share job_backend ("local-genesis" and "local-mjlab"
+    both persist backend="local") but never share simulator, so the pair is
+    unique. Shared by backend_for_job() (a live TrainingJob) and
+    estimate()/history recording (a persisted history dict) so both use
+    exactly the same resolution rule."""
+    for backend in BACKENDS:
+        if backend.job_backend == job_backend and backend.simulator == simulator:
+            return backend
+    return None
+
+
+def backend_for_job(job: "TrainingJob") -> Optional[TrainingBackend]:
+    """The descriptor a job already in flight was launched under, recovered
+    from its own persisted (job_backend, simulator) pair rather than from a
+    field stored on the job — so a TrainingJob written before this registry
+    existed still resolves. None if nothing matches (an unknown simulator
+    recorded by an older/newer build); callers fall back rather than raise."""
+    return _backend_descriptor(job.backend, job.simulator)
+
+
+def _history_entry_backend_id(entry: dict) -> Optional[str]:
+    """Same (job_backend, simulator) -> descriptor resolution as
+    backend_for_job(), applied to a raw history.json record instead of a live
+    TrainingJob. `simulator` defaults to "genesis" for entries written before
+    this field existed — every local job predating mjlab training WAS a
+    Genesis run, so this is a correct backfill, not a guess. Returns the
+    descriptor's `id` (e.g. "local-genesis", "local-mjlab", "kaggle") — the
+    actual throughput-regime bucket estimate() groups by, NOT the raw
+    "backend" field alone (which conflates local-genesis and local-mjlab,
+    both persisted as backend="local")."""
+    descriptor = _backend_descriptor(entry.get("backend", "local"), entry.get("simulator", "genesis"))
+    return descriptor.id if descriptor is not None else None
+
+
 # ---- turning a raw job .log into something a human (or the info popup) can read ----
 
 _ITER_RE = re.compile(r"Learning iteration (\d+)/(\d+)")
 _STAT_RES = {
-    "noise_std": re.compile(r"Mean action noise std:\s*([-\d.]+)"),
+    # "noise " is optional: this repo's vendored rsl_rl prints "Mean action
+    # noise std:", while rsl-rl-lib 5.x (.venv-mjlab, used by mjlab_train.py)
+    # prints "Mean action std:". Same number either way.
+    "noise_std": re.compile(r"Mean action (?:noise )?std:\s*([-\d.]+)"),
     "reward": re.compile(r"Mean reward:\s*([-\d.]+)"),
     "episode_length": re.compile(r"Mean episode length:\s*([-\d.]+)"),
 }
-_TERM_RE = re.compile(r"Mean episode rew_(\w+):\s*([-\d.]+)")
+# Genesis: "Mean episode rew_<term>: <v>"   mjlab/rsl-rl 5.x: "Episode_Reward/<term>: <v>"
+# (rsl-rl 5.x's Episode_Termination/* and Metrics/* lines correctly don't match.)
+_TERM_RE = re.compile(r"(?:Mean episode rew_(\w+)|Episode_Reward/(\w+)):\s*([-\d.]+)")
 SERIES_MAX_POINTS = 60  # downsample target — a training run can print thousands of
                          # iteration blocks; the popup's chart only needs enough
                          # points to see the trend, not every single one
@@ -152,7 +603,7 @@ def parse_training_log(log_path: str) -> dict:
         else:
             m = _TERM_RE.search(line)
             if m:
-                current["terms"][m.group(1)] = float(m.group(2))
+                current["terms"][m.group(1) or m.group(2)] = float(m.group(3))
     if current and current.get("_complete"):
         records.append(current)
 
@@ -209,7 +660,14 @@ class TrainingJob:
                              # for why a Kaggle job's poll() branch never touches the network
     kaggle_kernel_slug: Optional[str] = None  # "<username>/<slug>" once push succeeds —
                                                # the UI's "view on Kaggle" link, kaggle jobs only
-    simulator: str = "genesis"  # "genesis" | "isaacgym" — which Simulator backend actually
+    motion_file: Optional[str] = None  # the exact --motion_file this job was launched with, for
+                                        # mjlab/tracking tasks (see _mjlab_validate_params) —
+                                        # persisted into the resulting policy's meta.json by
+                                        # finalize_policy() so list_motions() can cross-reference
+                                        # clip<->policy explicitly instead of the old name-substring
+                                        # heuristic (see HANDOFF_mimic_motion_library_ux.md's Item 2
+                                        # follow-up). None for any task with no motion command term.
+    simulator: str = "genesis"  # "genesis" | "isaacgym" | "mjlab" — which Simulator backend actually
                                  # trained this policy (see legged_gym/simulator/). Kaggle jobs
                                  # use isaacgym: Genesis's GPU JIT needs Volta+ (sm_70+) hardware
                                  # Kaggle's free-tier P100 (Pascal, sm_60) doesn't have, while
@@ -265,6 +723,7 @@ class TrainingJob:
             "backend": self.backend,
             "kaggle_kernel_slug": self.kaggle_kernel_slug,
             "simulator": self.simulator,
+            "motion_file": self.motion_file,
             "job_type": self.job_type,
             "teacher_policy": self.teacher_policy,
             "distill_method": self.distill_method,
@@ -381,19 +840,39 @@ class TrainingManager:
             pass  # best-effort — a failed write must not crash the sim loop
 
     def estimate(self, num_envs: int, max_iterations: Optional[int] = None,
-                 max_minutes: Optional[float] = None, backend: str = "local") -> dict:
+                 max_minutes: Optional[float] = None, backend: str = "local",
+                 task: Optional[str] = None) -> dict:
         """Estimated (iterations, seconds) for a job on the given backend,
         from THAT backend's own completed-job history — pooled across tasks
-        (dominated by robot/obs/action space size, not which reward
+        that share the same underlying simulator/hardware regime (dominated
+        by robot/obs/action space size and sim engine, not which reward
         function is being trained, so cost-per-iteration is comparable
-        across tasks), but never pooled ACROSS backends: a local-CPU run
-        and a Kaggle Isaac-Gym-GPU run are different throughput regimes
-        entirely (real numbers this session: local CPU ran single-digit
-        iterations/sec on g1; the Kaggle GPU smoke test did 5 iterations
-        with 16 envs in ~254s wall-clock including Isaac Gym's own ~3-4min
-        per-job bootstrap) — mixing them would corrupt both estimates.
-        History entries with no "backend" key predate this distinction and
-        are treated as "local" (every job used to run there).
+        across tasks on the SAME simulator), but never pooled across
+        different regimes: a local-CPU Genesis run, a local-CPU mjlab run,
+        and a Kaggle Isaac-Gym-GPU run are three different throughput
+        regimes entirely (real numbers: local Genesis CPU ran single-digit
+        iterations/sec on g1; local mjlab CPU measured ~1.27s/iteration at
+        num_envs=8; the Kaggle GPU smoke test did 5 iterations with 16 envs
+        in ~254s wall-clock including Isaac Gym's own ~3-4min per-job
+        bootstrap) — mixing them would corrupt every estimate.
+
+        `task` is what disambiguates "local" into the right regime: both
+        local-genesis and local-mjlab persist history entries with
+        backend="local" (see TrainingBackend.job_backend's docstring), so
+        the SIMULATOR each entry actually ran under (recorded alongside
+        elapsed_s/num_envs — see poll()) is what separates them, resolved
+        the same way start() resolves which backend serves a task
+        (resolve_training_backend()). Passing no `task` (or one that can't
+        be resolved for this backend) falls back to the legacy raw-backend
+        filter — every history entry with this literal `backend` string,
+        regardless of simulator — which is what every caller did before
+        this distinction existed; new callers should always pass `task`.
+        This generalizes forward with zero code changes here: a future
+        backend (local-NVIDIA, a second cloud) gets its own BACKENDS entry
+        with its own `id`/`simulator`, its jobs' history entries carry that
+        `simulator` automatically (see poll()), and `_history_entry_backend_id()`
+        buckets them separately the moment the first one finishes — see
+        tests/test_training_estimate.py's synthetic-backend test.
 
         Works with either or both of max_iterations/max_minutes, mirroring
         the actual job's own 'whichever hits first' semantics (see
@@ -404,11 +883,23 @@ class TrainingManager:
         wall-clock budget may stop a run a bit short of or past the
         iteration count shown here — it still stops on time; the iteration
         count just moves. Returns basis='none' (no invented number) when
-        there's no history yet for this backend — see system_info()'s
-        suggested_num_envs for a sizing starting point in that case."""
+        there's no history yet for this backend/simulator regime — see
+        system_info()'s suggested_num_envs for a sizing starting point in
+        that case. Deliberately never falls back to a hardcoded constant or
+        another regime's numbers — an mjlab job with zero local history
+        must show basis='none', not Genesis's rate."""
         num_envs = max(1, int(num_envs))
         none_result = {"basis": "none", "samples": 0, "seconds": None, "iterations": None}
-        backend_history = [h for h in self._history if h.get("backend", "local") == backend]
+        target_id = None
+        if task is not None:
+            try:
+                target_id = resolve_training_backend(task, backend).id
+            except ValueError:
+                target_id = None  # unresolvable (task) -> fall back to the legacy raw filter below
+        if target_id is not None:
+            backend_history = [h for h in self._history if _history_entry_backend_id(h) == target_id]
+        else:
+            backend_history = [h for h in self._history if h.get("backend", "local") == backend]
         if not backend_history:
             return none_result
         rates = [h["elapsed_s"] / (h["max_iterations"] * h["num_envs"])
@@ -576,7 +1067,9 @@ class TrainingManager:
 
     def register_source(self, name: str, task: str, checkpoint: Optional[str],
                          train_checkpoint: Optional[str] = None,
-                         simulator: str = "genesis") -> None:
+                         simulator: str = "genesis",
+                         category: Optional[str] = None,
+                         motion_file: Optional[str] = None) -> None:
         """`train_checkpoint` is the raw rsl_rl checkpoint to resume PPO
         from (see finalize_policy()'s docstring for how a fresh training
         job gets one). Pass None (the --policy CLI path, via
@@ -593,11 +1086,23 @@ class TrainingManager:
         Genesis run, or vice versa) is a sim2sim transfer, not a guaranteed-
         compatible continuation. Surfaced in catalog() so the Create Policy
         panel can flag a mismatch instead of silently fine-tuning across
-        engines."""
+        engines.
+
+        `category` is a free-form, purely-cosmetic label (e.g. "g1-legs",
+        "g1-full-body", "go2") — NOT used for any obs/action-space
+        compatibility check (that's `task`'s job). It exists so the Family/
+        Policy panels can group/label sources that share a `task` but come
+        from meaningfully different places — e.g. an externally-imported
+        full-body G1 policy vs one this repo trained itself under the same
+        `g1_deepmimic` task. None (the default) means "no opinion" — the UI
+        falls back to showing `task` alone, same as before this field
+        existed."""
         self.policy_sources[name] = {
             "task": task, "checkpoint": checkpoint,
             "train_checkpoint": train_checkpoint or self._train_checkpoint_from_export(checkpoint),
             "simulator": simulator,
+            "category": category,
+            "motion_file": motion_file,
         }
 
     def finalize_policy(self, name: str, task: str, checkpoint: str,
@@ -636,7 +1141,11 @@ class TrainingManager:
         policies with no job at all, e.g. `stable`."""
         dest_dir = POLICIES_DIR / name
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_checkpoint = dest_dir / "checkpoint.pt"
+        # Keep the source's suffix: load_policy_backend() dispatches on it, so
+        # copying an mjlab job's .onnx export to "checkpoint.pt" would make it
+        # unloadable. discover_local_policies() already accepts either name.
+        suffix = ".onnx" if str(checkpoint).endswith(".onnx") else ".pt"
+        dest_checkpoint = dest_dir / f"checkpoint{suffix}"
         shutil.copyfile(checkpoint, dest_checkpoint)
         dest_train_checkpoint = None
         if train_checkpoint and os.path.isfile(train_checkpoint):
@@ -696,6 +1205,13 @@ class TrainingManager:
                     if os.path.basename(os.path.dirname(checkpoint)) == "exported" else None,
                 "log_path": str(dest_log) if dest_log else None,
                 "metrics": metrics,
+                # Explicit clip<->policy link — None for any task with no
+                # motion command term (e.g. Genesis locomotion tasks).
+                # list_motions() reads this directly instead of guessing
+                # from a name-substring match; see its own docstring for the
+                # fallback that still applies to policies finalized before
+                # this field existed.
+                "motion_file": job.motion_file,
             })
         with open(dest_dir / "meta.json", "w") as f:
             json.dump(meta, f)
@@ -871,13 +1387,21 @@ class TrainingManager:
         startup re-offer every previously-trained policy instead of just
         whatever --policy flags happened to be typed that time.
 
-        Returns name -> {"task", "checkpoint", "train_checkpoint"} for
-        every folder with a checkpoint.pt, skipping names in `exclude`
-        (already loaded a different way, e.g. via --policy) and skipping
-        (with nothing raised — this must never crash startup) anything
-        without a readable meta.json giving its task, since loading a
-        checkpoint from the wrong task/observation-space would crash
-        load_policy() rather than just fail to appear."""
+        Returns name -> {"task", "checkpoint", "train_checkpoint", "simulator",
+        "category", "motion_file"} for every folder with a checkpoint.pt (or
+        checkpoint.onnx — see below),
+        skipping names in `exclude` (already loaded a different way, e.g.
+        via --policy) and skipping (with nothing raised — this must never
+        crash startup) anything without a readable meta.json giving its
+        task, since loading a checkpoint from the wrong task/observation-
+        space would crash load_policy() rather than just fail to appear.
+
+        checkpoint.onnx (in addition to checkpoint.pt) is recognized so an
+        externally-sourced ONNX export (policy.py's load_policy_backend()
+        already dispatches on the .onnx suffix — see OnnxStatelessPolicy/
+        OnnxExplicitStatePolicy) can live in the same policies/<name>/
+        folder convention as a jit one, instead of only being loadable via
+        an ad-hoc --policy path. Prefers .pt if a folder somehow has both."""
         found = {}
         if not POLICIES_DIR.is_dir():
             return found
@@ -886,6 +1410,8 @@ class TrainingManager:
             if name in exclude or not entry.is_dir():
                 continue
             checkpoint = entry / "checkpoint.pt"
+            if not checkpoint.is_file():
+                checkpoint = entry / "checkpoint.onnx"
             if not checkpoint.is_file():
                 continue
             try:
@@ -900,6 +1426,12 @@ class TrainingManager:
                 "checkpoint": str(checkpoint),
                 "train_checkpoint": str(train_checkpoint) if train_checkpoint.is_file() else None,
                 "simulator": meta.get("simulator", "genesis"),
+                "category": meta.get("category"),
+                # The exact clip this policy was trained against, if any —
+                # None for anything trained before finalize_policy() started
+                # recording it (or any non-motion task). list_motions() reads
+                # this to cross-reference clip<->policy explicitly.
+                "motion_file": meta.get("motion_file"),
             }
         return found
 
@@ -1025,8 +1557,14 @@ class TrainingManager:
 
     def catalog(self, compatible_tasks: Optional[Sequence[str]] = None) -> dict:
         from legged_gym.control import distillation, fusion
-        from legged_gym.utils import task_registry
-        all_tasks = sorted(task_registry.task_classes.keys())
+        # Unguarded, this raised under `.venv-mjlab` (no Genesis to import),
+        # which broke the Create Policy panel outright on an mjlab session.
+        # There, mjlab's own registry is the only task list that exists.
+        try:
+            from legged_gym.utils import task_registry
+            all_tasks = sorted(task_registry.task_classes.keys())
+        except ImportError:
+            all_tasks = sorted(_mjlab_registered_tasks() or [])
         tasks = sorted(compatible_tasks) if compatible_tasks is not None else all_tasks
         base_policies = [
             # info already carries "simulator" (see register_source()) —
@@ -1083,10 +1621,74 @@ class TrainingManager:
         the same treatment, base_height included, no special case. The
         task-independent half of the registry (label/unit/source/flag/note)
         comes from catalog() instead — fetched once, not on every task
-        change."""
-        from legged_gym.utils import task_registry
+        change.
+
+        'variables' is EMPTY (not full-with-None) for a task where none of
+        VARIABLE_REGISTRY's base-height/tilt-style targets apply at all (a
+        motion-tracking task has no such concept) — this is the signal the
+        Create Policy panel uses to hide the Command envelope/Target
+        variables/Push disturbances field-groups entirely (see app.js's
+        refreshTargetReferences()/renderTaskFieldVisibility()), by checking
+        whether the relevant keys are PRESENT, not by hardcoding a task-name
+        check. A task that legitimately has these targets but momentarily
+        can't resolve one (e.g. a broken cfg) still gets the key with
+        reference: None — only "this concept doesn't exist for this task"
+        omits the key.
+
+        'needs_motion_file' flags whether this task's own command term
+        requires a --motion_file (mirrors start()'s own check and
+        mjlab_train.py's --motion_file requirement in
+        docs/mjlab_training_contract.md §2: "yes for any task whose
+        env_cfg.commands contains 'motion'") — read generically off the
+        task's own cfg rather than a name check, so a future non-mimic
+        tracking task gets the motion-clip picker for free."""
+        # An mjlab task's reward weights live in a plain dict of RewardTermCfg
+        # (env_cfg.rewards[<term>].weight), and none of VARIABLE_REGISTRY's
+        # base-height/tilt-style targets exist for a motion-tracking task —
+        # so 'variables' comes back empty (see docstring above), not
+        # full-keyed-with-None.
+        #
+        # training_backend_for_task() (not _mjlab_registered_tasks() alone)
+        # decides whether `task` IS an mjlab task, so this branch is also
+        # taken from a process that can't import mjlab itself (e.g. rugiar's
+        # own `.venv` install — see _mjlab_registry_snapshot()'s docstring).
+        # A neither-registry-importable ValueError is treated the same as
+        # the Genesis except-ImportError branch below: "can't validate",
+        # not "this task has no reward terms".
         try:
+            is_mjlab_task = training_backend_for_task(task) == "mjlab"
+        except ValueError:
+            is_mjlab_task = False
+        if is_mjlab_task:
+            if _mjlab_registered_tasks() is not None:
+                import mjlab_tasks  # noqa: F401 - import side effect: registers this repo's own tasks
+                from mjlab.tasks import registry
+                cfg = registry.load_env_cfg(task)
+                reward_scales = {name: term.weight for name, term in cfg.rewards.items()}
+                needs_motion_file = "motion" in getattr(cfg, "commands", {})
+            else:
+                info = (_mjlab_registry_snapshot() or {}).get(task)
+                reward_scales = info["reward_scales"] if info else {}
+                needs_motion_file = info["needs_motion_file"] if info else True
+            return {
+                "variables": {},
+                "reward_scales": reward_scales,
+                "reward_scale_notes": {
+                    term: note for term, note in self.REWARD_SCALE_NOTES.items()
+                    if term in reward_scales
+                },
+                "needs_motion_file": needs_motion_file,
+            }
+
+        # Guarded for the same reason as catalog()'s: unimportable under
+        # `.venv-mjlab`, where an empty result means "this process can't
+        # validate", not "this task has no reward terms" (see start()).
+        try:
+            from legged_gym.utils import task_registry
             env_cfg, _ = task_registry.get_cfgs(name=task)
+        except ImportError:
+            return {"variables": {key: {"reference": None} for key in self.VARIABLE_REGISTRY},
+                    "reward_scales": {}, "reward_scale_notes": {}, "needs_motion_file": False}
         except Exception:  # noqa: BLE001 - a broken/unregistered cfg shouldn't break the panel
             env_cfg = None
 
@@ -1117,6 +1719,7 @@ class TrainingManager:
             "reward_scale_notes": {
                 term: note for term, note in self.REWARD_SCALE_NOTES.items() if term in reward_scales
             },
+            "needs_motion_file": False,
         }
 
     # ---- launching ----
@@ -1137,9 +1740,17 @@ class TrainingManager:
                push_dir: Optional[str] = None,
                entropy_coef: Optional[float] = None,
                reward_scale_overrides: Optional[Dict[str, float]] = None,
+               motion_file: Optional[str] = None,
                backend: str = "local") -> str:
-        if backend not in ("local", "kaggle"):
-            raise ValueError(f"unknown backend '{backend}' — must be 'local' or 'kaggle'")
+        """`backend` is a REQUEST ("local" | "kaggle"), not the descriptor
+        that ends up serving it: which concrete backend runs the job is
+        (request, task stack) -> BACKENDS entry, resolved by
+        resolve_training_backend() below. Nothing in this method knows what
+        Genesis/mjlab/Kaggle are — see the registry's comment for how to add
+        a fourth."""
+        if backend not in REQUESTABLE_BACKENDS:
+            raise ValueError(f"unknown backend '{backend}' — must be "
+                             f"{' or '.join(repr(b) for b in REQUESTABLE_BACKENDS)}")
         policy_name = (policy_name or "").strip()
         if not policy_name:
             raise ValueError("policy_name is required")
@@ -1160,13 +1771,38 @@ class TrainingManager:
             raise ValueError("num_envs must be positive")
         if entropy_coef is not None and entropy_coef < 0:
             raise ValueError("entropy_coef can't be negative")
+
+        # Which concrete backend serves this (task, request) pair — resolved
+        # before the reward-scale check below, since where the valid
+        # reward-term names even come from depends on the task's stack.
+        # Raises for kaggle+mjlab and any other unserviceable combination.
+        train_backend = resolve_training_backend(task, backend)
+        if train_backend.validate_params is not None:
+            # Backend-specific knob rejection, done here rather than in the
+            # subprocess so the panel shows it immediately — same reasoning as
+            # the reward-scale pre-validation below.
+            train_backend.validate_params({
+                "task": task, "motion_file": motion_file,
+                "cmd_vx": cmd_vx, "cmd_vy": cmd_vy, "cmd_yaw": cmd_yaw,
+                "base_height_target": base_height_target,
+                "lin_vel_z_target": lin_vel_z_target,
+                "ang_vel_xy_target": ang_vel_xy_target,
+                "orientation_tilt_target": orientation_tilt_target,
+                "push_robots": push_robots, "max_push_vel_xy": max_push_vel_xy,
+                "push_interval_s": push_interval_s, "push_dir": push_dir,
+            })
+
         if reward_scale_overrides:
-            # Validated here, not left to web_train.py's subprocess exit
+            # Validated here, not left to the worker's subprocess exit
             # code — a typo'd term name should be a clear error in the
             # panel immediately, not a job that dies 10s later with
             # "exited with code 2, see the log".
             known = self.task_defaults(task)["reward_scales"]
-            unknown = [k for k in reward_scale_overrides if k not in known]
+            # Empty means "this process couldn't import the registry that
+            # defines them" (e.g. a Genesis task queried from an mjlab
+            # session), NOT "every name is invalid" — leave those to the
+            # worker, which can import it.
+            unknown = [k for k in reward_scale_overrides if k not in known] if known else []
             if unknown:
                 raise ValueError(f"unknown reward scale(s) for task '{task}': {', '.join(unknown)}")
 
@@ -1185,20 +1821,20 @@ class TrainingManager:
                     f"base policy '{base_policy}' has no local training checkpoint to fine-tune from "
                     f"(only an exported/deployable .pt — e.g. an externally-sourced policy with no "
                     f"training history on this machine)")
-        if backend == "kaggle":
-            if not kaggle_backend.kaggle_credentials_available():
-                raise ValueError(
-                    "no Kaggle credentials found at ~/.kaggle/kaggle.json — the Kaggle backend "
-                    "isn't set up on this machine")
-            # Cloning a Genesis-trained base into an isaacgym (Kaggle) run —
-            # or vice versa, locally — is mechanically fine (torch doesn't
-            # care where the weights came from) but a real sim2sim transfer:
-            # the two engines' contact/PD dynamics differ (see
-            # TrainingJob.simulator's docstring / HANDOFF_kaggle_cloud_gpu.md
-            # open question #4). Deliberately not blocked here — the Create
-            # Policy panel flags the mismatch instead (see catalog()'s
-            # per-base "simulator" field), so an informed choice still goes
-            # through.
+        if train_backend.preflight is not None:
+            # "Can this backend even run here" — credentials, quota, a
+            # required daemon. Genesis/mjlab have none; Kaggle checks for
+            # ~/.kaggle/kaggle.json.
+            train_backend.preflight()
+        # Cloning a Genesis-trained base into an isaacgym (Kaggle) run —
+        # or vice versa, locally — is mechanically fine (torch doesn't
+        # care where the weights came from) but a real sim2sim transfer:
+        # the two engines' contact/PD dynamics differ (see
+        # TrainingJob.simulator's docstring / HANDOFF_kaggle_cloud_gpu.md
+        # open question #4). Deliberately not blocked here — the Create
+        # Policy panel flags the mismatch instead (see catalog()'s
+        # per-base "simulator" field), so an informed choice still goes
+        # through.
 
         job_id = uuid.uuid4().hex[:8]
         result_path = JOBS_DIR / f"{job_id}.result.json"
@@ -1248,14 +1884,16 @@ class TrainingManager:
         if reward_scale_overrides:
             for name, value in sorted(reward_scale_overrides.items()):
                 shared_flags += ["--reward_scale", name, str(value)]
+        if motion_file is not None:
+            shared_flags += ["--motion_file", motion_file]
 
         train_flags = list(shared_flags)
-        if from_checkpoint and backend == "local":
-            # Kaggle jobs can't take this local absolute path directly — the
-            # kernel has no access to this machine's filesystem. KaggleRunner
+        if from_checkpoint and train_backend.accepts_local_checkpoint:
+            # A remote backend can't take this local absolute path directly —
+            # it has no access to this machine's filesystem. KaggleRunner
             # uploads the same file as a private Kaggle Dataset and adds its
             # own --from_checkpoint pointing at the /kaggle/input/ mount
-            # (see the backend=="kaggle" branch below).
+            # (see launch_remote below).
             train_flags += ["--from_checkpoint", from_checkpoint]
 
         # rugiar (legged_gym/cli/rugiar.py) is the same TrainingManager.start()
@@ -1274,53 +1912,44 @@ class TrainingManager:
             max_iterations=max_iterations, max_minutes=max_minutes, num_envs=num_envs,
             base_policy=base_policy, entropy_coef=entropy_coef,
             reward_scale_overrides=dict(reward_scale_overrides) if reward_scale_overrides else None,
-            backend=backend,
-            simulator="isaacgym" if backend == "kaggle" else "genesis",
+            backend=train_backend.job_backend,
+            simulator=train_backend.simulator,
+            motion_file=motion_file,
         )
-
-        if backend == "kaggle":
-            # The rugiar equivalent of what the kernel runs — same "show the
-            # real command" spirit as the local job below, minus the
-            # base-checkpoint upload/mount step rugiar's own --backend
-            # kaggle handles the same way TrainingManager does here.
-            job.command = "rugiar train --backend kaggle " + " ".join(rugiar_flags)
-            runner = kaggle_backend.KaggleRunner(
-                job_id=job_id, train_flags=train_flags,
-                result_path=result_path, log_path=log_path,
-                base_checkpoint_path=Path(from_checkpoint) if from_checkpoint else None,
-            )
-            # kaggle_kernel_slug stays None until poll() sees runner.kernel_ref
-            # populated (set inside the background thread once its push succeeds).
-            self._kaggle_runners[job_id] = runner
-            self.jobs[job_id] = job
-            runner.start()
-            return job_id
-
-        argv = [
-            self.python_exe, "-u", str(TRAIN_SCRIPT),
-            "--headless", "--cpu",
-            "--result_path", str(result_path),
-            "--progress_path", str(progress_path),
-        ] + train_flags
 
         # The rugiar CLI equivalent of this run — this string is what the
         # web UI already showed as a preview before Start was clicked
         # (see web/app.js's updateCommandPreview), and is what a user would
-        # paste into a terminal to reproduce it, not the raw web_train.py
-        # subprocess invocation actually exec'd below.
-        job.command = "rugiar train " + " ".join(rugiar_flags)
+        # paste into a terminal to reproduce it, not the raw subprocess
+        # invocation actually exec'd below.
+        job.command = train_backend.command_prefix + " ".join(rugiar_flags)
+
+        if train_backend.remote:
+            # Runs off this machine entirely: no interpreter to pick, no env
+            # to build, no Popen to poll. The descriptor owns everything up to
+            # "the job is now running" (for Kaggle: hand it to a background
+            # KaggleRunner thread — see kaggle_backend's module docstring).
+            self.jobs[job_id] = job
+            train_backend.launch_remote(self, job, {
+                "train_flags": train_flags, "result_path": result_path,
+                "log_path": log_path, "from_checkpoint": from_checkpoint,
+            })
+            return job_id
+
+        argv = [
+            train_backend.interpreter(self, task), "-u", str(train_backend.script),
+            *train_backend.fixed_flags,
+            "--result_path", str(result_path),
+            "--progress_path", str(progress_path),
+        ] + train_flags
 
         log_f = open(log_path, "w")
-        # Pin PYTHONPATH to THIS repo checkout explicitly rather than trusting
-        # whatever the parent process happened to be launched with — an
-        # editable `pip install -e` of legged_gym elsewhere (e.g. a sibling
-        # checkout of this same repo) would otherwise silently win, running
-        # web_train.py's file from here against a DIFFERENT legged_gym
-        # package. Bit us once already getting the control server itself to
-        # run against the right checkout — not leaving it to chance twice.
         env = dict(os.environ)
-        existing = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(REPO_ROOT) + (os.pathsep + existing if existing else "")
+        # Each backend owns its own PYTHONPATH/SIMULATOR story — they are not
+        # variations on a theme but exact opposites (see _genesis_prepare_env
+        # vs _mjlab_prepare_env), which is precisely why this is a hook and
+        # not a shared block with an if in it.
+        train_backend.prepare_env(env)
         proc = subprocess.Popen(argv, cwd=str(REPO_ROOT), stdout=log_f, stderr=subprocess.STDOUT, env=env)
 
         self.jobs[job_id] = job
@@ -1489,7 +2118,12 @@ class TrainingManager:
         for job_id, job in self.jobs.items():
             if job.status != "running":
                 continue
-            if job.backend == "kaggle":
+            job_backend = backend_for_job(job)
+            if job_backend is not None and job_backend.remote:
+                # Remote backends have no Popen to poll. Today "remote" means
+                # exactly one thing (Kaggle), so the runner map below is
+                # kaggle-typed; a second remote backend would add its own map
+                # and pick between them off the descriptor, not off a name.
                 runner = self._kaggle_runners[job_id]
                 if job.kaggle_kernel_slug is None:
                     job.kaggle_kernel_slug = runner.kernel_ref  # set once the push completes
@@ -1515,7 +2149,7 @@ class TrainingManager:
                         self._history.append({
                             "task": job.task, "max_iterations": job.iterations_done,
                             "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
-                            "backend": "kaggle",
+                            "backend": "kaggle", "simulator": job.simulator,
                         })
                         self._save_history()
                 except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
@@ -1532,7 +2166,14 @@ class TrainingManager:
             self._log_files[job_id].close()
             if rc != 0:
                 job.status = "failed"
-                job.error = f"web_train.py exited with code {rc} — see {job.log_path}"
+                # Which entrypoint actually ran — off the descriptor, not a
+                # simulator-name check. A distill job never goes through a
+                # training backend at all (it always runs DISTILL_SCRIPT),
+                # so it's answered first.
+                script_name = ("web_distill.py" if job.job_type == "distill"
+                               else job_backend.script.name if job_backend is not None
+                               else TRAIN_SCRIPT.name)
+                job.error = f"{script_name} exited with code {rc} — see {job.log_path}"
                 continue
             try:
                 with open(job.result_path) as f:
@@ -1556,7 +2197,7 @@ class TrainingManager:
                     self._history.append({
                         "task": job.task, "max_iterations": job.iterations_done,
                         "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
-                        "backend": "local",
+                        "backend": "local", "simulator": job.simulator,
                     })
                     self._save_history()
             except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
