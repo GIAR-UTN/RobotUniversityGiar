@@ -1,7 +1,7 @@
-# Motion imitation — handoff to the motion team
+# Mimic motion — handoff to the motion team
 
 > **Paired document.** This file has a twin in Spanish:
-> [`motion_team_handoff.es.md`](motion_team_handoff.es.md). Both are meant to
+> [`mimic_motion_team_handoff.es.md`](mimic_motion_team_handoff.es.md). Both are meant to
 > stay in sync — if you change one, change the other.
 
 **Audience:** the collaborator who built the motion-imitation / mimic-motion

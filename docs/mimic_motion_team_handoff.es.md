@@ -1,7 +1,7 @@
-# Motion imitation — handoff al equipo de movimiento
+# Mimic motion — handoff al equipo de movimiento
 
 > **Documento hermanado.** Este archivo tiene una versión hermana en inglés:
-> [`motion_team_handoff.en.md`](motion_team_handoff.en.md). Los dos tienen que
+> [`mimic_motion_team_handoff.en.md`](mimic_motion_team_handoff.en.md). Los dos tienen que
 > mantenerse sincronizados — si cambiás uno, cambiá el otro.
 
 **Para quién es:** el colaborador que desarrolló la parte de motion imitation /
