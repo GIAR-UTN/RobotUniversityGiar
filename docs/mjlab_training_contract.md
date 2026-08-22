@@ -7,7 +7,7 @@ machine (`.venv-mjlab` = rsl-rl-lib **5.4.2**, mjlab from the same venv) and,
 where marked ✅ EMPIRICAL, by running it. Implement it as written; do not
 re-derive.
 
-Background/scope: item 4 of `docs/handoffs/HANDOFF_mimic_motion_library_ux.md`. Local
+Background/scope: item 4 of `HANDOFF_mimic_motion_library_ux.md`. Local
 training only — the Kaggle backend is explicitly out of scope
 (`backend="kaggle"` + an mjlab task must be rejected in `start()`, see §5).
 

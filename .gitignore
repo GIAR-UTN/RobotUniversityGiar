@@ -70,8 +70,8 @@ outputs/
 # Environment variables (local secrets / runtime config)
 .env
 
-# Session handoff notes used to be local-only and gitignored here. They are
-# now VERSIONED under docs/handoffs/ — too much of the codebase cites them by
-# name (comments, tests, docs) for them to be untracked files a fresh clone
-# doesn't have. Anything worth promoting still gets folded into
-# README.md/docs/ proper; docs/handoffs/ is the durable archive of the rest.
+# Session handoff notes — local continuity scratch for picking up a thread
+# next session, not durable project docs. Anything worth keeping from one
+# gets folded into README.md/AGENTS.md instead (see e.g. §5b/§5c, AGENTS.md's
+# "FORK ADDITIONS" section) and the handoff file itself stays local-only.
+HANDOFF_*.md
