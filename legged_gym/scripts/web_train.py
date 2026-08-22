@@ -79,7 +79,7 @@ def main():
                               "with default=True — simply NOT passing it can never mean 'off', so "
                               "there was previously no CLI way at all to request GPU here. Only "
                               "makes sense on a machine that actually has a CUDA GPU (e.g. a Kaggle "
-                              "kernel — see kaggle_backend.py's _build_kernel_script).")
+                              "kernel — see backends/kaggle.py's _build_kernel_script).")
     parser.add_argument('--from_checkpoint', type=str, default=None,
                          help="fine-tune from this checkpoint's weights (optimizer state NOT carried over) instead of random init")
     parser.add_argument('--cmd_vx_range', type=float, nargs=2, default=None, metavar=('LO', 'HI'))

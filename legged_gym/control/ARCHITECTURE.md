@@ -6,7 +6,7 @@ RobotUniversityGiar (RUgiar) is a Genesis/Isaac-Gym-based fork of `unitree_rl_gy
 
 ## The Seven Areas
 
-1. **Training** — launches and tracks PPO training/fine-tuning jobs (local subprocess or Kaggle), owns the policy catalog.
+1. **Training** — launches and tracks PPO training/fine-tuning jobs, owns the policy catalog. *Where* a job runs is a separate, extracted concern: the training-backend registry (§1b, `legged_gym/control/backends/`).
 2. **Policy Operations (fuse/distill)** — post-training weight merging and behavior cloning; parallel to Training, not part of it.
 3. **Control** — the live-robot engine: policy switching, safety, WebSocket transport, adapters.
 4. **Web UI** — the browser client for Control, plus the Training/Fuse/Distill forms.
@@ -33,10 +33,26 @@ RobotUniversityGiar (RUgiar) is a Genesis/Isaac-Gym-based fork of `unitree_rl_gy
 - **Robot Driver** (`rugiar_driver.py`) is `TrainingManager`'s primary caller: it calls `start()`, `poll()`, `finalize_policy()` and, on completion, hot-loads the result into the live `PolicySupervisor` — but `training.py` never imports or touches `PolicySupervisor`/`ControlService` itself. That boundary is intentional and load-bearing.
 - **Web UI** calls nearly every `TrainingManager` method directly through Control's WebSocket RPC (`training_catalog`, `start_training`, `estimate_training_time`, etc.) — see Control §3.
 - **CLI** calls `start()`, `start_distillation()`, `fuse_policies()`, `get_policy_order()`/`set_policy_order()` as pure pass-through, blocking on `poll()` itself instead of a driver loop.
-- Spawns `legged_gym/scripts/web_train.py` and `legged_gym/scripts/web_distill.py` as subprocesses; delegates to `legged_gym/control/kaggle_backend.py::KaggleRunner` for the Kaggle backend, `legged_gym/control/fusion.py` and `legged_gym/control/distillation.py` for the actual algorithms.
+- Spawns `legged_gym/scripts/web_train.py` and `legged_gym/scripts/web_distill.py` as subprocesses; delegates to `legged_gym/control/backends/` for the choice of backend (and to `backends/kaggle.py::KaggleRunner` for the Kaggle one — see §1b), `legged_gym/control/fusion.py` and `legged_gym/control/distillation.py` for the actual algorithms.
 - Reads/writes `policies/<name>/`, `.policy_order.json`, `logs/_web_training/history.json`.
 
 **Known risk:** `training.py` mixes six concerns in one 1520-line file (job lifecycle, policy catalog, log parsing, system profiling, fusion/distillation orchestration, Kaggle integration) — the single highest merge-conflict-risk file in the repo. See Collaboration Boundaries below.
+
+### 1b. Training backends — where a job actually runs
+
+**Owns:** `legged_gym/control/backends/` — the registry that answers "where and how does this job run", extracted out of `training.py`. `base.py` holds the `TrainingBackend` descriptor and its hooks (`interpreter`, `prepare_env`, `validate_params`, `preflight`, `launch_remote`); `__init__.py` holds `BACKENDS`, `REQUESTABLE_BACKENDS` and `resolve_training_backend(task, requested)`; one module per backend.
+
+| Backend | Machine | Simulator | Serves | Status |
+|---|---|---|---|---|
+| `local_genesis.py` | this machine, `.venv` | Genesis (CPU today — the descriptor fixes `--headless --cpu`) | locomotion tasks | active |
+| `local_mjlab.py` | this machine, `.venv-mjlab` | mjlab/MuJoCo (CPU forced: `CUDA_VISIBLE_DEVICES=""`) | motion-tracking tasks | active |
+| `kaggle.py` | remote Kaggle kernel, Tesla P100 | Isaac Gym (Genesis's GPU JIT needs Volta+; P100 is Pascal) | locomotion tasks only | active |
+| `local_nvidia.py` | dedicated local NVIDIA GPU | Isaac Lab / Isaac Gym (TBD) | — | **placeholder** |
+| `nvidia_cloud.py` | NVIDIA cloud compute | Isaac Lab / Isaac Gym (TBD) | — | **placeholder**, another team in parallel |
+
+`TrainingManager` never branches on a backend name: it resolves ONE descriptor and drives its hooks. Adding a backend is one new module plus one entry in `BACKENDS` — `REQUESTABLE_BACKENDS` and the "unknown backend" error are derived, never hand-maintained. `job_backend`/`simulator` are *persisted shape* (they land in `meta.json` and the UI) — don't repoint them casually.
+
+Full operator-facing version of this table, plus both venvs' setup: [`docs/compute_backends.md`](../../docs/compute_backends.md).
 
 ---
 
@@ -77,7 +93,7 @@ RobotUniversityGiar (RUgiar) is a Genesis/Isaac-Gym-based fork of `unitree_rl_gy
 | `PolicySupervisor` | `supervisor.py` | Loaded policies, active/pending switch, 15-tick ramp/blend on switch |
 | `SafetyGovernor` | `safety.py` | Fall/NaN detection, forces a damping fallback, gates pending switches |
 | `Selector` (Protocol) | `selector.py` | Autonomous policy proposal; goes through the same safety gate as a human request |
-| `SimAdapter` / `RealAdapter` | `adapter.py` / `deploy/real_adapter.py` | Robot lifecycle (reset, step, manual command, speed limit); `RealAdapter` lives in a separate package so `legged_gym/control/` stays installable without `unitree_sdk2` |
+| `SimAdapter` / `RealAdapter` | `adapter.py` / `deploy_real/real_adapter.py` | Robot lifecycle (reset, step, manual command, speed limit); `RealAdapter` lives in a separate package so `legged_gym/control/` stays installable without `unitree_sdk2` |
 | `Policy` + backends | `policy.py` | Network module + obs_spec; 5 auto-detected checkpoint formats |
 
 **Entry points:** `ControlService` methods, reachable only through `ControlServer`'s WebSocket RPC (30 methods — `request_switch`, `set_command`, `pause`/`resume`/`estop`, `restart`, plus every Training/Policy-Ops method listed above, reflected through here for the Web UI). One exception: `request_switch`, `pause`, `resume`, `estop` may be called directly off the sim thread (cheap flag-sets only, no I/O) — see the concurrency note below before adding anything else to that path.
@@ -141,7 +157,11 @@ This is the cleanest boundary in the repo and worth preserving deliberately: if 
 
 ### 7. Third-Party Integrations (placeholder)
 
-No code exists in this repo for this area yet, but there's real upstream work to integrate against, in a separate repository — most likely as a new data source or panel surfaced through the Web UI once it lands:
+This area is about **third-party data and ecosystem work**, not compute. Read the routing rule first, because it has been gotten wrong before:
+
+> **Compute integrations do NOT land here, and do not land in the Web UI.** A new place to run training — a dedicated local NVIDIA GPU, NVIDIA cloud, any other cluster — is a **training backend**: it goes in `legged_gym/control/backends/`, where `local_nvidia.py` and `nvidia_cloud.py` are already reserved for exactly that. See §1b and [`docs/compute_backends.md`](../../docs/compute_backends.md). The Web UI only ever gets a new *option* in an existing form, if anything.
+
+What genuinely belongs here is motion/asset data from other projects — no code for it exists in this repo yet, but the upstream work is real:
 
 - **Motion capture → G1 retargeting pipeline.** Markerless motion capture and monocular video2robot extraction, retargeted to G1 joint angles, with PPO-trained RL tracking policies per motion (ONNX-exportable, hardware-deployable). Released dataset: [exptech/g1-moves on Hugging Face](https://huggingface.co/datasets/exptech/g1-moves) — 60 clips (~30 min, dance/karate/bonus), CC-BY-4.0, multiple pipeline stages (raw mocap BVH/FBX, retargeted PKL/CSV, training-ready NPZ, trained PyTorch/ONNX policies). A prebuilt release lives at [jvillalba007/GIAR-moves](https://github.com/jvillalba007/GIAR-moves/releases/tag/1.0.0).
 - **[Motion Viewer](https://giar-mv.9zteam.pp.ua/)** — a standalone, browser-based (WebGL/Three.js) tool for previewing this motion data: drag in a URDF/MJCF + meshes, drag in an `.npz`/`.pkl` motion, get playback with scrubbing, speed control, and trajectory trails. No install, no upload — runs entirely client-side. Useful today for eyeballing a motion clip before deciding whether it's worth retargeting into a RUgiar training run.
@@ -231,7 +251,7 @@ sequenceDiagram
 
 Files below are grouped by area. "Collision risk" flags concurrency invariants, oversized files, or files more than one area reaches into — the places SOLID's Single-Responsibility and Dependency-Inversion principles most directly pay off here: each area should depend on the *interface* another area exposes (RPC methods, `TrainingManager` public methods, the `RobotAdapter` protocol) rather than reaching into its internals.
 
-**Training** — `legged_gym/control/training.py`, `legged_gym/scripts/web_train.py`, `legged_gym/scripts/web_distill.py`, `legged_gym/control/kaggle_backend.py`.
+**Training** — `legged_gym/control/training.py`, `legged_gym/scripts/web_train.py`, `legged_gym/scripts/web_distill.py`, `legged_gym/control/backends/` (the compute-backend registry — see §1b above).
 - Risk: `training.py` is ~1520 lines mixing six concerns (job lifecycle, policy catalog, log parsing, system profiling, fusion/distillation orchestration, Kaggle integration) — the single largest merge-conflict surface in the repo. A Single-Responsibility split (job lifecycle / policy catalog / estimation, as three modules) would materially reduce collisions before more collaborators land here.
 - Risk: `poll()` is documented as **not thread-safe** — it assumes a single-threaded caller (the driver's sim thread or the CLI's own loop). Do not call it from more than one thread without adding locking.
 - Contract risk: `result.json` / `progress.json` schemas are informally documented only in `training.py`'s comments, not in `web_train.py`/`web_distill.py` themselves — changing those scripts' output format can silently break polling.
@@ -239,7 +259,7 @@ Files below are grouped by area. "Collision risk" flags concurrency invariants, 
 **Policy Operations** — `legged_gym/control/fusion.py`, `legged_gym/control/distillation.py`. Orchestration code (`fuse_policies()`, `start_distillation()`) lives inside `training.py`, so a change here often means touching that file too — coordinate with whoever owns Training work in flight.
 - Risk: no isolated ownership of the orchestration path; a Dependency-Inversion cleanup (algorithms depend on a narrow job-lifecycle interface, not directly embedded in `TrainingManager`) would let this area evolve independently of Training's own refactors.
 
-**Control** — `legged_gym/control/service.py`, `transport.py`, `supervisor.py`, `safety.py`, `selector.py`, `adapter.py`, `policy.py`, `deploy/real_adapter.py`, plus `examples/joystick_controller.py` as the reference external client for the WebSocket protocol.
+**Control** — `legged_gym/control/service.py`, `transport.py`, `supervisor.py`, `safety.py`, `selector.py`, `adapter.py`, `policy.py`, `deploy_real/real_adapter.py`, plus `examples/joystick_controller.py` as the reference external client for the WebSocket protocol.
 - Hard invariant: every `ControlService` call except `request_switch`/`pause`/`resume`/`estop` must go through `ControlServer`'s command queue, drained once per sim tick. Adding a new "direct-call" shortcut without re-verifying it's a cheap flag-set (<1ms, no per-tick state) is the most likely way to introduce a race.
 - Risk: `PolicySupervisor.request_switch()` is idempotent by pending-name (second caller in the same tick gets `False`) — human and autonomous `Selector` requests can legitimately race here; this is handled, not a bug, but easy to "fix" incorrectly.
 - Risk: policy deletion currently writes directly to disk from more than one place; Training and Control both touch `policies/<name>/`. Longer-term this should be Training's exclusive responsibility (Dependency Inversion: Control should ask Training to delete, not do it itself).
@@ -255,4 +275,5 @@ Files below are grouped by area. "Collision risk" flags concurrency invariants, 
 - Risk: the two driver scripts are intentionally duplicated (Genesis can't rebuild its scene in-process), guarded only by an AST-based parity test over 8 specific helpers. Changing a helper's signature or behavior in one driver without updating the other, or without checking whether the parity test's helper list still applies, will pass review-by-eye but fail CI.
 - Risk: training jobs are orphaned as background subprocesses if a family switch relaunches the driver process mid-run — no persistent daemon exists yet to survive that.
 
-**Third-Party Integrations** — no files yet. When this lands, expect it to add files under `web/` (per the stated integration point) plus possibly a new area-owned module elsewhere; until then there is nothing to collide with, but also nothing to build against — confirm the actual integration contract with that collaborator before writing code that assumes one.
+**Third-Party Integrations** — no files yet. When motion/asset integration lands, expect it to add files under `web/` (per the stated integration point) plus possibly a new area-owned module elsewhere; until then there is nothing to collide with, but also nothing to build against — confirm the actual integration contract with that collaborator before writing code that assumes one.
+- Routing: a new *compute* target (local NVIDIA GPU, NVIDIA cloud, any cluster) is **not** this area. It is a training backend under `legged_gym/control/backends/` — see §1b. `backends/local_nvidia.py` and `backends/nvidia_cloud.py` are the reserved, unclaimed starting points; nothing else in the repo touches them yet, so they're conflict-free to pick up.

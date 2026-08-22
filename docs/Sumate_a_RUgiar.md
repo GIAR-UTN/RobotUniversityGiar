@@ -2,8 +2,9 @@
 Source of truth for docs/Sumate_a_RUgiar.pdf.
 This file was reconstructed from the existing (never-committed) PDF on 2026-08-19 —
 the PDF predates git tracking of this doc, built live and shared directly.
-Blocks marked "⚠ UPDATE NEEDED" are places where the repo has moved since the PDF
-was made (Aug 12) and this file has NOT been corrected yet — confirm before regenerating the PDF.
+No "⚠ UPDATE NEEDED" blocks remain: they were resolved on 2026-08-22 (broken driver
+filename, install steps for the second venv, Kaggle note, and the new §9 on NVIDIA compute).
+This .md is now AHEAD of Sumate_a_RUgiar.pdf — the PDF still needs regenerating from it.
 -->
 
 # Sumate a RUgiar.
@@ -17,10 +18,10 @@ enseñarle a caminar y moverse a un robot de patas — hoy con humanoides Unitre
 de pruebas concreto, con la ambición puesta más allá de un solo fabricante. **RUgiar** es
 nuestra solución a ese problema: nació como fork de `unitree_rl_gym`, pero ya entrena,
 transforma y opera policies de RL sobre más de un simulador, con una base sólida ya
-funcionando y ocho frentes abiertos esperando a la persona indicada. Sí, vos, vos que estás
+funcionando y nueve frentes abiertos esperando a la persona indicada. Sí, vos, vos que estás
 leyendo esto.
 
-`8 áreas · elegí la tuya` &nbsp; `Ramas cortas, PR simple` &nbsp; `Arrancás hoy`
+`9 áreas · elegí la tuya` &nbsp; `Ramas cortas, PR simple` &nbsp; `Arrancás hoy`
 
 > Lo que hace atractivo este momento para colaborar es que RUgiar recién está arrancando
 > en serio. Hay una base sólida — entrenamiento funcionando, control en vivo funcionando,
@@ -77,14 +78,14 @@ enfrente.
 > no "otro fork más de `unitree_rl_gym`", sino la capa que orquesta todo el ciclo (entrenar →
 > transformar → operar → dejar que un agente lo use) sobre múltiples simuladores, múltiples
 > robots, y múltiples formas de acceder al sistema — CLI, web, y ahora también agentes de IA
-> vía MCP. Lo que sigue es el estado real de esa solución hoy, y las ocho puertas todavía
+> vía MCP. Lo que sigue es el estado real de esa solución hoy, y las nueve puertas todavía
 > abiertas para quien quiera construirla con nosotros.
 
 ---
 
 ## Elegí una y tomá la posta
 
-*LAS 8 ÁREAS*
+*LAS 9 ÁREAS*
 
 El proyecto se divide siguiendo el ciclo de vida de una policy: entrenarla → transformarla →
 manejar con ella un robot. Pensadas para trabajarse en paralelo — cada una tiene dueño
@@ -119,7 +120,7 @@ ni intérprete a mano.
 
 ### §6 · Driver del robot
 El proceso que arma todo y corre el loop del robot, en simulación o real.
-`rugiar_driver.py` · `rugiar_driver_gaze.py`
+`rugiar_driver.py` · `rugiar_driver_target.py` · `rugiar_driver_mjlab.py`
 
 ### §7 · shipped — Motion library, de captura de movimiento a policy entrenada
 Lo que esta sección pedía como "terreno sin dueño" ya se construyó y está validado en vivo:
@@ -134,9 +135,11 @@ panel de rewards con las 9 variables de tracking de este mundo (`motion_body_pos
 `legged_gym/scripts/process_reference_motion_mjlab.py` · `legged_gym/scripts/mjlab_train.py` ·
 `docs/motion_imitation_integration.md` · `docs/mjlab_training_contract.md`
 
-> **Frontera todavía abierta acá:** el pipeline de arriba corre sobre Genesis/mjlab (CPU/Metal,
-> sin depender de NVIDIA). El stack de simuladores NVIDIA (Isaac Lab / Isaac Gym) para este
-> mismo mundo de motion imitation lo está avanzando otro equipo, integración pendiente.
+> **Frontera todavía abierta acá:** el pipeline de arriba corre sobre Genesis/mjlab, en CPU hoy
+> (Metal en Mac es una mejora futura, no implementada — ver `docs/compute_backends.md`), sin
+> depender de NVIDIA. El stack de simuladores NVIDIA (Isaac Lab / Isaac Gym) para este
+> mismo mundo de motion imitation lo está avanzando otro equipo, integración pendiente —
+> el lugar donde entra es §9, `legged_gym/control/backends/nvidia_cloud.py`.
 > Más allá de eso: sumar nuevas fuentes de movimiento — video propio digitalizado, otros
 > datasets de motion capture, captura desde el robot mismo — sigue siendo terreno real para
 > quien se sume. `tu nombre acá`
@@ -157,6 +160,36 @@ sesión viva), el otro solo opera (en vivo, nunca entrena) — ver el diagrama m
 esta rama, ponerla al día, y decidir si conviene sumarle herramientas de entrenamiento (el
 camino ya existe — Control ya reenvía esas RPCs para la web) es terreno abierto entero.
 `rugiar_mcp/server.py` · `rugiar_mcp/control_client.py`
+
+### §9 · abierto — Cómputo: GPU NVIDIA local y en la nube
+
+*SI VENÍS DE NVIDIA, ESTE ES TU LUGAR.*
+
+Hoy hay tres backends de entrenamiento reales y ninguno usa una GPU NVIDIA propia:
+`local-genesis` (Genesis en tu máquina), `local-mjlab` (mjlab en tu máquina, CPU forzado) y
+`kaggle` (kernel remoto con una P100 prestada y un free tier de por medio). Todo el proyecto
+nació justamente de la restricción de no tener una GPU NVIDIA a mano.
+
+Sumar cómputo NVIDIA — una GPU local dedicada, o procesamiento en la nube con Isaac Lab /
+Isaac Gym — es un área con lugar ya reservado y **sin dueño**:
+
+`legged_gym/control/backends/local_nvidia.py` · `legged_gym/control/backends/nvidia_cloud.py`
+
+Los dos archivos existen como placeholders vacíos dentro del paquete de backends. Un backend
+nuevo son dos cosas: los hooks que necesite (intérprete, entorno, preflight de credenciales,
+launch remoto) en su propio archivo, y una entrada en la lista `BACKENDS`. A partir de ahí
+`rugiar train --backend <lo-tuyo>` lo acepta solo — el nombre válido se deriva del registry,
+no se mantiene a mano. Nada más del repo toca esos dos archivos todavía, así que se pueden
+agarrar sin coordinar con nadie.
+
+**Leé esto antes de la primera línea:** `docs/compute_backends.md` — la tabla completa de
+qué corre dónde, con qué simulador y por qué. Y `ARCHITECTURE.md` §1b para las fronteras.
+
+> Ojo con un error de ruteo que ya pasó: un lugar nuevo donde correr entrenamientos **no**
+> es una "integración de terceros" ni un panel de la UI Web. Es un training backend, y va
+> en `legged_gym/control/backends/`.
+
+---
 
 > **Antes de arrancar:** Entrenamiento produce carpetas `policies/<nombre>/` — ese
 > directorio es el contrato con el resto del sistema. Control no se instancia solo, lo arma el
@@ -209,7 +242,7 @@ El resto son sugerencias, no obligaciones:
 
 ---
 
-## Cómo se conectan las ocho áreas
+## Cómo se conectan las áreas
 
 *EL MAPA*
 
@@ -300,9 +333,10 @@ graph LR
 | UI Web | `send()`, `call()`, `applyStatus()` | Más espacio para crecer, más impacto visible, hoy. |
 | CLI | `rugiar.py` | Preservá la ausencia de imports de Control/Driver. |
 | MCP | `rugiar_mcp/server.py` | Empezá poniendo la rama `mcp-base` al día contra `main` — está atrasada, no rota. |
-| Driver del robot | `rugiar_driver.py` | Cambios en helpers compartidos van también a `_gaze.py`. |
+| Driver del robot | `rugiar_driver.py` | Cambios en helpers compartidos van también a `rugiar_driver_target.py` (hay un test de paridad por AST que lo verifica). |
 | Hardware real | `deploy_real/real_adapter.py` | Sin probar en robot físico — si tenés acceso a un G1, sos quien puede cerrar esa brecha. |
 | Integraciones de terceros | Nada todavía | Hablá con quien hace el retargeting, o proponé vos el contrato. |
+| Cómputo NVIDIA (GPU local / nube) | `docs/compute_backends.md`, después `backends/local_nvidia.py` · `backends/nvidia_cloud.py` | Placeholders vacíos, sin dueño y sin conflictos. Un backend = hooks propios + una entrada en `BACKENDS`. |
 
 ---
 
@@ -317,17 +351,21 @@ la nube.
 ### macOS / Linux — nativo
 
 Clonás, armás un entorno virtual de Python 3.12 e instalás las dependencias. Sin GPU no hay
-problema — en Apple Silicon corre sobre CPU o Metal según lo que Genesis detecte.
+problema — corre en CPU (en Apple Silicon, Metal es una mejora futura, no implementada hoy —
+ver `docs/compute_backends.md`).
 
 ```bash
 # 1. clonar y entrar al repo
-git clone https://github.com/josetabuyo/RobotUniversityGiar.git
+git clone https://github.com/GIAR-UTN/RobotUniversityGiar.git
 cd RobotUniversityGiar
 
 # 2. instalador de un comando (hace todo lo de abajo por vos)
 ./install.sh
 # agregá --with-kaggle si también vas a entrenar en Kaggle:
 ./install.sh --with-kaggle
+# agregá --with-mjlab si vas a tocar motion-tracking (Rugiar-G1-Mimic):
+# arma un SEGUNDO venv, .venv-mjlab, obligatoriamente aparte del principal
+./install.sh --with-mjlab
 
 # 3. cada terminal nueva necesita esto:
 source .venv/bin/activate
@@ -338,6 +376,12 @@ export SIMULATOR=genesis
 > README (venv, los `pip install` en el orden correcto, `pip install -e .`) — instalación
 > equivalente, un comando menos para copiar mal. Si preferís los pasos manuales o algo falla,
 > están en `README.md` §2.
+
+> **Por qué dos venvs.** Genesis y mjlab no pueden convivir en el mismo entorno (el repo
+> vendoriza un `rsl_rl/` que le gana al `rsl-rl-lib` de PyPI, y `genesis-world` pinea
+> `mujoco` 3.10 contra el 3.11 que necesita mjlab). Por eso `.venv` (locomoción, CLI, web)
+> y `.venv-mjlab` (motion-tracking) están separados. No tenés que activar el correcto a
+> mano: `rugiar train` elige el intérprete según la task. Ver `docs/compute_backends.md`.
 
 ### Docker Compose — más simple, cualquier sistema (recomendado)
 
@@ -407,14 +451,16 @@ local. Configuración de una sola vez — después, todo `--backend kaggle` func
    ```
 6. Verificá que las credenciales se detectan:
    ```bash
-   python3 -c "from legged_gym.control.kaggle_backend import kaggle_credentials_available; print(kaggle_credentials_available())"
+   python3 -c "from legged_gym.control.backends.kaggle import kaggle_credentials_available; print(kaggle_credentials_available())"
    # debería imprimir True
    ```
 
 > Los jobs de Kaggle corren siempre sobre Isaac Gym (no Genesis) porque el free tier asigna
-> GPUs Pascal (P100), que no soportan el backend GPU de Genesis — detalle completo en
-> `HANDOFF_kaggle_cloud_gpu.md`. No afecta tus corridas locales: `--backend local` sigue
-> usando el `SIMULATOR` que tengas exportado.
+> GPUs Pascal (P100, sm_60) y el JIT de GPU de Genesis necesita Volta+ (sm_70+). Ojo con
+> algo importante: el kernel **clona el repo desde GitHub**, así que entrena el HEAD de la
+> branch remota, no tu working tree — si no pusheaste, tu cambio no viaja. No afecta tus
+> corridas locales: `--backend local` sigue usando el `SIMULATOR` que tengas exportado.
+> Detalle completo de los backends: `docs/compute_backends.md`.
 
 ---
 
@@ -479,7 +525,7 @@ de entrada) ya está pensada para no romperse cada vez que cambia lo que hay deb
 La ambición no es "otro fork mejor" — es que dentro de un tiempo, cuando alguien piense en
 entrenar y operar un humanoide, RUgiar sea la respuesta obvia, sin importar de qué fabricante
 sea el robot. Eso no lo construye una persona ni un fin de semana — se construye área por
-área, PR por PR, con quien se sume ahora mientras las ocho puertas siguen abiertas.
+área, PR por PR, con quien se sume ahora mientras las nueve puertas siguen abiertas.
 
 ---
 
