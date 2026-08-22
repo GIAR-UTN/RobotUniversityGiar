@@ -1782,6 +1782,34 @@ function renderHardwarePanel(info) {
   hardwarePanel.appendChild(choose);
 }
 
+// Which backends this server will actually accept right now. The list
+// itself is the server's (system_info()'s `backends`, derived from the
+// TrainingBackend registry); the only thing filtered here is a remote
+// backend whose credentials aren't set up server-side — a Kaggle job would
+// otherwise fail immediately with a credentials error. The fallback covers
+// an older server that doesn't send `backends` yet.
+function offeredBackends(info) {
+  const all = Array.isArray(info.backends) && info.backends.length
+    ? info.backends
+    : [{ id: 'local', label: 'This machine', remote: false },
+       { id: 'kaggle', label: 'Kaggle (GPU)', remote: true }];
+  return all.filter((b) => (b.id === 'kaggle' ? !!info.kaggle_available : true));
+}
+
+// Rebuilds the "Run on" tabs from that list. Clicks are handled by a
+// delegated listener on the container, so replacing these buttons is safe.
+function renderTrainBackendTabs(backends) {
+  trainBackendTabs.innerHTML = '';
+  backends.forEach((b) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.backend = b.id;
+    btn.textContent = `${b.remote ? '\u2601\uFE0F' : '\uD83D\uDCBB'} ${b.label}`;
+    btn.classList.toggle('active', b.id === trainBackend);
+    trainBackendTabs.appendChild(btn);
+  });
+}
+
 // The suggestion (both the number and the hint text) reflects whichever
 // backend is currently selected — local's is CPU-core-based, Kaggle's comes
 // from a real diagnostic kernel (see kaggle_profile's own comment in
@@ -1814,11 +1842,17 @@ function refreshSystemInfo() {
     updateEnvsHint();
     updateEstimate();
 
-    // Only offer the toggle when ~/.kaggle/kaggle.json exists server-side
-    // (see TrainingManager.system_info()'s kaggle_available) — otherwise
-    // every Kaggle job would just fail immediately with a credentials error.
-    trainBackendRow.hidden = !info.kaggle_available;
-    if (!info.kaggle_available && trainBackend === 'kaggle') {
+    // The choices come from the server's backend registry (see
+    // legged_gym/control/backends/ and system_info()'s `backends`), not from
+    // a list written out here — a new backend descriptor shows up as a new
+    // tab with no change to this file.
+    const offered = offeredBackends(info);
+    renderTrainBackendTabs(offered);
+    // One choice is not a choice: with only 'local' offerable (the usual
+    // case — no ~/.kaggle/kaggle.json server-side, see kaggle_available)
+    // there's nothing to toggle, so the row stays hidden exactly as before.
+    trainBackendRow.hidden = offered.length < 2;
+    if (!offered.some((b) => b.id === trainBackend)) {
       setTrainBackend('local');
       updateCommandPreview();
     }
@@ -2329,7 +2363,7 @@ function updateEstimate() {
         ? (est.iterations < iterations ? 'minutes' : 'iterations')
         : hasMinutes ? 'minutes' : 'iterations';
       // Kaggle's ~3-4min per-job bootstrap (fresh venv + Isaac Gym install,
-      // every job — see kaggle_backend.py) is baked into whatever history
+      // every job — see backends/kaggle.py) is baked into whatever history
       // exists, so it's already reflected in est.seconds; called out
       // separately here because it dominates a SHORT job's wall-clock time
       // in a way local runs never have to account for.
@@ -2354,7 +2388,7 @@ function showTrainError(msg) {
 // label/unit/source/flag/note) and task_defaults()'s 'variables'
 // (task-dependent: reference, refetched on every task/clone-from change).
 // See resolveTarget()/refreshTargetReferences() below.
-let trainBackend = 'local'; // 'local' | 'kaggle' — see #train-backend's click handler below
+let trainBackend = 'local'; // one of system_info()'s `backends` ids — see #train-backend's delegated click handler below
 let targetReference = null; // {value: number|null, label: string} | null
 let targetRange = null;     // [min, max] | null
 
@@ -2512,13 +2546,17 @@ function resolveAllTargets() {
   return Object.fromEntries(TARGET_VAR_KEYS.map((key) => [key, resolveTarget(key)]));
 }
 
-trainBackendTabs.querySelectorAll('button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    setTrainBackend(btn.dataset.backend);
-    updateCommandPreview();
-    updateEnvsHint(); // different backend = different suggested range, see updateEnvsHint()
-    updateEstimate(); // different backend = different history bucket, see estimate()
-  });
+// Delegated, not bound per button: the buttons themselves are rebuilt from
+// system_info()'s `backends` list (see renderTrainBackendTabs()), so binding
+// to the elements that happen to exist at load time would drop the handler
+// the moment a new backend appears in the registry.
+trainBackendTabs.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('button[data-backend]');
+  if (!btn || !trainBackendTabs.contains(btn)) return;
+  setTrainBackend(btn.dataset.backend);
+  updateCommandPreview();
+  updateEnvsHint(); // different backend = different suggested range, see updateEnvsHint()
+  updateEstimate(); // different backend = different history bucket, see estimate()
 });
 
 // ---- reward weights (advanced) — every <Cfg>.rewards.scales term the ----
@@ -2696,10 +2734,13 @@ function restoreTrainFormConfig() {
   if (!cfg) return;
 
   if (cfg.task && trainingCatalog?.tasks?.includes(cfg.task)) trainTask.value = cfg.task;
-  // Only restore 'kaggle' if the toggle is actually offered right now (see
-  // refreshSystemInfo()'s kaggle_available check) — otherwise the row is
-  // hidden and there'd be no visible control to switch back off it.
-  if (cfg.backend === 'kaggle' && !trainBackendRow.hidden) setTrainBackend('kaggle');
+  // Only restore a non-default backend if its tab is actually offered right
+  // now (see refreshSystemInfo()/offeredBackends()) — otherwise there'd be
+  // no visible control to switch back off it.
+  const offeredNow = Array.from(trainBackendTabs.querySelectorAll('button[data-backend]'),
+                                (b) => b.dataset.backend);
+  if (cfg.backend && cfg.backend !== 'local' && !trainBackendRow.hidden
+      && offeredNow.includes(cfg.backend)) setTrainBackend(cfg.backend);
   else setTrainBackend('local');
   if (cfg.base && trainingCatalog?.base_policies?.some((p) => p.name === cfg.base)) {
     trainBase.value = cfg.base;
@@ -3064,7 +3105,7 @@ function jobProgress(job) {
     etaText = 'estimating…'; // iterations_done is 0 — no rate yet
   }
   // Kaggle jobs have no live iterations_done at all while running (see
-  // kaggle_backend.py's module docstring), so with no minutes budget
+  // backends/kaggle.py's module docstring), so with no minutes budget
   // either there's nothing to base a % or ETA on — indeterminate bar.
   return { pct, etaText };
 }
@@ -3097,7 +3138,7 @@ function renderTrainingJobs(jobs) {
   // what actually shows live progress instead of a static "training…".
   //
   // A Kaggle job has no iterations_done signal at all while running (see
-  // kaggle_backend.py's module docstring — no live progress, just queued/
+  // backends/kaggle.py's module docstring — no live progress, just queued/
   // running/complete) — without something else in the key, its card would
   // freeze at whatever elapsed_s happened to be on the FIRST render and
   // never move again, which is exactly what happened here. A coarse 5s

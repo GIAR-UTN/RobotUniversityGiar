@@ -28,6 +28,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from legged_gym.control import backends as backends_mod  # noqa: E402
 from legged_gym.control import training as training_mod  # noqa: E402
 from legged_gym.control.training import (  # noqa: E402
     BACKENDS, REQUESTABLE_BACKENDS, TrainingBackend, TrainingJob, TrainingManager,
@@ -184,7 +185,12 @@ class TestExtensibility(unittest.TestCase):
             prepare_env=_prepare_env,
             validate_params=_validate,
         )
-        with mock.patch.object(training_mod, "BACKENDS", BACKENDS + [fake]), \
+        # Patched on the registry package (where BACKENDS lives now) AND on
+        # training (which imported both names into its own namespace).
+        with mock.patch.object(backends_mod, "BACKENDS", BACKENDS + [fake]), \
+                mock.patch.object(backends_mod, "REQUESTABLE_BACKENDS",
+                                  REQUESTABLE_BACKENDS + ("pretend-gpu",)), \
+                mock.patch.object(training_mod, "BACKENDS", BACKENDS + [fake]), \
                 mock.patch.object(training_mod, "REQUESTABLE_BACKENDS",
                                   REQUESTABLE_BACKENDS + ("pretend-gpu",)), \
                 _pin_registries(None, {"g1"}), \

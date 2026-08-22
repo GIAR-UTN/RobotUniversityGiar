@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for legged_gym/control/kaggle_backend.py's Clone-from base
+Unit tests for legged_gym/control/backends/kaggle.py's Clone-from base
 checkpoint mount-miss handling — a real, reproduced Kaggle flake: a
 kernel session can start with an empty /kaggle/input/<dataset>/ even after
 dataset_status() reported "ready" (confirmed twice on real jobs, see
@@ -18,7 +18,7 @@ KaggleRunner._run()'s own comments). Covers:
 
 Same package-stub trick as test_training_estimate.py/test_push_direction.py
 — legged_gym/__init__.py unconditionally requires a SIMULATOR env var and
-imports a physics backend, neither of which kaggle_backend.py itself needs
+imports a physics backend, neither of which backends/kaggle.py itself needs
 (its one real dependency, the `kaggle` package, is imported lazily inside
 KaggleRunner._run() — stubbed out here with a fake instead of installed).
 
@@ -48,8 +48,8 @@ def _stub_package(dotted_name: str):
 for _pkg in ("legged_gym", "legged_gym.control"):
     _stub_package(_pkg)
 
-import legged_gym.control.kaggle_backend as kaggle_backend
-from legged_gym.control.kaggle_backend import KaggleRunner, _build_kernel_script
+import legged_gym.control.backends.kaggle as kaggle_backend
+from legged_gym.control.backends.kaggle import KaggleRunner, _build_kernel_script
 
 
 class TestBuildKernelScript(unittest.TestCase):

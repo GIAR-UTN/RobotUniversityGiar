@@ -1,6 +1,6 @@
 # Migrating to mjlab — plan and progress
 
-Successor to `HANDOFF_mjlab_migration.md` (repo root), which has the
+Successor to `docs/handoffs/HANDOFF_mjlab_migration.md`, which has the
 decision history and narrative. This doc is the live migration plan and
 technical reference. Written 2026-08-17/18, phased execution starts here.
 

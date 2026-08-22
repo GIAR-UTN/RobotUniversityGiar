@@ -938,7 +938,7 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
           <table>
             <tr><th>Runs on</th><th>What actually picks the simulator</th></tr>
             <tr><td class="k">Local</td><td>This machine's normal Python (3.10+), <code>SIMULATOR=genesis</code> exported before <code>web_train.py</code> runs. By hand, <code>switch_simulator.sh</code> does the same thing via a dedicated conda env (<code>lr_gym</code>/<code>lr_gen</code>/<code>lr_lab</code> — Isaac Gym's old numpy/pandas/scipy pins can't coexist with Genesis's in one interpreter).</td></tr>
-            <tr><td class="k">Kaggle</td><td>A Python 3.8 venv bootstrapped fresh inside the kernel, Isaac Gym Preview 4 + pinned <code>torch==2.3.1+cu121</code> — <code>web_train.py</code> runs under <em>that</em> interpreter. See <code>kaggle_backend.py</code>'s <code>_build_kernel_script()</code>.</td></tr>
+            <tr><td class="k">Kaggle</td><td>A Python 3.8 venv bootstrapped fresh inside the kernel, Isaac Gym Preview 4 + pinned <code>torch==2.3.1+cu121</code> — <code>web_train.py</code> runs under <em>that</em> interpreter. See <code>legged_gym/control/backends/kaggle.py</code>'s <code>_build_kernel_script()</code>.</td></tr>
           </table>
         </div>
 
@@ -983,7 +983,7 @@ cos_phase = torch.cos(2 * np.pi * self.phase)
       <section id="control-arch">
         <div class="num">§12 — this fork</div>
         <h2>Switching policies live</h2>
-        <p>Having two policies that both control the same G1 raises an obvious question: can you change which one is driving the robot <em>while it's running</em> — in the simulator, and eventually on the real robot — without restarting anything? This section is the short version; the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar#4-architecture" target="_blank" rel="noopener">root README</a> has the full design write-up.</p>
+        <p>Having two policies that both control the same G1 raises an obvious question: can you change which one is driving the robot <em>while it's running</em> — in the simulator, and eventually on the real robot — without restarting anything? This section is the short version; the repo's <a href="https://github.com/GIAR-UTN/RobotUniversityGiar#4-architecture" target="_blank" rel="noopener">root README</a> has the full design write-up.</p>
 
         <p class="lead-q">Three things go wrong if you just reassign which network gets called each tick:</p>
         <ul>
@@ -1208,7 +1208,7 @@ def step(self, obs):
         </div>
 
         <h3>Docker, kept current</h3>
-        <p>The Docker Compose setup this whole demo runs on — <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>docker-entrypoint.sh</code>'s auto-discovery of every checkpoint in <code>./policies/</code>, and working CUDA passthrough — was contributed by <a href="https://github.com/RawthiL" target="_blank" rel="noopener">Ramiro R. C. (RawthiL)</a>, not the original author: real evidence the "everyone adds what they can" model below is already working, not just an aspiration. See the root <a href="https://github.com/josetabuyo/RobotUniversityGiar#docker-compose-recommended-for-reproducible-runs" target="_blank" rel="noopener">README's Docker Compose section</a> for the full up-to-date instructions (GPU overlay, environment variables, what gets mounted) — it's kept current as the control stack grows, most recently to auto-discover <code>.onnx</code> checkpoints (community releases that only ship ONNX) exactly like <code>.pt</code> ones.</p>
+        <p>The Docker Compose setup this whole demo runs on — <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>docker-entrypoint.sh</code>'s auto-discovery of every checkpoint in <code>./policies/</code>, and working CUDA passthrough — was contributed by <a href="https://github.com/RawthiL" target="_blank" rel="noopener">Ramiro R. C. (RawthiL)</a>, not the original author: real evidence the "everyone adds what they can" model below is already working, not just an aspiration. See the root <a href="https://github.com/GIAR-UTN/RobotUniversityGiar#docker-compose-recommended-for-reproducible-runs" target="_blank" rel="noopener">README's Docker Compose section</a> for the full up-to-date instructions (GPU overlay, environment variables, what gets mounted) — it's kept current as the control stack grows, most recently to auto-discover <code>.onnx</code> checkpoints (community releases that only ship ONNX) exactly like <code>.pt</code> ones.</p>
 
         <h3>Who's comfortable where</h3>
         <div class="plate">
@@ -1427,7 +1427,7 @@ rugiar train --list_policies
 rugiar fuse --list_fusion_methods
 rugiar order --show   # the display order a downstream control layer offers policies in</code></pre>
         </details>
-        <p>The live, authoritative reference for every flag is always <code>rugiar &lt;subcommand&gt; --help</code> — see the <code>rugiar</code> skill below for a maintained snapshot, and the root <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">README</a> for the full quick-start.</p>
+        <p>The live, authoritative reference for every flag is always <code>rugiar &lt;subcommand&gt; --help</code> — see the <code>rugiar</code> skill below for a maintained snapshot, and the root <a href="https://github.com/GIAR-UTN/RobotUniversityGiar" target="_blank" rel="noopener">README</a> for the full quick-start.</p>
 
         <h3><code>rugiar_mcp</code> — talking to a <em>live</em> robot from an AI agent</h3>
         <p>Where the CLI only ever reaches training, <code>rugiar_mcp</code> is the exact mirror image: an <a href="https://modelcontextprotocol.io/" target="_blank" rel="noopener">MCP</a> server exposing a <em>running</em> session — <code>rugiar_driver.py</code>, already up and driving a robot — as tools any MCP-speaking agent can call, over the identical WebSocket JSON-RPC protocol the control web and <code>examples/joystick_controller.py</code> already speak (<a href="#control-protocol">§13</a>) — no new wire format, no second implementation of "how to talk to a robot" to keep in sync.</p>
@@ -1527,7 +1527,7 @@ rugiar order --show   # the display order a downstream control layer offers poli
       <section id="credits" style="border-bottom:none;">
         <div class="num">§18 — reference</div>
         <h2>Credits &amp; license</h2>
-        <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/josetabuyo/RobotUniversityGiar" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
+        <p><code>unitree_rl_gym</code> is released under the BSD 3-Clause license and builds on several open projects: <strong>legged_gym</strong> (ETH Zürich Robotic Systems Lab) for the training environment, <strong>rsl_rl</strong> (also ETH Zürich) for the PPO implementation, <strong>MuJoCo</strong> (Google DeepMind) for sim2sim, and <strong>unitree_sdk2_python</strong> (Unitree Robotics) for real-hardware communication. This fork additionally builds on <strong><a href="https://github.com/lupinjia/LeggedGym-Ex" target="_blank" rel="noopener">LeggedGym-Ex</a></strong> (the Genesis/Isaac Sim port) and <strong><a href="https://github.com/Genesis-Embodied-AI/Genesis" target="_blank" rel="noopener">Genesis</a></strong> itself. See the repo's <a href="https://github.com/GIAR-UTN/RobotUniversityGiar" target="_blank" rel="noopener">root README</a> for the full architecture write-up and setup instructions.</p>
       </section>
 
     </div>

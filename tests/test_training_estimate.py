@@ -40,6 +40,7 @@ def _stub_package(dotted_name: str):
 for _pkg in ("legged_gym", "legged_gym.control"):
     _stub_package(_pkg)
 
+import legged_gym.control.backends as backends_mod
 import legged_gym.control.training as training_mod
 from legged_gym.control.training import (
     BACKENDS, REQUESTABLE_BACKENDS, TrainingBackend, TrainingManager, TrainingJob,
@@ -185,7 +186,11 @@ class TestEstimateBackendSimulatorGrouping(unittest.TestCase):
              "max_iterations": 5, "num_envs": 4, "elapsed_s": 2.0},  # rate: 0.1 s/(iter*env)
         ]
         mgr = _manager_with_history(history)
-        with mock.patch.object(training_mod, "BACKENDS", BACKENDS + [fake]), \
+        # Patched on the registry package (where BACKENDS lives now) AND on
+        # training (which imported both names into its own namespace).
+        with mock.patch.object(backends_mod, "BACKENDS", BACKENDS + [fake]), \
+                mock.patch.object(backends_mod, "REQUESTABLE_BACKENDS", REQUESTABLE_BACKENDS + ("pretend-gpu",)), \
+                mock.patch.object(training_mod, "BACKENDS", BACKENDS + [fake]), \
                 mock.patch.object(training_mod, "REQUESTABLE_BACKENDS", REQUESTABLE_BACKENDS + ("pretend-gpu",)), \
                 _pin_registries(None, {"g1"}):
             est_pretend = mgr.estimate(num_envs=4, max_iterations=5, backend="pretend-gpu", task="g1")
