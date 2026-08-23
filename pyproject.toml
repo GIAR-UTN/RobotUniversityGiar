@@ -31,7 +31,7 @@ isaacgym = [
     # wheels don't exist on PyPI, only on download.pytorch.org/whl/cu121, so
     # a plain `pip install -e .[isaacgym]` against the default index always
     # hits ResolutionImpossible on this pin. Install torch from that index
-    # explicitly BEFORE this extra (see kaggle_backend.py's gpu_lines for
+    # explicitly BEFORE this extra (see legged_gym/control/backends/kaggle.py's gpu_lines for
     # the Genesis-path precedent, and the colleague's proven Kaggle recipe
     # this mirrors) -- one place owns the torch pin, the place that knows
     # the target hardware.

@@ -17,9 +17,10 @@ only inside this thread's run().
 
 The repo this pushes to Kaggle is cloned fresh from GitHub inside the kernel
 itself (see _build_kernel_script) rather than uploaded as a Kaggle Dataset —
-only possible because this repo is public (github.com/josetabuyo/
-RobotUniversityGiar). That keeps `kernels_push` fast (a few KB of script, not a
-multi-GB upload of checkpoints/venvs/logs), which matters because push still
+only possible because this repo is public (github.com/GIAR-UTN/
+RobotUniversityGiar — the team's active repo; the personal josetabuyo/ fork
+is discontinued as a source). That keeps `kernels_push` fast (a few KB of
+script, not a multi-GB upload of checkpoints/venvs/logs), which matters because push still
 runs on this background thread's timeline, not the sim thread's — but a slow
 push would still delay this thread noticing failures, so keeping it fast is
 worth doing anyway. It does mean a Kaggle job trains whatever is on the
@@ -36,7 +37,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-REPO_URL = "https://github.com/josetabuyo/RobotUniversityGiar.git"
+REPO_URL = "https://github.com/GIAR-UTN/RobotUniversityGiar.git"
 DEFAULT_BRANCH = "main"
 POLL_INTERVAL_S = 15  # how often this thread (never the sim thread) checks kernels_status
 # Kaggle's own GPU session cap is ~12h; bail well before that so a stuck/orphaned
@@ -491,3 +492,54 @@ class KaggleRunner(threading.Thread):
 
         with open(self.result_path, "w") as f:
             json.dump(result, f)
+
+
+# ---- the registry descriptor (see backends/__init__.py) ----
+#
+# Kept at the bottom, after KaggleRunner, so the module reads as
+# "the runner, then the one-line declaration of how the registry uses it".
+
+from legged_gym.control.backends import base            # noqa: E402
+from legged_gym.control.backends.base import TrainingBackend  # noqa: E402
+
+
+def kaggle_preflight() -> None:
+    if not kaggle_credentials_available():
+        raise ValueError(
+            "no Kaggle credentials found at ~/.kaggle/kaggle.json — the Kaggle backend "
+            "isn't set up on this machine")
+
+
+def kaggle_launch_remote(manager, job, ctx: dict) -> None:
+    runner = KaggleRunner(
+        job_id=job.id, train_flags=ctx["train_flags"],
+        result_path=ctx["result_path"], log_path=ctx["log_path"],
+        base_checkpoint_path=Path(ctx["from_checkpoint"]) if ctx["from_checkpoint"] else None,
+    )
+    # kaggle_kernel_slug stays None until poll() sees runner.kernel_ref
+    # populated (set inside the background thread once its push succeeds).
+    manager._kaggle_runners[job.id] = runner
+    runner.start()
+
+
+BACKEND = TrainingBackend(
+    id="kaggle",
+    requested_as="kaggle",
+    # Genesis-only, and not by omission: the kernel bootstrap installs
+    # Isaac Gym specifically (see _build_kernel_script above).
+    task_stack="genesis",
+    job_backend="kaggle",
+    # Genesis's GPU JIT needs Volta+ (sm_70+) hardware Kaggle's free-tier
+    # P100 (Pascal, sm_60) doesn't have — see TrainingJob.simulator.
+    simulator="isaacgym",
+    command_prefix="rugiar train --backend kaggle ",
+    script=base.TRAIN_SCRIPT,
+    remote=True,
+    preflight=kaggle_preflight,
+    launch_remote=kaggle_launch_remote,
+    accepts_local_checkpoint=False,
+    unsupported_task_stack_error=(
+        "the Kaggle backend doesn't support mjlab tasks (its bootstrap is "
+        "IsaacGym-specific)"),
+    label="Kaggle (GPU)",
+)

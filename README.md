@@ -38,7 +38,7 @@ This codebase splits into seven areas along a policy's lifecycle: train it, tran
 
 | Area | What it is |
 |---|---|
-| **Training** | Launches/tracks PPO training and fine-tuning jobs (local or Kaggle), owns the policy catalog. `legged_gym/control/training.py`. |
+| **Training** | Launches/tracks PPO training and fine-tuning jobs (local Genesis, local mjlab, or Kaggle), owns the policy catalog. `legged_gym/control/training.py`; the backend registry that decides *where* a job runs is `legged_gym/control/backends/` — see [`docs/compute_backends.md`](docs/compute_backends.md). |
 | **Policy Operations** (fuse/distill) | Post-training weight merging (`rugiar fuse`, §2 above) and behavior cloning any policy — including ones with no `train_checkpoint.pt` — into a fresh fine-tunable one (`rugiar distill`). `legged_gym/control/fusion.py`, `distillation.py`. |
 | **Control** | The live-robot engine: policy switching, safety gating, WebSocket transport, sim/real adapters — the subject of §3–§5 below. `legged_gym/control/`. |
 | **Web UI** | The browser client: the unified control page plus the Training/Fuse/Distill forms. `web/`. |
@@ -62,7 +62,7 @@ This codebase splits into seven areas along a policy's lifecycle: train it, tran
 ## 2. Setup
 
 ```bash
-git clone https://github.com/josetabuyo/RobotUniversityGiar.git
+git clone https://github.com/GIAR-UTN/RobotUniversityGiar.git
 cd RobotUniversityGiar
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser
@@ -72,6 +72,20 @@ export SIMULATOR=genesis   # required — legged_gym refuses to import without t
 ```
 
 Or run `./install.sh` (macOS/Linux) instead of the `pip install` lines above — same steps, one command (`./install.sh --with-kaggle` also pulls in the Kaggle cloud-training extra — see the `rugiar` skill's "Setting up Kaggle for cloud training" for the account/token side of that).
+
+#### The second venv: `.venv-mjlab` (motion-tracking tasks)
+
+The steps above build `.venv` — Genesis locomotion tasks (`g1`, `go2`, …), the `rugiar` CLI, the control web, the Kaggle backend. **mjlab motion-tracking tasks (`Rugiar-G1-Mimic`) need a second, separate venv**: this repo vendors a top-level `rsl_rl/` that shadows PyPI's `rsl-rl-lib`, and `genesis-world` pins `mujoco` 3.10 while mjlab needs 3.11 — they cannot share one environment (see `docs/mjlab_migration.md` R1).
+
+```bash
+./install.sh --with-mjlab      # builds .venv-mjlab alongside .venv
+# or by hand:
+python3.12 -m venv .venv-mjlab
+.venv-mjlab/bin/pip install --upgrade pip
+.venv-mjlab/bin/pip install -e .[mjlab]
+```
+
+You never activate it yourself — `rugiar train` picks the right interpreter from the task. Skip it if you're only doing locomotion. Which backend runs where, and why there are two: [`docs/compute_backends.md`](docs/compute_backends.md).
 
 No GPU required. On Apple Silicon, Genesis will report `Running on [Apple M1/M2/...] with backend gs.metal` — if it silently falls back to CPU, training still works, just slower (this fork's own G1 training ran entirely on CPU; Genesis's Metal path was, at time of writing, inconsistent enough on macOS that we didn't depend on it).
 
@@ -135,13 +149,15 @@ Training (see the project-areas table above) can launch RL jobs on a Kaggle kern
    ```
 6. **Verify it's picked up:**
    ```bash
-   python3 -c "from legged_gym.control.kaggle_backend import kaggle_credentials_available; print(kaggle_credentials_available())"
+   python3 -c "from legged_gym.control.backends.kaggle import kaggle_credentials_available; print(kaggle_credentials_available())"
    # should print True
    ```
 
-Kaggle jobs always run on Isaac Gym, not Genesis — the free tier's Pascal (P100) GPU can't run Genesis's GPU backend (see `HANDOFF_kaggle_cloud_gpu.md`). Doesn't affect local runs: `--backend local` still uses whatever `SIMULATOR` you have exported. Full walkthrough, including troubleshooting: the `rugiar` skill's "Setting up Kaggle for cloud training".
+Kaggle jobs always run on Isaac Gym, not Genesis — the free tier's Pascal (P100, sm_60) GPU can't run Genesis's GPU backend, whose JIT needs Volta+ (sm_70+); Isaac Gym's PhysX GPU pipeline has no such requirement. Doesn't affect local runs: `--backend local` still uses whatever `SIMULATOR` you have exported. Also note the kernel **clones this repo from GitHub** — it trains the remote branch's HEAD, not your working tree. Full picture of every backend: [`docs/compute_backends.md`](docs/compute_backends.md). Walkthrough and troubleshooting: the `rugiar` skill's "Setting up Kaggle for cloud training".
 
 ### Train a policy
+
+> **Where does this actually run?** Three real backends today — `local-genesis` (Genesis on your machine), `local-mjlab` (mjlab on your machine, `.venv-mjlab`), `kaggle` (remote kernel, Isaac Gym, P100) — plus reserved slots for a dedicated local NVIDIA GPU and NVIDIA cloud. One table with all of it, including how to add a new one: [`docs/compute_backends.md`](docs/compute_backends.md).
 
 ```bash
 python legged_gym/scripts/train.py --task=g1 --headless --cpu --num_envs=64 --max_iterations=1800

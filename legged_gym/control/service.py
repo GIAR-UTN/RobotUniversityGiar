@@ -442,7 +442,7 @@ class ControlService:
         per-term sign convention (positive rewards more of that term,
         negative penalizes it). backend='kaggle' runs this same job on a
         Kaggle GPU kernel instead of a local CPU subprocess — see
-        TrainingManager.start()/kaggle_backend.py; only available when
+        TrainingManager.start()/backends/kaggle.py; only available when
         system_info()['kaggle_available'] is true, and Clone-from
         (base_policy/from_checkpoint) isn't supported on it yet.
         motion_file is the reference-motion clip to train against — REQUIRED
