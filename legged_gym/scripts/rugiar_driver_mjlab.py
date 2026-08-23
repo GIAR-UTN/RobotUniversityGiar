@@ -101,18 +101,51 @@ def parse_policy_args(policy_args):
     return policies
 
 
+def _sibling_meta_field(checkpoint_path: str, field: str) -> Optional[str]:
+    """A single string field from the policies/<name>/meta.json sitting
+    next to `checkpoint_path`, or None if there's no readable one. Shared
+    by _sibling_meta_task() and _motion_file_for_active_policy()."""
+    if checkpoint_path is None:
+        return None
+    meta_path = os.path.join(os.path.dirname(checkpoint_path), "meta.json")
+    try:
+        with open(meta_path) as f:
+            return json.load(f).get(field)
+    except (OSError, ValueError):
+        return None
+
+
 def _sibling_meta_task(checkpoint_path: str) -> Optional[str]:
     """The `task` field of the policies/<name>/meta.json sitting next to
     `checkpoint_path`, or None if there's no readable one. Same guard
     rugiar_driver.py applies to an explicit --policy: a checkpoint trained
     for a different task must not be silently loaded here just because its
     obs/action sizes happen to line up."""
-    meta_path = os.path.join(os.path.dirname(checkpoint_path), "meta.json")
-    try:
-        with open(meta_path) as f:
-            return json.load(f).get("task")
-    except (OSError, ValueError):
+    return _sibling_meta_field(checkpoint_path, "task")
+
+
+def _motion_file_for_active_policy(cli, policy_paths: dict,
+                                   discovered: dict) -> Optional[str]:
+    """The reference-motion clip the ACTIVE policy was trained against, if
+    its meta.json records one (`discover_local_policies()` surfaces it as
+    'motion_file'; an explicit `--policy` spec's sibling meta.json is read
+    via _sibling_meta_field()). Returns None when there's no active policy
+    or it doesn't record a clip.
+
+    Only consulted when --motion_file was NOT explicitly given — an
+    explicit flag always wins (see main(), where this defaults to None so
+    "not given" is distinguishable). A policy only looks right against the
+    clip it was trained on — docs/mjlab_migration.md R3: model_7000 tracks
+    robot_motion.npz with 0 falls but falls 4-10x against dance1_subject2,
+    so auto-picking the active policy's own clip is what makes
+    `--policy javier_mjlab_model_7000:...` work out of the box."""
+    active = cli.active or next(iter(policy_paths), None)
+    if active is None:
         return None
+    info = discovered.get(active)
+    if info is not None:
+        return info.get("motion_file")
+    return _sibling_meta_field(policy_paths.get(active), "motion_file")
 
 
 def _script_for_task(task: str) -> str:
@@ -405,10 +438,12 @@ def main():
                              "port and, unless --headless, serves the same unified control web "
                              "(web/index.html) at http://localhost:<control_port>/ that the Genesis "
                              "drivers serve.")
-    parser.add_argument('--motion_file', type=str, default=DEFAULT_MOTION,
+    parser.add_argument('--motion_file', type=str, default=None,
                         help="reference motion .npz the tracking task follows (mjlab format — see "
                              "legged_gym/scripts/process_reference_motion_mjlab.py). One clip per "
-                             "session: switching dances means switching policies (R8).")
+                             "session: switching dances means switching policies (R8). "
+                             "Default: the ACTIVE policy's own meta.json motion_file when it has "
+                             "one, else " + DEFAULT_MOTION + ".")
     parser.add_argument('--device', type=str, default=None,
                         help="torch/mujoco-warp device ('cpu', 'cuda:0'). Default: auto-detect "
                              "-- 'cuda:0' when a CUDA context is actually usable, else 'cpu'. "
@@ -420,21 +455,29 @@ def main():
 
     device = _resolve_device(cli.device)
 
+    # Resolve the reference-motion clip BEFORE building the env (the motion
+    # file is baked into the env's motion command term at construction).
+    # --motion_file explicitly given wins; otherwise prefer the ACTIVE
+    # policy's own recorded clip (a policy only looks right against what it
+    # was trained on — R3, model_7000 vs dance1_subject2); only then the
+    # hardcoded default.
+    training = TrainingManager()
+    policy_paths = parse_policy_args(cli.policy_specs)
+    discovered = training.discover_local_policies(exclude=policy_paths.keys())
+    for name, info in discovered.items():
+        if info["task"] != cli.task:
+            continue  # a different task's obs/action space — see below
+        policy_paths[name] = info["checkpoint"]
+    if cli.motion_file is None:
+        cli.motion_file = _motion_file_for_active_policy(cli, policy_paths, discovered) \
+            or DEFAULT_MOTION
+
     env = build_env(cli.task, cli.motion_file, device, debug_vis=not cli.headless)
     adapter = MjlabAdapter(env)
     num_obs = adapter.get_observations().shape[-1]
     num_actions = env.action_manager.total_action_dim
     print(f"[rugiar_driver_mjlab] task={cli.task!r} obs={num_obs} actions={num_actions} "
           f"motion={cli.motion_file}")
-
-    training = TrainingManager()
-
-    policy_paths = parse_policy_args(cli.policy_specs)
-    discovered = training.discover_local_policies(exclude=policy_paths.keys())
-    for name, info in discovered.items():
-        if info["task"] != cli.task:
-            continue  # a different task's obs/action space — see rugiar_driver.py's same filter
-        policy_paths[name] = info["checkpoint"]
 
     policies, active_name = _load_policies(cli, adapter, num_obs, num_actions, policy_paths)
 

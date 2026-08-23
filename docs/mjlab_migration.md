@@ -266,10 +266,17 @@ session so individual test files don't need to.
 exactly; a future mjlab release could add/reorder actor terms and silently
 break Javier's checkpoints. Phase 4's test is the canary.
 
-**R3 — `model_7000` is not a quality baseline.** 6 terminations/400 steps.
-Unknown which motion it was trained on — Javier's Kaggle log dir
-(`g1_tracking/2026-08-13_06-08-32`) doesn't record it. **Open question for
-Javier.**
+**R3 — `model_7000` is not a quality baseline. Resolved 2026-08-23:** the
+training clip was identified by Javier: `robot_motion.npz`, a 15 s clip
+(750 frames @ 50 Hz) now at
+`resources/reference_motion/unitree_g1/mjlab_run/robot_motion.npz` (supplied
+from the video2robot project). Confirmed closed-loop: `model_7000` against
+its own clip is 0 falls / ~0.10-0.17 m mean body-pos error in 400-750 steps,
+while against `dance1_subject2` it falls 4-10x — the earlier "6
+terminations/400 steps" result was the motion mismatch, not a bad policy.
+`tests/test_javier_checkpoints_track.py` now evaluates each checkpoint
+against its own clip. It is still not the quality baseline; use
+`javier_mjlab_dance1_subject2` for that.
 
 **R4 — MuJoCo vs Genesis contact/numerics differ; policies don't transfer
 across them.** Genesis and mjlab policy catalogs are permanently disjoint —
