@@ -80,6 +80,7 @@ from legged_gym.control import (
     load_policy, damping_policy, TrainingManager,
 )
 from legged_gym.control.transport import ControlServer
+from legged_gym.control.cuda_utils import cuda_is_usable
 
 
 def _encode_camera_frame_jpeg(frame) -> bytes:
@@ -406,11 +407,19 @@ def main():
         if SIMULATOR == "genesis":
             backend = os.environ.get("GENESIS_BACKEND", "cpu").lower()
             if backend == "cuda":
-                try:
+                # Probe BEFORE gs.init(backend=gs.cuda): is_available() returns
+                # True even when the driver can enumerate the GPU but not create
+                # a compute context (wedged GPU / broken GSP -- see
+                # legged_gym/control/cuda_utils.py). Probed first, an unusable
+                # "cuda:0" becomes a clean CPU fallback instead of Genesis's own
+                # scary CUDA_ERROR_OPERATING_SYSTEM spew mid-init.
+                usable, reason = cuda_is_usable()
+                if usable:
                     gs.init(backend=gs.cuda, logging_level='warning')
                     print("Genesis initialised with CUDA backend.")
-                except Exception as e:
-                    print(f"Warning: CUDA backend failed ({e}), falling back to CPU.")
+                else:
+                    print(f"Warning: GENESIS_BACKEND=cuda requested but CUDA is not usable: {reason}.")
+                    print("Running on CPU instead.")
                     gs.init(backend=gs.cpu, logging_level='warning')
             else:
                 gs.init(backend=gs.cpu, logging_level='warning')

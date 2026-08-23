@@ -117,10 +117,19 @@ RUN uv venv --python 3.12 .venv \
 # skipped. Without this venv, the control web's Family panel can't switch to
 # an mjlab task from the container -- _relaunch_for_family() bails with
 # "no mjlab venv at ...". jax (CPU) is an explicit addition: mujoco-warp
-# needs it at runtime and mjlab only lists it as an optional extra.
+# needs it at runtime and mjlab only lists it as an optional extra. Like the
+# main .venv, torch/torchvision are upgraded in place to the CUDA (cu128)
+# build on linux/amd64 so the mjlab family can run on the GPU too --
+# rugiar_driver_mjlab.py now auto-detects cuda:0 (via
+# legged_gym/control/cuda_utils.py) instead of being hard-coded to CPU.
 RUN uv venv --python 3.12 .venv-mjlab \
  && . .venv-mjlab/bin/activate \
  && uv pip install -r pyproject.toml \
+ && if [ "$(uname -m)" = "x86_64" ]; then \
+        echo "x86_64 host: installing CUDA-enabled PyTorch (cu128) into the mjlab venv"; \
+        uv pip install "torch==2.9.0+cu128" "torchvision==0.24.0+cu128" \
+            --extra-index-url https://download.pytorch.org/whl/cu128; \
+    fi \
  && uv pip install "mjlab==1.6.0" "jax"
 
 # ---- Copy the full repository ------------------------------------------------
