@@ -80,6 +80,7 @@ SHARED_FUNCTIONS = [
     "_sibling_meta_simulator",
     "_script_for_task",
     "_bare_g1_policy_specs",
+    "_spawn_or_exec",
     "_relaunch_for_family",
     "_sibling_meta_task",
     "drain_finished_training",

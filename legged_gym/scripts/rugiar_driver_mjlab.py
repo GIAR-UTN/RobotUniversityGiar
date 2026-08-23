@@ -83,6 +83,7 @@ from legged_gym.control import (  # noqa: E402
 )
 from legged_gym.control.mjlab_adapter import MjlabAdapter  # noqa: E402
 from legged_gym.control.transport import ControlServer  # noqa: E402
+from legged_gym.control.cuda_utils import cuda_is_usable  # noqa: E402
 
 DEFAULT_TASK = "Rugiar-G1-Mimic"
 DEFAULT_MOTION = "resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz"
@@ -187,6 +188,28 @@ def _argv_for_family_switch(cli: argparse.Namespace, new_task: str) -> Optional[
     return argv, env
 
 
+def _spawn_or_exec(argv: list, env: dict) -> None:
+    """Dispatch a self-relaunch. Normal (terminal/dev) case: spawn the new
+    driver as a detached child (start_new_session=True) and os._exit() THIS
+    process so the child can rebind the same --control_port/--viser_port.
+    Docker case: when this process is PID 1 (the container's init -- the
+    docker-entrypoint exec's the driver, so it owns the container's whole
+    lifetime), os.execve() the new driver IN PLACE instead, so PID 1 never
+    exits and the container survives the family/motion switch. The new
+    process rebinds the ports either way and the browser's WS client
+    reconnects on its own. Both exit paths skip interpreter cleanup, so
+    callers must flush stdout/stderr first (see _relaunch_for_family())."""
+    if os.getpid() == 1:
+        try:
+            os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
+        except OSError:
+            print("[relaunch] execve failed -- falling back to spawn+exit")
+            sys.stdout.flush()
+            sys.stderr.flush()
+    subprocess.Popen(argv, start_new_session=True, env=env)
+    os._exit(0)  # immediate -- release the port now, no cleanup needed
+
+
 def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
     """Self-relaunch for a different family, mirroring rugiar_driver.py's
     function of the same name (see its docstring for the full why: the new
@@ -203,10 +226,9 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
         return
     argv, env = built
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
-    sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
+    sys.stdout.flush()  # the exit paths below skip normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
-    subprocess.Popen(argv, start_new_session=True, env=env)
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    _spawn_or_exec(argv, env)
 
 
 def _argv_for_motion_switch(cli: argparse.Namespace, new_motion_file: str) -> list:
@@ -232,8 +254,7 @@ def _relaunch_for_motion(cli: argparse.Namespace, new_motion_file: str) -> None:
     print(f"[motion switch] relaunching for motion {new_motion_file!r}: {' '.join(argv)}")
     sys.stdout.flush()  # see _relaunch_for_family()'s identical flush comment above
     sys.stderr.flush()
-    subprocess.Popen(argv, start_new_session=True, env=os.environ.copy())
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    _spawn_or_exec(argv, os.environ.copy())
 
 
 def _load_policies(cli: argparse.Namespace, adapter, num_obs: int, num_actions: int,
@@ -318,6 +339,33 @@ def drain_finished_training(training, supervisor, load_new_policy):
     return loaded
 
 
+def _resolve_device(requested: Optional[str]) -> str:
+    """Resolve the torch/mujoco-warp device from the optional --device request.
+
+    Default (no --device): 'cuda:0' when a CUDA context can actually be created
+    and used, else 'cpu' -- so an mjlab session uses the GPU whenever the host
+    genuinely can (previously it was hard-coded to CPU even on a CUDA host).
+    An explicit --device cuda[:N] is honoured only if the probe succeeds; if
+    the GPU merely ENUMERATES but context creation fails (torch.cuda
+    .is_available() True yet allocations die -- wedged GPU / broken GSP, the
+    same trap gs.init(backend=gs.cuda) falls into -- see
+    legged_gym/control/cuda_utils.py), we fall back to CPU with an actionable
+    message instead of crashing mid-scene-build."""
+    if requested is not None and requested != "cpu":
+        usable, reason = cuda_is_usable(requested)
+        if not usable:
+            print(f"[device] requested {requested!r} but CUDA is not usable: {reason} -- using CPU.")
+            return "cpu"
+        return requested
+    if requested is None:
+        usable, reason = cuda_is_usable()
+        if usable:
+            print("[device] CUDA context usable -- running on cuda:0.")
+            return "cuda:0"
+        print(f"[device] no usable CUDA context ({reason}) -- running on CPU.")
+    return "cpu"
+
+
 def build_env(task: str, motion_file: Optional[str], device: str, debug_vis: bool):
     """One mjlab env, num_envs=1, built from the registered task's PLAY cfg
     (same construction tests/test_javier_checkpoints_track.py validated the
@@ -361,14 +409,18 @@ def main():
                         help="reference motion .npz the tracking task follows (mjlab format — see "
                              "legged_gym/scripts/process_reference_motion_mjlab.py). One clip per "
                              "session: switching dances means switching policies (R8).")
-    parser.add_argument('--device', type=str, default='cpu',
-                        help="torch/mujoco-warp device. CPU on macOS (evaluation-only there, R5).")
+    parser.add_argument('--device', type=str, default=None,
+                        help="torch/mujoco-warp device ('cpu', 'cuda:0'). Default: auto-detect "
+                             "-- 'cuda:0' when a CUDA context is actually usable, else 'cpu'. "
+                             "CPU is forced on macOS (evaluation-only there, R5).")
     parser.add_argument('--token', type=str, default=None,
                         help="shared secret required on every /ws connection (?token=...), same as "
                              "rugiar_driver.py's.")
     cli = parser.parse_args()
 
-    env = build_env(cli.task, cli.motion_file, cli.device, debug_vis=not cli.headless)
+    device = _resolve_device(cli.device)
+
+    env = build_env(cli.task, cli.motion_file, device, debug_vis=not cli.headless)
     adapter = MjlabAdapter(env)
     num_obs = adapter.get_observations().shape[-1]
     num_actions = env.action_manager.total_action_dim
@@ -447,7 +499,7 @@ def main():
             listening_at += f" — unified control web at http://localhost:{cli.control_port}/"
         print(listening_at)
 
-    zero_action = torch.zeros(adapter.num_envs, num_actions, device=cli.device)
+    zero_action = torch.zeros(adapter.num_envs, num_actions, device=device)
 
     def run_headless_smoke_test():
         """No viewer at all: request one switch partway through, purely to
