@@ -187,6 +187,28 @@ def _argv_for_family_switch(cli: argparse.Namespace, new_task: str) -> Optional[
     return argv, env
 
 
+def _spawn_or_exec(argv: list, env: dict) -> None:
+    """Dispatch a self-relaunch. Normal (terminal/dev) case: spawn the new
+    driver as a detached child (start_new_session=True) and os._exit() THIS
+    process so the child can rebind the same --control_port/--viser_port.
+    Docker case: when this process is PID 1 (the container's init -- the
+    docker-entrypoint exec's the driver, so it owns the container's whole
+    lifetime), os.execve() the new driver IN PLACE instead, so PID 1 never
+    exits and the container survives the family/motion switch. The new
+    process rebinds the ports either way and the browser's WS client
+    reconnects on its own. Both exit paths skip interpreter cleanup, so
+    callers must flush stdout/stderr first (see _relaunch_for_family())."""
+    if os.getpid() == 1:
+        try:
+            os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
+        except OSError:
+            print("[relaunch] execve failed -- falling back to spawn+exit")
+            sys.stdout.flush()
+            sys.stderr.flush()
+    subprocess.Popen(argv, start_new_session=True, env=env)
+    os._exit(0)  # immediate -- release the port now, no cleanup needed
+
+
 def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
     """Self-relaunch for a different family, mirroring rugiar_driver.py's
     function of the same name (see its docstring for the full why: the new
@@ -203,10 +225,9 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
         return
     argv, env = built
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
-    sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
+    sys.stdout.flush()  # the exit paths below skip normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
-    subprocess.Popen(argv, start_new_session=True, env=env)
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    _spawn_or_exec(argv, env)
 
 
 def _argv_for_motion_switch(cli: argparse.Namespace, new_motion_file: str) -> list:
@@ -232,8 +253,7 @@ def _relaunch_for_motion(cli: argparse.Namespace, new_motion_file: str) -> None:
     print(f"[motion switch] relaunching for motion {new_motion_file!r}: {' '.join(argv)}")
     sys.stdout.flush()  # see _relaunch_for_family()'s identical flush comment above
     sys.stderr.flush()
-    subprocess.Popen(argv, start_new_session=True, env=os.environ.copy())
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    _spawn_or_exec(argv, os.environ.copy())
 
 
 def _load_policies(cli: argparse.Namespace, adapter, num_obs: int, num_actions: int,

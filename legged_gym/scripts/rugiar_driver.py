@@ -41,10 +41,11 @@ DUPLICATION WARNING: rugiar_driver_target.py is a largely-duplicated sibling of
 this file, not a caller of it (see above for why). Standalone helper
 functions shared verbatim between the two (_encode_camera_frame_jpeg,
 parse_policy_args, _sibling_meta_simulator, _script_for_task,
-_bare_g1_policy_specs, _relaunch_for_family, _sibling_meta_task,
-drain_finished_training) are checked for drift automatically by
-tests/test_driver_family_parity.py — if you change one of those here, that
-test will fail until you mirror the change into rugiar_driver_target.py too.
+_bare_g1_policy_specs, _spawn_or_exec, _relaunch_for_family,
+_sibling_meta_task, drain_finished_training) are checked for drift
+automatically by tests/test_driver_family_parity.py — if you change one of
+those here, that test will fail until you mirror the change into
+rugiar_driver_target.py too.
 main() itself is NOT covered by that test (the target driver legitimately
 interleaves target-aware obs injection into it) — if you change non-target
 control flow inside main() here (argparse setup, policy loading,
@@ -178,13 +179,39 @@ def _bare_g1_policy_specs() -> list:
     return specs
 
 
+def _spawn_or_exec(argv: list, env: dict) -> None:
+    """Dispatch a self-relaunch. Normal (terminal/dev) case: spawn the new
+    driver as a detached child (start_new_session=True) and os._exit() THIS
+    process so the child can rebind the same --control_port/--viser_port.
+    Docker case: when this process is PID 1 (the container's init -- the
+    docker-entrypoint exec's the driver, so it owns the container's whole
+    lifetime), os.execve() the new driver IN PLACE instead, so PID 1 never
+    exits and the container survives the family/motion switch. The new
+    process rebinds the ports either way and the browser's WS client
+    reconnects on its own. Both exit paths skip interpreter cleanup, so
+    callers must flush stdout/stderr first (see _relaunch_for_family())."""
+    if os.getpid() == 1:
+        try:
+            os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
+        except OSError:
+            print("[relaunch] execve failed -- falling back to spawn+exit")
+            sys.stdout.flush()
+            sys.stderr.flush()
+    subprocess.Popen(argv, start_new_session=True, env=env)
+    os._exit(0)  # immediate -- release the port now, no cleanup needed
+
+
 def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -> None:
     """Self-relaunch: spawns a fresh driver process for `new_task` (no
     explicit --policy beyond legacy bare-file ones for 'g1', see
     _bare_g1_policy_specs() -- the new process auto-discovers that task's
     folder-based local policies itself, same mechanism this one used at its
-    own startup), then exits THIS process so the new one can bind the same
-    --control_port/--viser_port. See ControlService.switch_family()'s
+    own startup), then hands off THIS process so the new one can bind the
+    same --control_port/--viser_port -- via _spawn_or_exec(), which either
+    execs the new driver IN PLACE (when this process is PID 1, i.e. inside
+    a Docker container, so the container survives the switch) or spawns it
+    detached and os._exit()s this process (normal terminal launch). See
+    ControlService.switch_family()'s
     docstring for why this is a process-level operation rather than an
     in-process scene rebuild (Genesis's global, once-per-process simulator
     state). The browser's own WS client already retries the connection
@@ -246,10 +273,9 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
         if cli.token:
             argv += ["--token", cli.token]
     print(f"[family switch] relaunching for task {new_task!r}: {' '.join(argv)}")
-    sys.stdout.flush()  # os._exit() below skips normal interpreter cleanup, which would
+    sys.stdout.flush()  # the exit paths below skip normal interpreter cleanup, which would
     sys.stderr.flush()  # otherwise silently drop this line when stdout is a redirected file
-    subprocess.Popen(argv, start_new_session=True, env=env)
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    _spawn_or_exec(argv, env)
 
 
 def _sibling_meta_task(checkpoint_path: str) -> Optional[str]:

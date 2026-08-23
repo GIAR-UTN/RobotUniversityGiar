@@ -102,6 +102,27 @@ RUN uv venv --python 3.12 .venv \
         echo "$(uname -m) host: keeping generic CPU PyTorch (no CUDA wheels for this arch)"; \
     fi
 
+# ---- mjlab venv (family switching to mjlab tasks, e.g. Rugiar-G1-Mimic) -----
+# A second, fully separate venv mirroring the host setup
+# (docs/mjlab_migration.md R1): mjlab pins mujoco~=3.11.0 while the genesis
+# extra pins 3.10.0, and it needs PyPI rsl-rl-lib (installs as `rsl_rl`,
+# colliding by name with this repo's vendored top-level rsl_rl/ package), so
+# it can never share the main .venv. The repo package itself is deliberately
+# NOT pip-installed here -- that would drop the vendored rsl_rl into this
+# venv's site-packages and defeat the sys.path reorder rugiar_driver_mjlab.py
+# applies; legged_gym/mjlab_tasks resolve off the repo root (PYTHONPATH),
+# exactly like the host setup. The repo's BASE dependencies (from
+# pyproject.toml, no extras -- matplotlib/xlsxwriter/torch/... are needed by
+# legged_gym.control) are still installed, only the editable self-install is
+# skipped. Without this venv, the control web's Family panel can't switch to
+# an mjlab task from the container -- _relaunch_for_family() bails with
+# "no mjlab venv at ...". jax (CPU) is an explicit addition: mujoco-warp
+# needs it at runtime and mjlab only lists it as an optional extra.
+RUN uv venv --python 3.12 .venv-mjlab \
+ && . .venv-mjlab/bin/activate \
+ && uv pip install -r pyproject.toml \
+ && uv pip install "mjlab==1.6.0" "jax"
+
 # ---- Copy the full repository ------------------------------------------------
 COPY . .
 
