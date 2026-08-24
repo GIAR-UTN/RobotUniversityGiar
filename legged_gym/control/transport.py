@@ -68,6 +68,7 @@ METHODS = {
     "training_catalog", "start_training", "start_distillation", "system_info",
     "estimate_training_time",
     "task_defaults", "delete_policy", "rename_policy", "policy_info",
+    "get_policy_weight_fingerprint",
     "refresh_local_policies", "fuse_policies",
     "list_families", "switch_family",
     "list_motions", "switch_motion",

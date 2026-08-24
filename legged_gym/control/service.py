@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import torch
 
 from .adapter import RobotAdapter, Lifecycle
+from .policy import weight_fingerprint
 from .safety import SafetyGovernor
 from .selector import Selector
 from .supervisor import PolicySupervisor
@@ -246,6 +247,28 @@ class ControlService:
             return self.training.policy_info(name)
         except (FileNotFoundError, OSError):
             return None
+
+    def get_policy_weight_fingerprint(self, name: str) -> Optional[dict]:
+        """Backs the Policy Info Dock's Weight Fingerprint panel -- real
+        weight tensors read straight from `name`'s loaded checkpoint, one
+        row per 2D weight matrix. Returns None if `name` isn't a currently
+        loaded policy at all (mirrors policy_info()'s own "missing ->
+        None, not an error" convention); returns
+        {"supported": False, "reason": ...} rather than an empty/broken
+        panel when the policy IS loaded but its checkpoint format has no
+        inspectable weights -- see weight_fingerprint()'s docstring for
+        exactly which formats that covers (ONNX-backed policies and the
+        'damping' zero-action fallback)."""
+        policy = self.supervisor.policies.get(name)
+        if policy is None:
+            return None
+        layers = weight_fingerprint(policy.backend)
+        if layers is None:
+            return {
+                "supported": False,
+                "reason": "No inspectable weights for this checkpoint format (ONNX, or the damping fallback).",
+            }
+        return {"supported": True, "layers": layers}
 
     def status(self) -> dict:
         s = self.supervisor.status
