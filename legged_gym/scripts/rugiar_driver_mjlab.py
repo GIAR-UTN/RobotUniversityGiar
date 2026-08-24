@@ -222,25 +222,33 @@ def _argv_for_family_switch(cli: argparse.Namespace, new_task: str) -> Optional[
 
 
 def _spawn_or_exec(argv: list, env: dict) -> None:
-    """Dispatch a self-relaunch. Normal (terminal/dev) case: spawn the new
-    driver as a detached child (start_new_session=True) and os._exit() THIS
-    process so the child can rebind the same --control_port/--viser_port.
-    Docker case: when this process is PID 1 (the container's init -- the
-    docker-entrypoint exec's the driver, so it owns the container's whole
-    lifetime), os.execve() the new driver IN PLACE instead, so PID 1 never
-    exits and the container survives the family/motion switch. The new
-    process rebinds the ports either way and the browser's WS client
-    reconnects on its own. Both exit paths skip interpreter cleanup, so
-    callers must flush stdout/stderr first (see _relaunch_for_family())."""
-    if os.getpid() == 1:
-        try:
-            os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
-        except OSError:
-            print("[relaunch] execve failed -- falling back to spawn+exit")
-            sys.stdout.flush()
-            sys.stderr.flush()
-    subprocess.Popen(argv, start_new_session=True, env=env)
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    """Dispatch a self-relaunch by replacing THIS process IN PLACE with
+    os.execve() -- same PID, same session, same process group, so the new
+    driver stays a foreground terminal job and Ctrl+C keeps working. (That
+    is the bug this replaced: the old "spawn a detached child
+    (start_new_session=True) + os._exit()" path put the new driver in its
+    OWN new session, which the terminal's SIGINT-to-foreground-group never
+    reaches -- so after a family/motion switch the process survived Ctrl+C
+    and kept running, holding --control_port/--viser_port, and the next
+    launch failed with "ControlServer failed to bind ... port likely
+    already in use".) All listening sockets are non-inheritable (PEP 446:
+    socket.socket() defaults to non-inheritable), so execve closes them and
+    the new driver rebinds the same ports without EADDRINUSE. When this
+    process is PID 1 (Docker init -- docker-entrypoint exec's the driver),
+    execve'ing IN PLACE is doubly required: PID 1 never exits and the
+    container survives the family/motion switch. On execve failure (missing
+    interpreter, etc.) fall back to the old spawn-detached + os._exit() so
+    a broken relaunch target can't wedge the current session. All exit
+    paths skip interpreter cleanup, so callers must flush stdout/stderr
+    first (see _relaunch_for_family())."""
+    try:
+        os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
+    except OSError:
+        print("[relaunch] execve failed -- falling back to spawn+exit")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        subprocess.Popen(argv, start_new_session=True, env=env)
+        os._exit(0)  # immediate -- release the port now, no cleanup needed
 
 
 def _relaunch_for_family(cli: argparse.Namespace, new_task: str) -> None:
