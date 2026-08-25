@@ -298,6 +298,14 @@
   .info-chart-grid{stroke:var(--line); stroke-width:1;}
   .info-chart-tick{font-size:5px; fill:var(--muted); font-family:ui-monospace,monospace;}
   .info-chart-caption{font-size:.65rem; color:var(--muted); text-align:right; margin-top:.15rem;}
+  /* Weight fingerprint — real weight tensors from the loaded checkpoint,
+     one colored strip per 2D weight matrix. Always renders first in the
+     dock (see openPolicyInfo() in app.js) so flipping through policies
+     with ↑/↓ puts the visual weight comparison before any text/chart. */
+  #policy-info-weights{padding-bottom:.6rem; margin-bottom:.6rem; border-bottom:1px solid var(--line);}
+  .wf-svg{width:100%; height:auto; display:block;}
+  .wf-label{font-size:6.5px; fill:var(--ink); font-family:ui-monospace,monospace; font-weight:600;}
+  .wf-note{font-size:5.5px; fill:var(--muted); font-family:ui-monospace,monospace;}
   .info-chart-checks-head{display:flex; justify-content:flex-end; margin-top:.5rem;}
   .info-chart-select-all-btn{
     font:inherit; font-size:.65rem; line-height:1; padding:.25rem .5rem; border-radius:5px;

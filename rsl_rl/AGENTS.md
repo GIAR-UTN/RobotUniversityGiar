@@ -115,6 +115,12 @@ rnn_hidden_size = 512
 rnn_num_layers = 1
 ```
 
+**What this looks like as a network:** the actor is a dense MLP — `Observations → 512 → 256 → 128 → Actions`, ELU between hidden layers. Every connection between two neurons is one trained weight; the diagram below draws each weight as a small color chip on its connection (color = sign, size/opacity = magnitude) instead of a plain line, so a layer's weight distribution reads at a glance. Dense layers are sampled (a handful of neurons per layer, dotted gap standing in for the rest) since drawing all 512/256 edges would be illegible; the action layer is shown in full since it's small (12 leg DOF on G1) and each output maps to a real joint. The weights pictured are synthetic/randomly seeded — this illustrates the *architecture*, not a specific checkpoint.
+
+<img src="../docs/assets/policy_network.svg" alt="Policy network diagram: observations flowing through a 512-256-128 MLP to leg-joint actions, with weight chips colored by sign and sized by magnitude" width="100%">
+
+A live version of this — reading weights from the currently loaded `train_checkpoint.pt` instead of synthesizing them — is a natural addition to the Web UI's Policy Info Dock (`web/app.js`, `legged_gym/control/policy.py`; see `legged_gym/control/ARCHITECTURE.md` §4).
+
 ### Runner Parameters (cfg.runner)
 ```python
 num_steps_per_env = 24    # Rollout length

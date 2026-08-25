@@ -3324,8 +3324,19 @@ function openPolicyInfo(name) {
   policyInfoPrev.disabled = idx <= 0;
   policyInfoNext.disabled = idx === -1 || idx >= order.length - 1;
 
-  call('policy_info', { name }).then((info) => {
+  Promise.all([
+    call('policy_info', { name }),
+    // Failure here (older server, policy vanished mid-fetch) shouldn't take
+    // down the rest of the dock — fall back to the "not available" state
+    // renderWeightFingerprint() already knows how to draw for a null fp.
+    call('get_policy_weight_fingerprint', { name }).catch(() => null),
+  ]).then(([info, fp]) => {
     policyInfoBody.innerHTML = '';
+    // Weight fingerprint renders first — see #policy-info-weights in
+    // index.html — so it's the first thing you see even before the
+    // Result chart, per the "eyeball it while flipping through policies"
+    // use case this panel is for.
+    policyInfoBody.appendChild(renderWeightFingerprint(fp));
     policyInfoBody.appendChild(info ? renderPolicyInfo(info) : renderPolicyInfoEmpty());
   }).catch((e) => {
     policyInfoBody.innerHTML = '';
@@ -3334,6 +3345,87 @@ function openPolicyInfo(name) {
     p.textContent = `Couldn't load info: ${e.message}`;
     policyInfoBody.appendChild(p);
   });
+}
+
+// Diverging color, ink-black at zero, same encoding used in docs/index.html's
+// static examples: negative -> teal (--accent2, #1b7a72), positive -> orange
+// (--accent, #d9531a). `a` is a magnitude already normalized to [-1, 1] (the
+// caller divides by this layer's own max |weight| — different layers have
+// wildly different scales, so a fixed global bound would flatten most of
+// them to near-black).
+function weightColor(a) {
+  a = Math.max(-1, Math.min(1, a));
+  if (a >= 0) {
+    return `rgb(${Math.round(a * 217)},${Math.round(a * 83)},${Math.round(a * 26)})`;
+  }
+  const m = -a;
+  return `rgb(${Math.round(m * 27)},${Math.round(m * 122)},${Math.round(m * 114)})`;
+}
+
+// Real weights from the loaded checkpoint, one colored strip per 2D weight
+// matrix (see weight_fingerprint() in legged_gym/control/policy.py for what
+// counts as a row and why some checkpoint formats have none at all).
+function renderWeightFingerprint(fp) {
+  const section = infoSection('Weight fingerprint');
+  section.id = 'policy-info-weights';
+  const cap = document.createElement('div');
+  cap.className = 'info-chart-caption';
+  cap.style.textAlign = 'left';
+  cap.textContent = 'Real weights · diverging color, ink at zero · one strip per weight matrix, own scale per row';
+  section.appendChild(cap);
+
+  if (!fp || !fp.supported || !fp.layers || !fp.layers.length) {
+    const p = document.createElement('p');
+    p.className = 'info-empty';
+    p.textContent = (fp && fp.reason) || 'No inspectable weights for this policy.';
+    section.appendChild(p);
+    return section;
+  }
+
+  const width = 560, stripH = 16, labelH = 12, rowGap = 20;
+  const rowH = labelH + stripH + rowGap;
+  const totalH = fp.layers.length * rowH - rowGap;
+
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${width} ${totalH}`);
+  svg.classList.add('wf-svg');
+  svg.setAttribute('role', 'img');
+  svg.setAttribute('aria-label', 'Weight fingerprint: one colored strip per weight matrix');
+
+  fp.layers.forEach((layer, i) => {
+    const y = i * rowH;
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('x', '0');
+    label.setAttribute('y', String(y + labelH - 2));
+    label.setAttribute('class', 'wf-label');
+    label.textContent = layer.name;
+    svg.appendChild(label);
+
+    const note = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    note.setAttribute('x', String(width));
+    note.setAttribute('y', String(y + labelH - 2));
+    note.setAttribute('text-anchor', 'end');
+    note.setAttribute('class', 'wf-note');
+    note.textContent = layer.shape.join(' × ');
+    svg.appendChild(note);
+
+    const vals = layer.values;
+    const maxAbs = Math.max(1e-6, ...vals.map((v) => Math.abs(v)));
+    const pw = width / vals.length;
+    const stripY = y + labelH;
+    vals.forEach((v, j) => {
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', (j * pw).toFixed(2));
+      rect.setAttribute('y', String(stripY));
+      rect.setAttribute('width', (pw + 0.6).toFixed(2));
+      rect.setAttribute('height', String(stripH));
+      rect.setAttribute('fill', weightColor(v / maxAbs));
+      svg.appendChild(rect);
+    });
+  });
+
+  section.appendChild(svg);
+  return section;
 }
 
 function stepPolicyInfo(delta) {

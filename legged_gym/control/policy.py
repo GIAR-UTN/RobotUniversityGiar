@@ -32,7 +32,7 @@ difference.
 from __future__ import annotations
 
 import dataclasses
-from typing import Protocol
+from typing import Optional, Protocol
 
 import numpy as np
 import torch
@@ -260,3 +260,48 @@ def load_policy(name: str, path: str, num_obs: int, hidden_size: int, num_envs: 
                  description: str = "", device: str = "cpu") -> Policy:
     backend = load_policy_backend(path, hidden_size, num_envs, device=device)
     return Policy(name=name, backend=backend, obs_spec=ObsSpec(num_obs, hidden_size), description=description)
+
+
+def weight_fingerprint(backend: PolicyBackend, max_pixels: int = 480) -> Optional[list]:
+    """Real weight tensors from a loaded policy, downsampled for the web
+    control panel's "weight fingerprint" strip (one row per 2D weight
+    matrix -- Linear/LSTM `weight` params; 1D biases skipped since a
+    single-value-per-row strip isn't a useful picture).
+
+    Only works for the three jit backends (ExplicitStatePolicy/
+    InternalStatePolicy/StatelessPolicy) -- all three keep the loaded
+    module on `.module`, a real torch.jit.ScriptModule, which is a genuine
+    nn.Module subclass so `.named_parameters()` works normally. Returns
+    None for anything else (OnnxStatelessPolicy/OnnxExplicitStatePolicy --
+    only an onnxruntime.InferenceSession, no nn.Module at all --, and
+    ZeroActionBackend -- the damping fallback, no weights whatsoever) so
+    the caller can render a "not available for this checkpoint format"
+    state instead of crashing.
+
+    Row order follows `named_parameters()`'s own order, which for a plain
+    Sequential/composed module tracks definition order (input -> output)
+    -- true for every checkpoint this fork has produced so far, but not a
+    guarantee jit gives you in general, so treat the ordering as "usually
+    right," not load-bearing.
+
+    Each row is downsampled to at most `max_pixels` values via evenly
+    spaced index sampling (not averaging) -- keeps the WebSocket payload
+    small without inventing values that were never actually learned."""
+    module = getattr(backend, "module", None)
+    if module is None:
+        return None
+    layers = []
+    for pname, p in module.named_parameters():
+        if p.dim() != 2:
+            continue
+        vals = p.detach().flatten().cpu().numpy()
+        n = vals.shape[0]
+        if n > max_pixels:
+            idx = np.linspace(0, n - 1, max_pixels).astype(np.int64)
+            vals = vals[idx]
+        layers.append({
+            "name": pname,
+            "shape": list(p.shape),
+            "values": [round(float(v), 5) for v in vals],
+        })
+    return layers
