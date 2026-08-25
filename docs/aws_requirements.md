@@ -68,7 +68,7 @@ El escenario de referencia es una innovaton con ~200 participantes queriendo ent
 
 | Componente | Servicio AWS sugerido | Notas |
 |---|---|---|
-| Workers de entrenamiento (Parte A) | EC2 `g5.xlarge` o `g4dn.xlarge` (1 GPU c/u) en un Auto Scaling Group, 0→8 instancias, o Spot Fleet con fallback on-demand | Spot para bajar costo — los jobs son cortos y tolerantes a interrupción con checkpointing |
+| Workers de entrenamiento (Parte A) | EC2 `g6.4xlarge`/`g6.2xlarge` o `g5.4xlarge`/`g5.2xlarge` (NVIDIA L4/A10G, 1 GPU c/u) en un Auto Scaling Group, 0→8 instancias, o Spot Fleet con fallback on-demand | Spot para bajar costo — los jobs son cortos y tolerantes a interrupción con checkpointing |
 | Cola de jobs | SQS + un scheduler simple (o AWS Batch, que ya trae cola + autoscaling de GPU integrado) | AWS Batch es probablemente el camino de menor esfuerzo para implementar el "semáforo" del §5 |
 | Simulador/viewer (Parte B) | ECS Fargate (contenedores livianos, sin GPU), autoescalado por sesión | Sin necesidad de GPU, costo marginal |
 | Web app (Parte C) | Frontend: Amplify Hosting o S3+CloudFront. Backend/API: ECS Fargate o Lambda. | Estándar |
@@ -80,7 +80,7 @@ El escenario de referencia es una innovaton con ~200 participantes queriendo ent
 
 ## 7. Lo que le pedimos a AWS
 
-1. **Cupo de servicio (service quota) para instancias GPU** en la familia `g5`/`g4dn`: al menos **8 GPUs concurrentes** en la región elegida (hoy el default de una cuenta nueva suele ser 0-1).
+1. **Cupo de servicio (service quota) para instancias GPU** en la familia `g6`/`g5` (NVIDIA L4/A10G): al menos **8 GPUs concurrentes** en la región elegida (hoy el default de una cuenta nueva suele ser 0-1).
 2. **Créditos AWS** para cubrir:
    - Cómputo GPU bajo demanda/spot para entrenamiento: estimamos **~100-150 GPU-hora por evento tipo innovaton** (200 participantes), más un uso continuo bajo del equipo (desarrollo, testing) fuera de eventos — presupuestar algo como **300-500 GPU-hora/mes** de margen mientras el equipo activo desarrolla y prueba.
    - Cómputo liviano (Fargate/EC2 chico) para el simulador y la web app: costo bajo, estimable en el orden de USD 50-150/mes con uso moderado.
@@ -91,4 +91,4 @@ El escenario de referencia es una innovaton con ~200 participantes queriendo ent
 
 ## 8. Resumen para copiar/pegar si hace falta algo más corto
 
-> Necesitamos: (1) cupo de GPU en AWS (familia g5/g4dn, ~8 concurrentes) para entrenamiento RL de policies — jobs cortos (minutos a ~1h), no requieren GPU de alta gama; (2) cómputo liviano sin GPU para servir el simulador web y la app (login/multiusuario); (3) créditos que cubran ~300-500 GPU-hora/mes estimadas, más ~USD 100-200/mes de infraestructura liviana (web, DB, storage). El entrenamiento va a estar limitado por una cola con concurrencia acotada (no todos entrenan a la vez), así que el pico de gasto es predecible y no escala 1:1 con la cantidad de usuarios.
+> Necesitamos: (1) cupo de GPU en AWS (familia g6/g5, NVIDIA L4/A10G, ~8 concurrentes) para entrenamiento RL de policies — jobs cortos (minutos a ~1h), no requieren GPU de alta gama; (2) cómputo liviano sin GPU para servir el simulador web y la app (login/multiusuario); (3) créditos que cubran ~300-500 GPU-hora/mes estimadas, más ~USD 100-200/mes de infraestructura liviana (web, DB, storage). El entrenamiento va a estar limitado por una cola con concurrencia acotada (no todos entrenan a la vez), así que el pico de gasto es predecible y no escala 1:1 con la cantidad de usuarios.

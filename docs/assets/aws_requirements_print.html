@@ -89,7 +89,7 @@ li{margin-bottom:5pt;}
 <h2>6. Propuesta de arquitectura en AWS</h2>
 <table>
 <tr><th>Componente</th><th>Servicio AWS sugerido</th><th>Notas</th></tr>
-<tr><td>Workers de entrenamiento (A)</td><td>EC2 <code>g5.xlarge</code>/<code>g4dn.xlarge</code> (1 GPU c/u) en Auto Scaling Group, 0→8, o Spot Fleet + fallback on-demand</td><td>Spot para bajar costo — jobs cortos, tolerantes a interrupción con checkpointing</td></tr>
+<tr><td>Workers de entrenamiento (A)</td><td>EC2 <code>g6.4xlarge</code>/<code>g6.2xlarge</code> o <code>g5.4xlarge</code>/<code>g5.2xlarge</code> (NVIDIA L4/A10G, 1 GPU c/u) en Auto Scaling Group, 0→8, o Spot Fleet + fallback on-demand</td><td>Spot para bajar costo — jobs cortos, tolerantes a interrupción con checkpointing</td></tr>
 <tr><td>Cola de jobs</td><td>SQS + scheduler, o AWS Batch (cola + autoscaling GPU integrado)</td><td>AWS Batch es el camino de menor esfuerzo para el "semáforo" del §5</td></tr>
 <tr><td>Simulador/viewer (B)</td><td>ECS Fargate, sin GPU, autoescalado por sesión</td><td>Costo marginal</td></tr>
 <tr><td>Web app (C)</td><td>Amplify Hosting o S3+CloudFront (frontend); ECS Fargate o Lambda (API)</td><td>Estándar</td></tr>
@@ -100,7 +100,7 @@ li{margin-bottom:5pt;}
 
 <h2>7. Lo que le pedimos a AWS</h2>
 <ol>
-<li><strong>Cupo de servicio (service quota) GPU</strong> familia <code>g5</code>/<code>g4dn</code>: al menos <strong>8 GPUs concurrentes</strong> en la región elegida (el default de una cuenta nueva suele ser 0-1).</li>
+<li><strong>Cupo de servicio (service quota) GPU</strong> familia <code>g6</code>/<code>g5</code> (NVIDIA L4/A10G): al menos <strong>8 GPUs concurrentes</strong> en la región elegida (el default de una cuenta nueva suele ser 0-1).</li>
 <li><strong>Créditos</strong> para cubrir:
 <ul>
 <li>Cómputo GPU bajo demanda/spot para entrenamiento: ~100-150 GPU-hora por evento tipo innovaton (200 participantes), más uso continuo bajo del equipo fuera de eventos — presupuestar ~<strong>300-500 GPU-hora/mes</strong> de margen.</li>
@@ -111,7 +111,7 @@ li{margin-bottom:5pt;}
 </ol>
 
 <h2>8. Resumen ejecutivo</h2>
-<div class="callout">Necesitamos: (1) cupo de GPU en AWS (familia g5/g4dn, ~8 concurrentes) para entrenamiento RL de policies — jobs cortos (minutos a ~1h), sin necesidad de GPU de gama alta; (2) cómputo liviano sin GPU para el simulador web y la app (login/multiusuario); (3) créditos que cubran ~300-500 GPU-hora/mes estimadas, más ~USD 100-200/mes de infraestructura liviana. El entrenamiento estará limitado por una cola con concurrencia acotada (no todos entrenan a la vez), así que el pico de gasto es predecible y no escala 1:1 con la cantidad de usuarios.</div>
+<div class="callout">Necesitamos: (1) cupo de GPU en AWS (familia g6/g5, NVIDIA L4/A10G, ~8 concurrentes) para entrenamiento RL de policies — jobs cortos (minutos a ~1h), sin necesidad de GPU de gama alta; (2) cómputo liviano sin GPU para el simulador web y la app (login/multiusuario); (3) créditos que cubran ~300-500 GPU-hora/mes estimadas, más ~USD 100-200/mes de infraestructura liviana. El entrenamiento estará limitado por una cola con concurrencia acotada (no todos entrenan a la vez), así que el pico de gasto es predecible y no escala 1:1 con la cantidad de usuarios.</div>
 
 <div class="foot">GIAR — RobotUniversityGiar · docs/aws_requirements.md</div>
 
