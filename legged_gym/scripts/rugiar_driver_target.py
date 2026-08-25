@@ -211,37 +211,44 @@ def _bare_g1_policy_specs() -> list:
 
 
 def _spawn_or_exec(argv: list, env: dict) -> None:
-    """Dispatch a self-relaunch. Normal (terminal/dev) case: spawn the new
-    driver as a detached child (start_new_session=True) and os._exit() THIS
-    process so the child can rebind the same --control_port/--viser_port.
-    Docker case: when this process is PID 1 (the container's init -- the
-    docker-entrypoint exec's the driver, so it owns the container's whole
-    lifetime), os.execve() the new driver IN PLACE instead, so PID 1 never
-    exits and the container survives the family/motion switch. The new
-    process rebinds the ports either way and the browser's WS client
-    reconnects on its own. Both exit paths skip interpreter cleanup, so
-    callers must flush stdout/stderr first (see _relaunch_for_family())."""
-    if os.getpid() == 1:
-        try:
-            os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
-        except OSError:
-            print("[relaunch] execve failed -- falling back to spawn+exit")
-            sys.stdout.flush()
-            sys.stderr.flush()
-    subprocess.Popen(argv, start_new_session=True, env=env)
-    os._exit(0)  # immediate -- release the port now, no cleanup needed
+    """Dispatch a self-relaunch by replacing THIS process IN PLACE with
+    os.execve() -- same PID, same session, same process group, so the new
+    driver stays a foreground terminal job and Ctrl+C keeps working. (That
+    is the bug this replaced: the old "spawn a detached child
+    (start_new_session=True) + os._exit()" path put the new driver in its
+    OWN new session, which the terminal's SIGINT-to-foreground-group never
+    reaches -- so after a family/motion switch the process survived Ctrl+C
+    and kept running, holding --control_port/--viser_port, and the next
+    launch failed with "ControlServer failed to bind ... port likely
+    already in use".) All listening sockets are non-inheritable (PEP 446:
+    socket.socket() defaults to non-inheritable), so execve closes them and
+    the new driver rebinds the same ports without EADDRINUSE. When this
+    process is PID 1 (Docker init -- docker-entrypoint exec's the driver),
+    execve'ing IN PLACE is doubly required: PID 1 never exits and the
+    container survives the family/motion switch. On execve failure (missing
+    interpreter, etc.) fall back to the old spawn-detached + os._exit() so
+    a broken relaunch target can't wedge the current session. All exit
+    paths skip interpreter cleanup, so callers must flush stdout/stderr
+    first (see _relaunch_for_family())."""
+    try:
+        os.execve(argv[0], argv, env)  # replaces this process -- never returns on success
+    except OSError:
+        print("[relaunch] execve failed -- falling back to spawn+exit")
+        sys.stdout.flush()
+        sys.stderr.flush()
+        subprocess.Popen(argv, start_new_session=True, env=env)
+        os._exit(0)  # immediate -- release the port now, no cleanup needed
 
 
 def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -> None:
-    """Self-relaunch: spawns a fresh driver process for `new_task` (no
-    explicit --policy beyond legacy bare-file ones for 'g1', see
-    _bare_g1_policy_specs() -- the new process auto-discovers that task's
-    folder-based local policies itself, same mechanism this one used at its
-    own startup), then hands off THIS process so the new one can bind the
-    same --control_port/--viser_port -- via _spawn_or_exec(), which either
-    execs the new driver IN PLACE (when this process is PID 1, i.e. inside
-    a Docker container, so the container survives the switch) or spawns it
-    detached and os._exit()s this process (normal terminal launch). See
+    """Self-relaunch: replaces THIS process with a fresh driver process for
+    `new_task` (no explicit --policy beyond legacy bare-file ones for 'g1',
+    see _bare_g1_policy_specs() -- the new process auto-discovers that
+    task's folder-based local policies itself, same mechanism this one used
+    at its own startup) via _spawn_or_exec(), which execs the new driver IN
+    PLACE (same PID/session/process group, so Ctrl+C still reaches it --
+    see _spawn_or_exec's docstring for the bug this prevents) and only
+    falls back to spawn-detached + os._exit() if execve itself fails. See
     ControlService.switch_family()'s
     docstring for why this is a process-level operation rather than an
     in-process scene rebuild (Genesis's global, once-per-process simulator
