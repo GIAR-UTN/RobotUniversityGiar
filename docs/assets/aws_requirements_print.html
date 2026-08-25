@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Requerimientos de infraestructura — GIAR / RUgiar</title>
+<style>
+@page { size: 612pt 792pt; margin: 46pt 42pt; }
+*{box-sizing:border-box;}
+body{margin:0; background:#ffffff; color:#1c2430; font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; font-size:9.8pt; line-height:1.5;}
+.eyebrow{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:7.5pt; letter-spacing:.14em; text-transform:uppercase; color:#0f766e; margin:0 0 8pt;}
+h1{font-size:20pt; line-height:1.2; margin:0 0 4pt; letter-spacing:-.01em; font-weight:800; color:#0b1220;}
+.meta{font-size:8.5pt; color:#5b6579; margin-bottom:18pt;}
+h2{font-size:13pt; margin:20pt 0 8pt; font-weight:800; color:#0b1220; border-bottom:1.5pt solid #0f766e; padding-bottom:4pt;}
+h2:first-of-type{margin-top:14pt;}
+h3{font-size:10.5pt; margin:12pt 0 5pt; font-weight:700; color:#0b1220;}
+p{margin:0 0 8pt; color:#2c3646;}
+hr{border:none; border-top:1pt solid #e2e6ec; margin:16pt 0;}
+strong{color:#0b1220;}
+code{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; background:#f1f4f8; color:#0f766e; border-radius:3pt; padding:1pt 4pt; font-size:8.6pt;}
+table{width:100%; border-collapse:collapse; font-size:8.6pt; margin:8pt 0 12pt; page-break-inside:avoid;}
+th{text-align:left; font-size:7.5pt; text-transform:uppercase; letter-spacing:.04em; color:#5b6579; padding:5pt 7pt; border-bottom:1.5pt solid #0b1220; background:#f8fafb;}
+td{padding:6pt 7pt; border-bottom:1pt solid #e2e6ec; color:#2c3646; vertical-align:top;}
+tr:last-child td{border-bottom:1.5pt solid #0b1220;}
+ol,ul{margin:0 0 9pt; padding-left:16pt; color:#2c3646;}
+li{margin-bottom:5pt;}
+.callout{background:#f0fdfa; border-left:3pt solid #0f766e; border-radius:4pt; padding:10pt 13pt; margin:10pt 0 16pt; font-size:9.2pt; color:#134e4a;}
+.callout strong{color:#0f766e;}
+.section{page-break-inside:avoid;}
+.foot{margin-top:26pt; padding-top:10pt; border-top:1pt solid #e2e6ec; font-size:7.8pt; color:#8a93a6;}
+</style>
+</head>
+<body>
+
+<div class="eyebrow">GIAR — RobotUniversityGiar (RUgiar)</div>
+<h1>Requerimientos de infraestructura para AWS</h1>
+<div class="meta">Solicitud de créditos y GPU · 2026-08-25 · Alcance: hosting de entrenamiento, simulador web y app multiusuario</div>
+<div class="callout" style="margin-top:-6pt;">Nota de idioma: los docs de este repo son en inglés por defecto. Este es una excepción explícita — va dirigido al director del GIAR y a AWS.</div>
+
+<h2>1. Qué es la plataforma, en tres partes</h2>
+<p>La app tiene tres cargas de trabajo con perfiles de costo muy distintos. Tratarlas como una sola "instancia grande" sobrestima el gasto — casi todo el costo real está concentrado en una sola de las tres.</p>
+<table>
+<tr><th>Parte</th><th>Qué hace</th><th>Perfil de cómputo</th><th>Costo relativo</th></tr>
+<tr><td><strong>A. Entrenamiento</strong></td><td>Corre RL (PPO) para entrenar/afinar policies de locomoción y motion-tracking</td><td>GPU intensivo, jobs cortos en ráfaga (minutos–~1h)</td><td><strong>Alto</strong> — casi todo el gasto</td></tr>
+<tr><td><strong>B. Simulador en vivo</strong></td><td>Visualización 3D del robot corriendo una policy ya entrenada (inferencia, no entrenamiento)</td><td>Liviano, CPU alcanza, sin GPU</td><td>Bajo</td></tr>
+<tr><td><strong>C. Web app</strong></td><td>Sitio, login, multiusuario, catálogo de policies, compartir/publicar</td><td>Web estándar: API + DB + estático</td><td>Bajo</td></tr>
+</table>
+<p>Hoy A corre local (CPU en laptops) y en Kaggle (GPU gratuita, cola compartida, sin control de prioridad). B y C corren local vía Docker Compose. Nada está hosteado en la nube todavía — este documento es la base para migrar.</p>
+
+<h2>2. Parte A — Entrenamiento (la que necesita GPU)</h2>
+<ul>
+<li>Cada training job es una corrida PPO de un modelo pequeño, no un LLM: minutos a ~1 hora en una GPU chica (clase T4/A10G) — no se necesita una GPU de gama alta tipo A100/H100.</li>
+<li>Referencia real: el free tier de Kaggle (GPU Tesla P100, Pascal) ya alcanza para entrenar — el piso de hardware requerido es bajo.</li>
+<li>Hoy no hay backend NVIDIA propio implementado (ni local ni cloud): son placeholders reservados en el código para esta migración.</li>
+</ul>
+<div class="callout"><strong>Punto crítico de diseño:</strong> el entrenamiento debe pasar por una cola con concurrencia limitada ("semáforo"), no ejecutarse indiscriminadamente — ver §5.</div>
+
+<h2>3. Parte B — Simulador (viewer en la web)</h2>
+<ul>
+<li>Corre inferencia (forward-only) sobre un checkpoint ya entrenado — no reentrena nada. Demostrado corriendo 100% en CPU, incluso en una Mac sin GPU.</li>
+<li>Cada sesión de usuario viendo el robot caminar necesita ~1-2 vCPU y poca RAM. No requiere GPU.</li>
+<li>Escala horizontalmente sin fricción: contenedores livianos, uno por sesión activa.</li>
+</ul>
+
+<h2>4. Parte C — Web app (login, multiusuario, futuro)</h2>
+<ul>
+<li>Próximo hito: login + cuentas + que cada usuarie pueda crear/guardar/compartir sus propias policies.</li>
+<li>Necesita: base de datos (usuarios, catálogo, metadata de runs), storage de archivos (checkpoints de decenas de MB), autenticación, API, frontend estático.</li>
+<li>Es la parte más barata y más estándar de las tres.</li>
+</ul>
+
+<h2>5. El problema a resolver: 200 personas, ¿cuánta GPU en simultáneo?</h2>
+<p>Escenario de referencia: una innovaton con ~200 participantes queriendo entrenar su propia policy. Si todos entrenan a la vez sin control, el pico de demanda de GPU es indefendible en costo y en cupo de servicio de AWS.</p>
+<table>
+<tr><th>Opción</th><th>Descripción</th><th>GPUs simultáneas</th><th>Viabilidad</th></tr>
+<tr><td>Sin límite</td><td>Los 200 entrenan al mismo tiempo, sin cola</td><td>~200</td><td>No viable — ni cupo AWS ni costo se justifican para jobs de minutos</td></tr>
+<tr><td>Mitad simultánea</td><td>Hasta 100 en paralelo</td><td>~100</td><td>Sigue siendo desproporcionado para la duración real de un job</td></tr>
+<tr><td>Un slot único</td><td>Un solo training corriendo, resto en cola estricta</td><td>1</td><td>Viable en costo, pero cola total ronda 70-130h — muy lento para un evento de un día</td></tr>
+<tr><td><strong>Pool acotado con cola</strong></td><td>N jobs en paralelo (6-8), resto en cola automática, 1 job activo por usuario</td><td>6-8</td><td><strong>Recomendada</strong> — balancea costo, cupo AWS y tiempo del evento</td></tr>
+</table>
+<p><strong>Cálculo de referencia (opción recomendada):</strong> 200 personas × 1 policy × ~30 min promedio = ~100 GPU-hora de trabajo total. Con un pool autoescalado de 6-8 GPUs en paralelo durante una ventana de evento de ~12-16 horas, el evento entero se cubre cómodo, con margen para reintentos.</p>
+<h3>Controles a implementar junto con esto (no son solo infraestructura, son producto)</h3>
+<ul>
+<li>Un job activo por usuario a la vez.</li>
+<li>Límite de duración/iteraciones por job.</li>
+<li>Cola visible (posición, tiempo estimado).</li>
+<li>Autoscaling del pool de GPU: sube con demanda, baja a 0 sin ella — evita pagar GPU ociosa fuera de eventos.</li>
+</ul>
+
+<h2>6. Propuesta de arquitectura en AWS</h2>
+<table>
+<tr><th>Componente</th><th>Servicio AWS sugerido</th><th>Notas</th></tr>
+<tr><td>Workers de entrenamiento (A)</td><td>EC2 <code>g5.xlarge</code>/<code>g4dn.xlarge</code> (1 GPU c/u) en Auto Scaling Group, 0→8, o Spot Fleet + fallback on-demand</td><td>Spot para bajar costo — jobs cortos, tolerantes a interrupción con checkpointing</td></tr>
+<tr><td>Cola de jobs</td><td>SQS + scheduler, o AWS Batch (cola + autoscaling GPU integrado)</td><td>AWS Batch es el camino de menor esfuerzo para el "semáforo" del §5</td></tr>
+<tr><td>Simulador/viewer (B)</td><td>ECS Fargate, sin GPU, autoescalado por sesión</td><td>Costo marginal</td></tr>
+<tr><td>Web app (C)</td><td>Amplify Hosting o S3+CloudFront (frontend); ECS Fargate o Lambda (API)</td><td>Estándar</td></tr>
+<tr><td>Base de datos</td><td>RDS PostgreSQL (<code>db.t4g.micro</code>/<code>small</code>)</td><td>Usuarios, catálogo, metadata</td></tr>
+<tr><td>Storage de policies</td><td>S3</td><td>Archivos chicos, tráfico bajo</td></tr>
+<tr><td>Auth</td><td>Cognito (o Auth0 si ya se usa)</td><td>Login + multiusuario</td></tr>
+</table>
+
+<h2>7. Lo que le pedimos a AWS</h2>
+<ol>
+<li><strong>Cupo de servicio (service quota) GPU</strong> familia <code>g5</code>/<code>g4dn</code>: al menos <strong>8 GPUs concurrentes</strong> en la región elegida (el default de una cuenta nueva suele ser 0-1).</li>
+<li><strong>Créditos</strong> para cubrir:
+<ul>
+<li>Cómputo GPU bajo demanda/spot para entrenamiento: ~100-150 GPU-hora por evento tipo innovaton (200 participantes), más uso continuo bajo del equipo fuera de eventos — presupuestar ~<strong>300-500 GPU-hora/mes</strong> de margen.</li>
+<li>Cómputo liviano (Fargate/EC2 chico) para simulador y web: ~USD 50-150/mes.</li>
+<li>RDS + S3 + transferencia de datos: ~USD 20-50/mes.</li>
+</ul></li>
+<li>Sin monto exacto todavía — no hay facturación histórica en AWS (venimos de local + Kaggle gratuito). Pedimos que el otorgamiento sea revisable/ampliable tras 1-2 meses de datos reales de uso.</li>
+</ol>
+
+<h2>8. Resumen ejecutivo</h2>
+<div class="callout">Necesitamos: (1) cupo de GPU en AWS (familia g5/g4dn, ~8 concurrentes) para entrenamiento RL de policies — jobs cortos (minutos a ~1h), sin necesidad de GPU de gama alta; (2) cómputo liviano sin GPU para el simulador web y la app (login/multiusuario); (3) créditos que cubran ~300-500 GPU-hora/mes estimadas, más ~USD 100-200/mes de infraestructura liviana. El entrenamiento estará limitado por una cola con concurrencia acotada (no todos entrenan a la vez), así que el pico de gasto es predecible y no escala 1:1 con la cantidad de usuarios.</div>
+
+<div class="foot">GIAR — RobotUniversityGiar · docs/aws_requirements.md</div>
+
+</body>
+</html>

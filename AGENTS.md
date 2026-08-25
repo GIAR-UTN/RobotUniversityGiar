@@ -50,6 +50,8 @@ RobotUniversityGiar/
 
 **Naming**: Task names follow `<robot>_<variant>` (e.g., `go2_ts`, `k1_amp`)
 
+**Documentation language**: `docs/*.md` default to English. Spanish is accepted only for rare, explicit exceptions — content aimed at a Spanish-speaking non-technical audience (e.g. onboarding writeups, external requests like `docs/aws_requirements.md`) — not as a general option.
+
 ## ANTI-PATTERNS (THIS PROJECT)
 
 1. **IsaacGym Reset Bug**: After `reset()`, call `simulator.forward()` once before reading rigid body states (see `g1_deepmimic.py:73`)
