@@ -49,6 +49,17 @@ RACE_LINE_TEXT_MARGIN = 0.15
 # it there (no backwards walking / turning-in-place needed).
 RACE_SPAWN_ROT = [0.0, 0.0, 1.0, 0.0]
 
+# How long a fail state (fallen over / excessive contact force -- see
+# legged_robot.py's check_termination()) is held before the env
+# auto-resets, while --race is active. Normal training/demo default
+# (env_cfg.env.fail_to_terminal_time_s) is 0.1s -- fine for training
+# throughput, but it means the robot snaps back to spawn on the very next
+# tick after going down, before anyone watching could actually see it fall
+# or read the race result. An hour is "never happens on its own, only
+# Restart resets it" without touching the underlying (int64 tick-counted,
+# see legged_robot.py's fail_buf) mechanism's contract.
+RACE_FAIL_HOLD_S = 3600.0
+
 # A minimal block/stick font: each letter is a handful of straight strokes
 # (horizontal, vertical, or diagonal) in a local [0, 1] x [0, 2] cell,
 # rendered as thin flat boxes lying on the ground -- "escrito con lineas"
@@ -102,6 +113,11 @@ def _word_line_props(word, name_prefix, x0, color, forward_sign=-1.0,
                 "pos": [(wx1 + wx2) / 2, (wy1 + wy2) / 2, z],
                 "euler": [0.0, 0.0, angle_deg],
                 "fixed": True,
+                # Ground-painted text, not a physical curb -- a raised box the
+                # robot's foot can catch its edge on (even at a couple cm)
+                # trips a live walking gait. See _crossing_line_prop() for the
+                # same fix on the start/finish bars.
+                "collision": False,
                 "color": color,
             })
     return props
@@ -119,6 +135,10 @@ def _crossing_line_prop(name, x, color=(0.95, 0.95, 0.95, 1.0)):
         "size": [0.06, RACE_CROSSING_LINE_WIDTH, 0.02],
         "pos": [x, 0.0, 0.011],
         "fixed": True,
+        # Paint on the ground, not a curb -- collision=False so a walking
+        # gait can't catch a foot on its edge (see _word_line_props()'s
+        # same fix, reported live as the robot's foot getting stuck on it).
+        "collision": False,
         "color": list(color),
     }
 

@@ -532,10 +532,16 @@ class GenesisSimulator(Simulator):
             surface = gs.surfaces.Default(color=tuple(color)) if color is not None else None
             fixed = prop_cfg.get("fixed", False)
             euler = prop_cfg.get("euler")
+            # Ground-painted markings (race start/finish lines and text --
+            # see props.py) opt out of collision entirely: "just paint", not
+            # a raised curb a walking gait's foot placement can catch an
+            # edge on. Defaults True (Genesis's own default) for every other
+            # prop, e.g. the crash-mat wall, which IS meant to be hit.
+            collision = prop_cfg.get("collision", True)
             if shape == "sphere":
-                morph = gs.morphs.Sphere(radius=prop_cfg.get("size", 0.1), pos=pos, fixed=fixed)
+                morph = gs.morphs.Sphere(radius=prop_cfg.get("size", 0.1), pos=pos, fixed=fixed, collision=collision)
             elif shape == "box":
-                box_kwargs = dict(size=prop_cfg.get("size", [0.1, 0.1, 0.1]), pos=pos, fixed=fixed)
+                box_kwargs = dict(size=prop_cfg.get("size", [0.1, 0.1, 0.1]), pos=pos, fixed=fixed, collision=collision)
                 if euler is not None:
                     box_kwargs["euler"] = euler
                 morph = gs.morphs.Box(**box_kwargs)

@@ -143,6 +143,78 @@
   #transition-cancel{border:1px solid var(--line); background:var(--bg); color:var(--ink-soft);}
   #transition-cancel[hidden]{display:none;}
 
+  /* ---- race HUD ----
+     Sits over #view-sim (same stacking-by-source-order trick as the other
+     .view layers, plus an explicit z-index to be sure) but pointer-events:
+     none — it's a read-only overlay, the robot is only ever driven from
+     #panel, never by clicking the viewer.
+
+     #race-hud itself is never hidden — it has no visible content of its
+     own, only the two pieces inside it (countdown, footer) toggle. Each of
+     those uses a bare `display` declaration ONLY inside a `:not([hidden])`
+     rule, never on the plain #id — an ID rule with its own `display` would
+     out-specificity the UA `[hidden]{display:none}` default and the
+     element would never actually hide. This is what silently broke the
+     first version of this HUD (visible click, no visible feedback). */
+  #race-hud{pointer-events:none; z-index:2;}
+
+  #race-countdown-wrap{position:absolute; inset:0;}
+  #race-countdown-wrap:not([hidden]){display:flex; align-items:center; justify-content:center;}
+  #race-countdown-text{
+    display:inline-block; font:900 22vh/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:linear-gradient(90deg,#ff3cac,#784ba0,#2b86c5,#00e5a0,#ffd93d,#ff3cac);
+    background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 4px 20px rgba(0,0,0,.6));
+    animation:race-shimmer 1.4s linear infinite;
+  }
+  /* .pop restarts on every digit (see setCountdownText()'s reflow trick in
+     app.js) — a little punch on each number, on top of the shimmer running
+     continuously underneath. */
+  #race-countdown-text.pop{animation:race-shimmer 1.4s linear infinite, race-pop .35s ease-out;}
+  @keyframes race-shimmer{ from{background-position:0% 50%;} to{background-position:300% 50%;} }
+  @keyframes race-pop{ from{transform:scale(1.5); opacity:0;} to{transform:scale(1); opacity:1;} }
+
+  /* ---- finish-line party (confetti + big rainbow title) ----
+     Triggered once by celebrateFinish() in app.js, auto-hides itself a few
+     seconds later — the race result itself keeps living in #race-footer
+     (which doesn't auto-hide) so this is purely the celebratory flourish,
+     not where the actual result is read from. */
+  #race-party{position:absolute; inset:0; overflow:hidden;}
+  #race-party-title{
+    position:absolute; top:38%; left:50%; transform:translate(-50%,-50%);
+    display:inline-block; white-space:nowrap;
+    font:900 10vh/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:linear-gradient(90deg,#ff3cac,#784ba0,#2b86c5,#00e5a0,#ffd93d,#ff3cac);
+    background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 4px 20px rgba(0,0,0,.6));
+    animation:race-shimmer 1.4s linear infinite, race-pop .4s ease-out;
+  }
+  .confetti-piece{
+    position:absolute; top:-6%; width:9px; height:15px; border-radius:2px;
+    animation:confetti-fall linear forwards;
+  }
+  @keyframes confetti-fall{ to{ transform:translateY(120vh) rotate(640deg); } }
+
+  #race-footer{
+    position:absolute; left:50%; bottom:22px; transform:translateX(-50%);
+    padding:.55rem 1.3rem; border-radius:12px; font-variant-numeric:tabular-nums;
+    background:color-mix(in srgb, var(--bg) 72%, transparent); backdrop-filter:blur(4px);
+    border:1px solid var(--line); box-shadow:0 8px 24px var(--cap-shadow);
+  }
+  #race-footer:not([hidden]){display:flex; align-items:baseline; gap:.7rem;}
+  #race-footer-status{font-size:.7rem; letter-spacing:.05em; text-transform:uppercase; color:var(--accent2); font-weight:700;}
+  #race-footer-clock{font:800 1.9rem/1 ui-monospace,monospace; color:var(--ink);}
+  #race-footer-dist{font-size:.8rem; color:var(--muted);}
+
+  .race-btn{border-color:var(--accent); color:var(--accent);}
+  .race-btn:hover:not(:disabled){background:var(--accent); color:var(--accent-ink);}
+  .race-btn:disabled{opacity:.55; cursor:default;}
+  /* Toggle, not a one-shot action — "321 Ready!" stays visibly pressed
+     while race mode is armed (see armRace()/disarmRace() in app.js); R then
+     repeats the whole experiment instead of needing a re-click every lap. */
+  .race-btn.armed{background:var(--accent); color:var(--accent-ink); box-shadow:inset 0 0 0 2px var(--accent-ink);}
+  #race-btn-result{font-size:.75rem; color:inherit; opacity:.85;}
+
   .drawer{
     position:absolute; inset:0 auto 0 0; width:min(920px, 84vw);
     background:var(--bg); border-right:1px solid var(--line);
@@ -433,6 +505,13 @@
     margin-top:.6rem;
   }
   #look-pad.active{border-color:var(--accent2); color:var(--ink); border-style:solid;}
+  #look-pad.disabled{opacity:.4; pointer-events:none;}
+
+  /* Movement keycaps (Move/Turn clusters only — Policy/System stay live)
+     dimmed while raceControlsLocked() is true, see applyRaceControlsLock()
+     in app.js — purely cosmetic, the actual block is in each input
+     handler's own guard, this just stops it from looking clickable. */
+  .kbd-cluster.race-locked{opacity:.4; pointer-events:none;}
 
   #speed-limit-row{margin-top:.7rem;}
   #speed-limit-row label{
@@ -693,6 +772,24 @@
 <main>
   <div id="views">
     <div class="view" id="view-sim"></div>
+
+    <!-- Race HUD (--race only, see initRaceMode() in app.js): a HUD layer
+         painted over the simulator, never intercepting clicks (viser's
+         iframe is cross-origin, so this can't live inside it — it's a
+         sibling positioned on top, same trick as #transition-overlay). -->
+    <div class="view" id="race-hud">
+      <div id="race-countdown-wrap" hidden><span id="race-countdown-text"></span></div>
+      <div id="race-party" hidden>
+        <div id="race-confetti"></div>
+        <div id="race-party-title">FINISHED!</div>
+      </div>
+      <div id="race-footer" hidden>
+        <span id="race-footer-status"></span>
+        <span id="race-footer-clock">0.00s</span>
+        <span id="race-footer-dist"></span>
+      </div>
+    </div>
+
     <aside class="drawer" id="drawer-hardware">
       <div id="hardware-panel">Loading&hellip;</div>
     </aside>
@@ -821,6 +918,14 @@
           <label for="episode-timeout-s">Interval (seconds)</label>
           <input type="number" id="episode-timeout-s" min="1" step="1" value="20">
         </div>
+        <!-- Only shown when /config's race_enabled is true (the driver was
+             launched with --race) — see initRaceMode() in app.js. A toggle
+             (aria-pressed), not a one-shot action: arms/disarms race mode.
+             While armed, pressing R (Restart) re-homes the robot and starts
+             a fresh 3-2-1-GO countdown on its own — see onRestartTriggered(). -->
+        <button class="action-btn race-btn" id="btn-race-ready" hidden aria-pressed="false">
+          321 Ready! <span id="race-btn-result"></span>
+        </button>
       </div>
     </section>
 

@@ -73,7 +73,9 @@ from legged_gym import *
 from legged_gym.envs import *
 from legged_gym.utils import task_registry
 from legged_gym.utils.viser_viewer import create_viser_viewer
-from legged_gym.utils.props import default_ball_prop, default_race_props, RACE_SPAWN_ROT
+from legged_gym.utils.props import (
+    default_ball_prop, default_race_props, RACE_SPAWN_ROT, RACE_TRACK_LENGTH, RACE_FAIL_HOLD_S,
+)
 
 from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
@@ -438,6 +440,13 @@ def main():
                 (default_race_props() if cli.race else [])
         if cli.race:
             env_cfg.init_state.rot = RACE_SPAWN_ROT
+            # Normal training/demo behavior resets ~0.1s after a fail is
+            # detected (env_cfg.env.fail_to_terminal_time_s) -- too fast to
+            # ever actually see the robot go down. A race needs the crash
+            # (hitting the mat at the end) to stay on screen, results intact,
+            # until the operator hits Restart -- see RACE_FAIL_HOLD_S's own
+            # docstring in utils/props.py.
+            env_cfg.env.fail_to_terminal_time_s = RACE_FAIL_HOLD_S
         if cli.camera:
             env_cfg.sensor.add_rgb_camera = True
 
@@ -608,6 +617,15 @@ def main():
                     "vy": list(ranges.lin_vel_y),
                     "yaw": list(ranges.ang_vel_yaw),
                 },
+                # Lets the web panel show the "321 Ready!" race HUD (countdown,
+                # timer, finish detection against telemetry.base_pos_xy) and
+                # default to the race-friendly panel order — see
+                # default_race_props()/RACE_TRACK_LENGTH in utils/props.py for
+                # where the start/finish line positions this distance comes
+                # from. None (not 0) when --race wasn't passed, same
+                # "absent/None means unsupported" convention as camera_enabled.
+                "race_enabled": cli.race,
+                "race_track_length": RACE_TRACK_LENGTH if cli.race else None,
             }
 
         control_server.app.mount(
