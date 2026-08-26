@@ -213,6 +213,13 @@ let localControlEnabled = true;
 
 function send(method, params = {}) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  // A restart teleports the robot back to its spawn pose — whatever race is
+  // in flight (countdown or timed run) no longer means anything against the
+  // new position. Covers the user's own Restart click, the automatic
+  // restart connect() fires after a family switch, AND armRace()'s own
+  // re-home — see onRestartTriggered()'s docstring for why re-arming a
+  // fresh countdown lives here instead of being duplicated per call site.
+  if (method === 'restart') onRestartTriggered();
   ws.send(JSON.stringify({ method, params, id: msgId++ }));
 }
 
@@ -260,6 +267,8 @@ function applyRuntimeConfig(config) {
     cameraSection.hidden = true;
     cameraFeed.removeAttribute('src');
   }
+
+  initRaceMode(config);
 }
 
 function connect() {
@@ -561,8 +570,15 @@ function familyButtonRow(name, current, hasPolicies) {
   const btn = document.createElement('button');
   btn.className = 'policy-btn' + (name === current ? ' active' : '');
   btn.textContent = name;
-  btn.disabled = name === current || familySwitchInFlight || !hasPolicies;
+  // The race track (start/finish lines, spawn rotation — see
+  // default_race_props()/RACE_SPAWN_ROT in legged_gym/utils/props.py) has
+  // only been set up and tested against g1 so far; block switching away
+  // from it while the 'race' scenario is active rather than risk landing on
+  // scenery that doesn't match the new family.
+  const raceBlocked = currentScenario === 'race' && name !== 'g1';
+  btn.disabled = name === current || familySwitchInFlight || !hasPolicies || raceBlocked;
   if (!hasPolicies) btn.title = `No trained policies for '${name}' yet — train one first`;
+  else if (raceBlocked) btn.title = "Race mode is g1-only for now";
   btn.onclick = () => {
     // Used to confirm ("Switch to family X?") THEN show a separate loading
     // overlay -- two modals back to back for one action. A family switch is
@@ -876,11 +892,14 @@ function applyStatus(status) {
     if (document.activeElement !== simPushDir) simPushDir.value = status.random_events.push_dir || '';
     auto = status.random_events.auto_commands;
     chkAutoCmd.checked = auto;
-    // While auto, the HUDs are a read-only display of what the sim is doing
-    // on its own; while manual, they're live input controls. Either way,
-    // don't stomp on a HUD the user currently has grabbed.
-    [hudVx, hudVy, hudYaw].forEach((el) => { el.classList.toggle('disabled', auto); });
   }
+  // While auto, the HUDs are a read-only display of what the sim is doing on
+  // its own; while a race countdown is locking movement (raceControlsLocked()
+  // — see armRace() in the race-mode block below), they're locked so a false
+  // start isn't possible; while manual, they're live input controls. Runs
+  // unconditionally (not just inside the random_events branch above) so the
+  // race lock still applies on backends that don't support random_events.
+  [hudVx, hudVy, hudYaw].forEach((el) => { el.classList.toggle('disabled', auto || raceControlsLocked()); });
   // Only sync FROM the server when nothing is actively driving the command
   // right now — otherwise this would fight a held key, an in-progress drag,
   // the mouse-look pad, or (in manual mode) the local decel-to-zero coast
@@ -898,6 +917,7 @@ function applyStatus(status) {
 
   renderTrainingJobs(status.training_jobs || []);
   renderTelemetry(status.telemetry);
+  onRaceTelemetry();
 }
 
 // ---- live telemetry panel ----
@@ -966,6 +986,267 @@ function renderTelemetry(telemetry) {
     }
     row.querySelector('.tele-val').textContent = formatTeleValue(t.value, t.unit);
   }
+}
+
+// ---- race mode: "321 Ready!" countdown, timer, finish-line detection ----
+// The button itself shows/auto-arms per readyButtonVisible, which any
+// scenario can opt into (see Scenario.ready_button_visible/
+// ready_button_armed_by_default in legged_gym/utils/scenarios.py) — only
+// finish-line detection is actually race-specific (raceTrackLength is only
+// ever non-null when /config's scenario is "race" — see
+// default_race_props()/RACE_TRACK_LENGTH in
+// legged_gym/utils/props.py for the start/finish line geometry this
+// mirrors, and RACE_FAIL_HOLD_S there for why hitting the crash mat no
+// longer snaps the robot back to spawn on its own — see check_termination()
+// in legged_robot.py). The countdown/footer/finish-party live in an HTML
+// overlay painted over the simulator (#race-hud) rather than inside
+// viser's own scene — viser's <iframe> is a different origin (see
+// mountSimIframe()), so this page has no DOM access into it. #race-hud
+// itself is always in the DOM (never hidden); only its children toggle
+// independently — see the CSS comment on #race-hud for why a bare
+// #id{display:...} rule on a hidden-toggled element is a trap (it silently
+// beats [hidden]).
+//
+// State is split in two, deliberately: `raceArmed` (the "321 Ready!"
+// toggle — does R currently re-arm a fresh countdown or just reset the
+// robot?) and `raceState` (idle/countdown/running/finished — what THIS one
+// run is doing right now). Armed survives across runs; raceState resets
+// every run. This is also the seam for other scenarios later (per-scenario
+// rules will replace what armRace()/startRaceCountdown()/finishRace() do,
+// not how the arm toggle or the restart hook work) — see armRace()'s
+// docstring.
+//
+// Distance is measured from wherever the robot is when "GO" fires (not
+// from the world-origin start line itself) so a race still times correctly
+// even in the odd case the robot wasn't actually re-homed — normally it
+// always is, since arming sends a restart first (see armRace()).
+// RACE_TRACK_LENGTH meters of progress along -x (the track's own axis, see
+// RACE_SPAWN_ROT) is what counts as reaching the finish line, matching how
+// far the start and finish props are actually placed apart. The robot
+// keeps moving/simulating past that point — only the clock and distance
+// readout stop.
+
+let currentScenario = null; // 'default' | 'ball' | 'race' | null, from /config's "scenario"
+// Whether the "321 Ready!" button shows at all -- per-scenario, from /config's
+// "ready_button.visible" (see Scenario.ready_button_visible in legged_gym/utils/scenarios.py).
+// The countdown/timer/lock mechanism itself isn't race-specific (finish-line detection
+// already no-ops without a track -- see finishRace()'s raceTrackLength != null guard), so
+// every gate below keys off THIS, not off currentScenario === 'race' directly.
+let readyButtonVisible = false;
+let raceTrackLength = null; // meters, from /config's scenario_options.track_length; null unless the 'race' scenario is active
+let raceArmed = false; // the "321 Ready!" toggle: does Restart re-arm a countdown?
+let raceState = 'idle'; // 'idle' | 'countdown' | 'running' | 'finished' — THIS run
+let raceStartX = null;
+let raceStartTime = null;
+let raceCountdownTimer = null;
+let racePartyTimer = null;
+
+const raceReadyBtn = $('#btn-race-ready');
+const raceReadyResult = $('#race-btn-result');
+const raceCountdownWrap = $('#race-countdown-wrap');
+const raceCountdownText = $('#race-countdown-text');
+const raceFooter = $('#race-footer');
+const raceFooterStatus = $('#race-footer-status');
+const raceFooterClock = $('#race-footer-clock');
+const raceFooterDist = $('#race-footer-dist');
+const raceParty = $('#race-party');
+const raceConfetti = $('#race-confetti');
+
+// Movement inputs (WASD/arrows, HUD drags, mouse-look) check this — see
+// their pointerdown/keydown guards. Restart/Pause/the 321 toggle itself are
+// NOT gated by it: only driving is blocked, and only during the countdown
+// (a false start shouldn't be possible), never during/after the run itself.
+function raceControlsLocked() {
+  return raceState === 'countdown';
+}
+
+// Movement keycaps (Move/Turn clusters only — Policy/System stay live, R
+// and P must keep working during a countdown) and the mouse-look pad get a
+// dimmed, unclickable look while locked. The HUD drag pads (hudVx/vy/yaw)
+// use the SAME '.disabled' class but are handled inside applyStatus()
+// instead — that toggle already runs on every ~10Hz status push (for the
+// unrelated "auto commands" mode) and folds raceControlsLocked() into the
+// same call, so a second, separately-timed toggle here would just race it.
+const raceMoveClusters = document.querySelectorAll(
+  '.kbd-cluster[data-label="Move"], .kbd-cluster[data-label="Turn"]');
+
+function applyRaceControlsLockVisual() {
+  const locked = raceControlsLocked();
+  raceMoveClusters.forEach((el) => el.classList.toggle('race-locked', locked));
+  lookPad.classList.toggle('disabled', locked);
+}
+
+function initRaceMode(config) {
+  currentScenario = config.scenario ?? null;
+  const btnCfg = config.ready_button || {};
+  readyButtonVisible = !!btnCfg.visible;
+  raceTrackLength = currentScenario === 'race' ? (config.scenario_options?.track_length ?? null) : null;
+  raceReadyBtn.hidden = !readyButtonVisible;
+  if (!readyButtonVisible) { disarmRace(); return; }
+  // Property assignment (not addEventListener) so re-running this after a
+  // family-switch reconnect can't stack a second handler.
+  raceReadyBtn.onclick = onRaceReadyClick;
+  // Scenarios like race start pre-armed (see Scenario.ready_button_armed_by_default) --
+  // armRace() re-homes the robot and starts a countdown on its own, same as a manual
+  // click. Scenarios that just show the button (e.g. ball) start disarmed, as before.
+  if (btnCfg.armed_by_default) armRace(); else disarmRace();
+}
+
+function onRaceReadyClick() {
+  if (!readyButtonVisible) return;
+  if (raceArmed) disarmRace(); else armRace();
+}
+
+// "321 Ready!" arms race mode — a toggle, not a one-shot button (per
+// request: "que quede apretada"). Arming re-homes the robot first (the
+// track has an exact, known length — a countdown from anywhere else isn't
+// a real race) and that restart is what actually starts the countdown: see
+// onRestartTriggered() below, which fires for EVERY restart (this one, a
+// manual R press, or the post-crash one after Restart is finally pressed)
+// and starts a fresh countdown whenever raceArmed is still true. That's
+// "R repite el experimento" — one flag, one hook, no separate "restart
+// during a race" special case to keep in sync.
+function armRace() {
+  raceArmed = true;
+  raceReadyBtn.classList.add('armed');
+  raceReadyBtn.setAttribute('aria-pressed', 'true');
+  raceReadyResult.textContent = '';
+  send('restart');
+}
+
+function disarmRace() {
+  raceArmed = false;
+  raceReadyBtn.classList.remove('armed');
+  raceReadyBtn.setAttribute('aria-pressed', 'false');
+  resetRaceRun();
+}
+
+// Hooked from send()'s 'restart' branch — covers the user's own Restart
+// click, the automatic restart after a family switch, AND armRace()'s own
+// re-home above, uniformly.
+function onRestartTriggered() {
+  resetRaceRun();
+  if (readyButtonVisible && raceArmed) {
+    // A beat for the teleport to actually land server-side (and for a
+    // stale pre-restart telemetry reading to age out) before the countdown
+    // — and the movement-controls lock that comes with it — starts.
+    raceCountdownTimer = setTimeout(startRaceCountdown, 300);
+  }
+}
+
+// Clears everything about THIS run without touching raceArmed/the button's
+// pressed state — armed survives a reset, that's the whole point of it.
+function resetRaceRun() {
+  clearTimeout(raceCountdownTimer);
+  raceCountdownTimer = null;
+  clearTimeout(racePartyTimer);
+  racePartyTimer = null;
+  raceState = 'idle';
+  raceStartX = null;
+  raceStartTime = null;
+  raceCountdownWrap.hidden = true;
+  raceFooter.hidden = true;
+  raceParty.hidden = true;
+  applyRaceControlsLockVisual();
+}
+
+// Restarts the .pop punch animation on every digit — just re-adding the
+// class wouldn't retrigger a CSS animation already applied, hence the
+// remove/reflow/re-add dance (the shimmer gradient keeps running
+// underneath regardless, it's a second, always-on animation — see CSS).
+function setCountdownText(text) {
+  raceCountdownText.textContent = text;
+  raceCountdownText.classList.remove('pop');
+  void raceCountdownText.offsetWidth;
+  raceCountdownText.classList.add('pop');
+}
+
+function startRaceCountdown() {
+  if (!readyButtonVisible || !raceArmed || raceState === 'countdown' || raceState === 'running') return;
+  raceState = 'countdown';
+  raceFooter.hidden = true;
+  raceParty.hidden = true;
+  raceCountdownWrap.hidden = false;
+  applyRaceControlsLockVisual();
+
+  const steps = ['3', '2', '1', 'GO!'];
+  let i = 0;
+  setCountdownText(steps[i]);
+  const step = () => {
+    i += 1;
+    if (i >= steps.length) { raceCountdownWrap.hidden = true; beginRace(); return; }
+    setCountdownText(steps[i]);
+    raceCountdownTimer = setTimeout(step, 800);
+  };
+  raceCountdownTimer = setTimeout(step, 800);
+}
+
+function beginRace() {
+  raceState = 'running';
+  raceStartTime = performance.now();
+  // May come back null for a tick if telemetry hasn't pushed yet —
+  // onRaceTelemetry() below re-baselines off the first non-null reading.
+  raceStartX = raceCurrentX();
+  raceFooterStatus.textContent = 'Racing';
+  raceFooter.hidden = false;
+  applyRaceControlsLockVisual();
+  updateRaceFooter(0, 0);
+}
+
+function raceCurrentX() {
+  const v = latestStatus?.telemetry?.base_pos_xy?.value;
+  return Array.isArray(v) ? v[0] : null;
+}
+
+// Called from applyStatus() on every ~10Hz status push while a race is running.
+function onRaceTelemetry() {
+  if (raceState !== 'running') return;
+  const x = raceCurrentX();
+  if (x == null) return; // RealAdapter (no world-frame position), or telemetry not up yet
+  if (raceStartX == null) { raceStartX = x; return; }
+  const distance = raceStartX - x; // the track runs along -x from the start line
+  const elapsed = (performance.now() - raceStartTime) / 1000;
+  updateRaceFooter(elapsed, distance);
+  if (raceTrackLength != null && distance >= raceTrackLength) finishRace(elapsed);
+}
+
+function updateRaceFooter(elapsed, distance) {
+  raceFooterClock.textContent = `${elapsed.toFixed(2)}s`;
+  raceFooterDist.textContent = raceTrackLength != null
+    ? `${Math.max(0, distance).toFixed(1)} / ${raceTrackLength.toFixed(1)} m`
+    : '';
+}
+
+// The robot keeps running/simulating past the finish line (it's headed for
+// the crash mat right after it, on purpose — see RACE_FAIL_HOLD_S) — only
+// the clock and distance readout actually stop, right here.
+function finishRace(elapsed) {
+  raceState = 'finished';
+  raceFooterStatus.textContent = '\u{1F3C1} Finished';
+  raceFooterDist.textContent = raceTrackLength != null
+    ? `${raceTrackLength.toFixed(1)} / ${raceTrackLength.toFixed(1)} m` : '';
+  raceReadyResult.textContent = `(${elapsed.toFixed(2)}s)`;
+  celebrateFinish();
+}
+
+const CONFETTI_COLORS = ['#ff3cac', '#784ba0', '#2b86c5', '#00e5a0', '#ffd93d', '#ff5e5e', '#4fd1c1'];
+
+function celebrateFinish() {
+  raceConfetti.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < 80; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.left = `${Math.random() * 100}%`;
+    piece.style.background = CONFETTI_COLORS[i % CONFETTI_COLORS.length];
+    piece.style.animationDuration = `${1.8 + Math.random() * 1.4}s`;
+    piece.style.animationDelay = `${Math.random() * 0.5}s`;
+    frag.appendChild(piece);
+  }
+  raceConfetti.appendChild(frag);
+  raceParty.hidden = false;
+  clearTimeout(racePartyTimer);
+  racePartyTimer = setTimeout(() => { raceParty.hidden = true; }, 3200);
 }
 
 // ---- HUD rendering ----
@@ -1292,7 +1573,7 @@ function bindVerticalHud(hud, axis) {
     sendCruiseCommand();
   };
   track.addEventListener('pointerdown', (e) => {
-    if (hud.classList.contains('disabled') || !localControlEnabled) return;
+    if (hud.classList.contains('disabled') || !localControlEnabled || raceControlsLocked()) return;
     draggingCommand = true; pointerId = e.pointerId;
     track.setPointerCapture(e.pointerId);
     setFromEvent(e);
@@ -1324,7 +1605,7 @@ function bindHorizontalHud(hud, axis) {
     sendCruiseCommand();
   };
   track.addEventListener('pointerdown', (e) => {
-    if (hud.classList.contains('disabled')) return;
+    if (hud.classList.contains('disabled') || raceControlsLocked()) return;
     draggingCommand = true; pointerId = e.pointerId;
     track.setPointerCapture(e.pointerId);
     setFromEvent(e);
@@ -1356,7 +1637,7 @@ function bindDialHud(hud, axis) {
     sendCruiseCommand();
   };
   svg.addEventListener('pointerdown', (e) => {
-    if (hud.classList.contains('disabled') || !localControlEnabled) return;
+    if (hud.classList.contains('disabled') || !localControlEnabled || raceControlsLocked()) return;
     draggingCommand = true; pointerId = e.pointerId;
     svg.setPointerCapture(e.pointerId);
     setFromEvent(e);
@@ -1387,7 +1668,7 @@ let lookPadLastX = 0;
 const MOUSE_YAW_SENSITIVITY = 0.006; // rad/s of yaw per pixel dragged
 
 lookPad.addEventListener('pointerdown', (e) => {
-  if (!localControlEnabled) return;
+  if (!localControlEnabled || raceControlsLocked()) return;
   mouseLookActive = true;
   lookPadLastX = e.clientX;
   lookPad.setPointerCapture(e.pointerId);
@@ -1494,15 +1775,19 @@ document.addEventListener('keydown', (e) => {
   const binding = keymap[e.key];
   if (!binding && !policyByKey[e.key]) return;
   e.preventDefault();
-  setKeycapActive(e.key, true);
   if (binding?.action === 'move') {
-    if (!localControlEnabled) return;
+    // Checked BEFORE setKeycapActive() below — lighting up a keycap for an
+    // input that's about to be silently dropped reads as "this is working"
+    // when it isn't (reported live as controls looking enabled before GO).
+    if (!localControlEnabled || raceControlsLocked()) return;
+    setKeycapActive(e.key, true);
     if (heldMoveKeys.has(e.key)) return; // ignore OS key-repeat, already engaged
     heldMoveKeys.add(e.key);
     engageManualIfNeeded();
     // No immediate rampTick() call here — the rAF loop (frame()) picks up a
     // newly-held key within ~16ms on its own, so a manual kick isn't needed.
   } else {
+    setKeycapActive(e.key, true);
     dispatchKeyAction(e.key);
   }
 });
@@ -1533,7 +1818,7 @@ function bindKeycapActions() {
     if (!binding && !POLICY_SHORTCUT_KEYS.includes(key)) return;
     if (binding?.action === 'move') {
       cap.addEventListener('pointerdown', () => {
-        if (!localControlEnabled) return;
+        if (!localControlEnabled || raceControlsLocked()) return;
         cap.classList.add('active');
         heldMoveKeys.add(key);
         engageManualIfNeeded();
@@ -1606,7 +1891,26 @@ function makeSortable(container, itemSelector, handleSelector, onReorder) {
 
 // ---- draggable panel sections (reorder + persist) ----
 
-const PANEL_ORDER_KEY = 'giar.panelOrder.v1';
+// Each scenario gets its own default order and its own saved-order key — a
+// scenario session shouldn't disturb the arrangement the operator already
+// set up outside it, and vice versa. Race: Camera/Command/Policies/Family up
+// top is what a race run actually needs at a glance (see the "321 Ready!"
+// button in Pause & Restart, the section right below all four); the rest
+// follow in whatever order they were already in. Ball: just Camera then
+// Command up top (per request — "la camara esta arriba, el control sigue"),
+// rest unchanged. Default (admin): Camera, Command, Policies, then Live
+// Telemetry — see restorePanelOrder()'s appendChild loop below, which
+// only moves the sections actually named here and leaves everything else in
+// its current DOM position.
+const SCENARIO_DEFAULT_ORDERS = {
+  default: ['camera', 'command', 'policies', 'telemetry'],
+  race: ['camera', 'command', 'policies', 'family'],
+  ball: ['camera', 'command'],
+};
+
+function panelOrderKey() {
+  return currentScenario ? `giar.panelOrder.${currentScenario}.v1` : 'giar.panelOrder.v1';
+}
 
 function initSectionDrag() {
   makeSortable(panel, '.panel-section', ':scope > .section-head > .drag-handle', savePanelOrder);
@@ -1614,14 +1918,17 @@ function initSectionDrag() {
 
 function savePanelOrder() {
   const order = [...panel.querySelectorAll('.panel-section')].map((s) => s.dataset.section);
-  localStorage.setItem(PANEL_ORDER_KEY, JSON.stringify(order));
+  localStorage.setItem(panelOrderKey(), JSON.stringify(order));
 }
 
 function restorePanelOrder() {
-  const raw = localStorage.getItem(PANEL_ORDER_KEY);
-  if (!raw) return;
-  let order;
-  try { order = JSON.parse(raw); } catch { return; }
+  const raw = localStorage.getItem(panelOrderKey());
+  let order = null;
+  if (raw) {
+    try { order = JSON.parse(raw); } catch { order = null; }
+  }
+  if (!order && currentScenario) order = SCENARIO_DEFAULT_ORDERS[currentScenario];
+  if (!order) return;
   order.forEach((name) => {
     const s = panel.querySelector(`.panel-section[data-section="${name}"]`);
     if (s) panel.appendChild(s);

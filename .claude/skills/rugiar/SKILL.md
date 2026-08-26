@@ -42,7 +42,8 @@ to run it just to see what exists:
 usage: rugiar_driver.py [-h] --policy POLICY_SPECS [--active ACTIVE]
                           [--ramp_ticks RAMP_TICKS] [--headless]
                           [--viser_port VISER_PORT] [--speed SPEED]
-                          [--control_port CONTROL_PORT] [--ball] [--real]
+                          [--control_port CONTROL_PORT] [--scenario {ball,default,race}]
+                          [--scenario-option KEY=VALUE] [--real]
                           [--net_interface NET_INTERFACE]
                           [--robot_config ROBOT_CONFIG] [--token TOKEN]
 
@@ -64,7 +65,14 @@ usage: rugiar_driver.py [-h] --policy POLICY_SPECS [--active ACTIVE]
                         on this port. Unless --headless, also serves the unified
                         control web (policies/pause/restart/E-STOP/velocity panel +
                         Docs tab) at http://localhost:<control_port>/.
---ball                  spawn a physics ball prop next to the robot (Genesis only)
+--scenario {ball,default,race}
+                        which named scenario's props/web-UI config to use (Genesis only).
+                        Defaults to 'default' (full admin: no props, every web-UI control
+                        visible). 'ball': a physics ball prop. 'race': a start/finish line
+                        and crash-mat track (see legged_gym/utils/scenarios.py).
+--scenario-option KEY=VALUE
+                        override one of the scenario's default options (repeatable),
+                        e.g. --scenario-option track_length=10.
 --camera                stream a robot-POV RGB camera feed to the control web
                         (Genesis only, needs cfg.sensor.add_rgb_camera support)
 --real                  drive an actual robot over DDS (deploy_real/real_adapter.py::
@@ -88,7 +96,7 @@ usage: rugiar_driver.py [-h] --policy POLICY_SPECS [--active ACTIVE]
 largely-duplicated sibling script, `rugiar_driver_target.py`, drives the
 **"target-aware" family** (`g1_target` and future siblings whose config sets
 `cfg.rewards.target_aware = True`) — same flags/behavior, plus a per-tick
-step that feeds the live `--ball` position into the running task's obs.
+step that feeds the live `--scenario ball` position into the running task's obs.
 Each registered task is treated as its own **experiment**, deliberately kept
 architecturally independent rather than unified into one policy — see
 `legged_gym/scripts/rugiar_driver.py`'s module docstring for the reasoning.

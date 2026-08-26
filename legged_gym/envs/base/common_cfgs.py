@@ -148,8 +148,8 @@ class Go2RoughCommonCfg(Go2FlatCommonCfg):
 # the "G1 target" plan): a task that sets `cfg.rewards.target_aware = True` and
 # ends its observation vector with 2 slots meaning (pitch_target, roll_target)
 # -- "the orientation needed to face the current target" -- is understood by
-# rugiar_driver.py's driver loop, which overwrites those 2 slots every tick
-# with the live --ball bearing (SimAdapter.get_target_relative_pos()) in place
+# rugiar_driver_target.py's driver loop, which overwrites those 2 slots every tick
+# with the live 'ball' scenario bearing (SimAdapter.get_target_relative_pos()) in place
 # of whatever the task's own per-episode training sampler put there. Any two
 # tasks following this convention share the same network shape and can be
 # swapped/fused/fine-tuned against each other freely, and both run under the

@@ -323,6 +323,8 @@ class LeggedRobotCfg(BaseConfig):
         #   "restitution": float,
         #   "friction": float,
         #   "color": List[float],                  # rgba, visualization only
+        #   "fixed": bool,                         # static/welded-to-world instead of a dynamic
+        #                                           # rigid body (e.g. walls/markers for the 'race' scenario). Default False.
         # }
         list: List[Dict] = []
 

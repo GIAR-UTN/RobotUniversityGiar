@@ -347,6 +347,13 @@ class ControlService:
                 "note": "Not directly sensed on real hardware (no IMU measures velocity, only "
                         "acceleration) — simulator ground truth only, None on RealAdapter.",
             },
+            "base_pos_xy": {
+                "value": vec3(state.base_pos_xy), "unit": "m", "source": "sim_ground_truth",
+                "label": "Position (x, y)",
+                "note": "World-frame base position — not measured by any real sensor. Used by the "
+                        "'race' scenario's track overlay (web/app.js) to time a run and detect the "
+                        "finish line; simulator ground truth only, None on RealAdapter.",
+            },
         }
 
     def get_odometry(self) -> Optional[dict]:

@@ -30,6 +30,7 @@ fi
 #                           `las ports ls`)
 #   HEADLESS=1|0           (default: 0)
 #   SPEED=<float>          (default: 0.35)
+#   SCENARIO=ball|race     (default: unset -- no scenario)
 # ---------------------------------------------------------------------------
 
 export GENESIS_BACKEND=${GENESIS_BACKEND:-cpu}
@@ -64,6 +65,10 @@ fi
 
 if [ -n "$SPEED" ]; then
     ARGS+=("--speed" "$SPEED")
+fi
+
+if [ -n "$SCENARIO" ]; then
+    ARGS+=("--scenario" "$SCENARIO")
 fi
 
 cd /workspace/RobotUniversityGiar
