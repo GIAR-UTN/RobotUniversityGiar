@@ -30,8 +30,8 @@ class G1TargetCfg(G1Flat12DofCommonCfg):
         # slots are (pitch_target, roll_target), meaning "the orientation needed
         # to face the current target" -- sampled per-episode during training
         # (behavior_params_range below), overwritten each tick with a live
-        # --ball bearing by rugiar_driver.py's driver loop when this flag is
-        # set. Any future sibling task (different object/reward, same last-2-slots
+        # 'ball' scenario bearing by rugiar_driver_target.py's driver loop when
+        # this flag is set. Any future sibling task (different object/reward, same last-2-slots
         # meaning) can set this too and share the same driver injection path.
         target_aware = True
 

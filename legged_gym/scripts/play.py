@@ -6,7 +6,7 @@ import os
 from legged_gym.envs import *
 from legged_gym.utils import *
 from legged_gym.utils.viser_viewer import create_viser_viewer
-from legged_gym.utils.props import default_ball_prop, default_race_props, RACE_SPAWN_ROT
+from legged_gym.utils.scenarios import resolve_scenario, apply_scenario_to_env_cfg
 
 import numpy as np
 import torch
@@ -93,11 +93,8 @@ def override_configs(env_cfg, args, task_type):
     if args.viewer == "viser":
         args.headless = True
 
-    if args.ball or args.race:
-        env_cfg.props.list = ([default_ball_prop()] if args.ball else []) + \
-            (default_race_props() if args.race else [])
-    if args.race:
-        env_cfg.init_state.rot = RACE_SPAWN_ROT
+    scenario, scenario_options = resolve_scenario(args)
+    apply_scenario_to_env_cfg(env_cfg, scenario, scenario_options, apply_fail_hold=False)
 
 def print_debug_info(env, robot_index):
     """Print debug information while interacting

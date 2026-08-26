@@ -573,9 +573,9 @@ function familyButtonRow(name, current, hasPolicies) {
   // The race track (start/finish lines, spawn rotation — see
   // default_race_props()/RACE_SPAWN_ROT in legged_gym/utils/props.py) has
   // only been set up and tested against g1 so far; block switching away
-  // from it while --race is active rather than risk landing on scenery
-  // that doesn't match the new family.
-  const raceBlocked = raceEnabled && name !== 'g1';
+  // from it while the 'race' scenario is active rather than risk landing on
+  // scenery that doesn't match the new family.
+  const raceBlocked = currentScenario === 'race' && name !== 'g1';
   btn.disabled = name === current || familySwitchInFlight || !hasPolicies || raceBlocked;
   if (!hasPolicies) btn.title = `No trained policies for '${name}' yet — train one first`;
   else if (raceBlocked) btn.title = "Race mode is g1-only for now";
@@ -989,8 +989,12 @@ function renderTelemetry(telemetry) {
 }
 
 // ---- race mode: "321 Ready!" countdown, timer, finish-line detection ----
-// Only active when /config's race_enabled is true (the driver was launched
-// with --race — see default_race_props()/RACE_TRACK_LENGTH in
+// The button itself shows/auto-arms per readyButtonVisible, which any
+// scenario can opt into (see Scenario.ready_button_visible/
+// ready_button_armed_by_default in legged_gym/utils/scenarios.py) — only
+// finish-line detection is actually race-specific (raceTrackLength is only
+// ever non-null when /config's scenario is "race" — see
+// default_race_props()/RACE_TRACK_LENGTH in
 // legged_gym/utils/props.py for the start/finish line geometry this
 // mirrors, and RACE_FAIL_HOLD_S there for why hitting the crash mat no
 // longer snaps the robot back to spawn on its own — see check_termination()
@@ -1022,8 +1026,14 @@ function renderTelemetry(telemetry) {
 // keeps moving/simulating past that point — only the clock and distance
 // readout stop.
 
-let raceEnabled = false;
-let raceTrackLength = null; // meters, from /config; null unless --race
+let currentScenario = null; // 'default' | 'ball' | 'race' | null, from /config's "scenario"
+// Whether the "321 Ready!" button shows at all -- per-scenario, from /config's
+// "ready_button.visible" (see Scenario.ready_button_visible in legged_gym/utils/scenarios.py).
+// The countdown/timer/lock mechanism itself isn't race-specific (finish-line detection
+// already no-ops without a track -- see finishRace()'s raceTrackLength != null guard), so
+// every gate below keys off THIS, not off currentScenario === 'race' directly.
+let readyButtonVisible = false;
+let raceTrackLength = null; // meters, from /config's scenario_options.track_length; null unless the 'race' scenario is active
 let raceArmed = false; // the "321 Ready!" toggle: does Restart re-arm a countdown?
 let raceState = 'idle'; // 'idle' | 'countdown' | 'running' | 'finished' — THIS run
 let raceStartX = null;
@@ -1067,17 +1077,23 @@ function applyRaceControlsLockVisual() {
 }
 
 function initRaceMode(config) {
-  raceEnabled = !!config.race_enabled;
-  raceTrackLength = config.race_track_length ?? null;
-  raceReadyBtn.hidden = !raceEnabled;
-  if (!raceEnabled) { disarmRace(); return; }
+  currentScenario = config.scenario ?? null;
+  const btnCfg = config.ready_button || {};
+  readyButtonVisible = !!btnCfg.visible;
+  raceTrackLength = currentScenario === 'race' ? (config.scenario_options?.track_length ?? null) : null;
+  raceReadyBtn.hidden = !readyButtonVisible;
+  if (!readyButtonVisible) { disarmRace(); return; }
   // Property assignment (not addEventListener) so re-running this after a
   // family-switch reconnect can't stack a second handler.
   raceReadyBtn.onclick = onRaceReadyClick;
+  // Scenarios like race start pre-armed (see Scenario.ready_button_armed_by_default) --
+  // armRace() re-homes the robot and starts a countdown on its own, same as a manual
+  // click. Scenarios that just show the button (e.g. ball) start disarmed, as before.
+  if (btnCfg.armed_by_default) armRace(); else disarmRace();
 }
 
 function onRaceReadyClick() {
-  if (!raceEnabled) return;
+  if (!readyButtonVisible) return;
   if (raceArmed) disarmRace(); else armRace();
 }
 
@@ -1110,7 +1126,7 @@ function disarmRace() {
 // re-home above, uniformly.
 function onRestartTriggered() {
   resetRaceRun();
-  if (raceEnabled && raceArmed) {
+  if (readyButtonVisible && raceArmed) {
     // A beat for the teleport to actually land server-side (and for a
     // stale pre-restart telemetry reading to age out) before the countdown
     // — and the movement-controls lock that comes with it — starts.
@@ -1146,7 +1162,7 @@ function setCountdownText(text) {
 }
 
 function startRaceCountdown() {
-  if (!raceEnabled || !raceArmed || raceState === 'countdown' || raceState === 'running') return;
+  if (!readyButtonVisible || !raceArmed || raceState === 'countdown' || raceState === 'running') return;
   raceState = 'countdown';
   raceFooter.hidden = true;
   raceParty.hidden = true;
@@ -1875,16 +1891,25 @@ function makeSortable(container, itemSelector, handleSelector, onReorder) {
 
 // ---- draggable panel sections (reorder + persist) ----
 
-// Race mode gets its own default order and its own saved-order key — a
-// race session shouldn't disturb the arrangement the operator already set
-// up outside --race, and vice versa. Camera/Command/Policies/Family up top
-// is what a race run actually needs at a glance (see the "321 Ready!"
+// Each scenario gets its own default order and its own saved-order key — a
+// scenario session shouldn't disturb the arrangement the operator already
+// set up outside it, and vice versa. Race: Camera/Command/Policies/Family up
+// top is what a race run actually needs at a glance (see the "321 Ready!"
 // button in Pause & Restart, the section right below all four); the rest
-// follow in whatever order they were already in.
-const RACE_DEFAULT_ORDER = ['camera', 'command', 'policies', 'family'];
+// follow in whatever order they were already in. Ball: just Camera then
+// Command up top (per request — "la camara esta arriba, el control sigue"),
+// rest unchanged. Default (admin): Camera, Command, Policies, then Live
+// Telemetry — see restorePanelOrder()'s appendChild loop below, which
+// only moves the sections actually named here and leaves everything else in
+// its current DOM position.
+const SCENARIO_DEFAULT_ORDERS = {
+  default: ['camera', 'command', 'policies', 'telemetry'],
+  race: ['camera', 'command', 'policies', 'family'],
+  ball: ['camera', 'command'],
+};
 
 function panelOrderKey() {
-  return raceEnabled ? 'giar.panelOrder.race.v1' : 'giar.panelOrder.v1';
+  return currentScenario ? `giar.panelOrder.${currentScenario}.v1` : 'giar.panelOrder.v1';
 }
 
 function initSectionDrag() {
@@ -1902,7 +1927,7 @@ function restorePanelOrder() {
   if (raw) {
     try { order = JSON.parse(raw); } catch { order = null; }
   }
-  if (!order && raceEnabled) order = RACE_DEFAULT_ORDER;
+  if (!order && currentScenario) order = SCENARIO_DEFAULT_ORDERS[currentScenario];
   if (!order) return;
   order.forEach((name) => {
     const s = panel.querySelector(`.panel-section[data-section="${name}"]`);

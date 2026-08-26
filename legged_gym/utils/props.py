@@ -1,4 +1,5 @@
-"""Shared prop presets for the `--ball`/`--race` CLI flags (play.py, rugiar_driver.py)."""
+"""Shared prop presets for the 'ball'/'race' scenarios (see legged_gym/utils/scenarios.py,
+selected via --scenario in play.py/rugiar_driver.py/rugiar_driver_target.py)."""
 
 import math
 
@@ -18,7 +19,7 @@ def default_ball_prop():
     }
 
 
-# Track length for --race -- the exact distance between the start crossing-line
+# Default track length for the 'race' scenario -- the exact distance between the start crossing-line
 # and the finish crossing-line (not the START/FINISH text, which is a separate
 # legibility marking near each line): start at the robot's own spawn point
 # (x=0), finish RACE_TRACK_LENGTH further along -x -- see RACE_SPAWN_ROT below
@@ -51,7 +52,7 @@ RACE_SPAWN_ROT = [0.0, 0.0, 1.0, 0.0]
 
 # How long a fail state (fallen over / excessive contact force -- see
 # legged_robot.py's check_termination()) is held before the env
-# auto-resets, while --race is active. Normal training/demo default
+# auto-resets, while the 'race' scenario is active. Normal training/demo default
 # (env_cfg.env.fail_to_terminal_time_s) is 0.1s -- fine for training
 # throughput, but it means the robot snaps back to spawn on the very next
 # tick after going down, before anyone watching could actually see it fall
@@ -143,16 +144,19 @@ def _crossing_line_prop(name, x, color=(0.95, 0.95, 0.95, 1.0)):
     }
 
 
-def default_race_props():
-    """Static (fixed, non-physics) scenery for `--race`: a start crossing-line
-    at the robot's spawn (x=0) with "START" line-text next to it, a finish
-    crossing-line RACE_TRACK_LENGTH further down -x with "FINISH" line-text
-    next to it, and (separated from the finish text by a visible gap, not
-    touching it) a big blue crash-mat wall to run into -- like an Olympic
-    sprint track, sim/viser-only for now (see `default_ball_prop()`'s
+def default_race_props(track_length=RACE_TRACK_LENGTH):
+    """Static (fixed, non-physics) scenery for the 'race' scenario: a start
+    crossing-line at the robot's spawn (x=0) with "START" line-text next to
+    it, a finish crossing-line `track_length` further down -x with "FINISH"
+    line-text next to it, and (separated from the finish text by a visible
+    gap, not touching it) a big blue crash-mat wall to run into -- like an
+    Olympic sprint track, sim/viser-only for now (see `default_ball_prop()`'s
     docstring convention: opt-in per driver/play invocation, never touched by
     training, since `cfg.props.list` stays empty unless a caller explicitly
     sets it).
+
+    `track_length` defaults to RACE_TRACK_LENGTH but is overridable (see
+    legged_gym/utils/scenarios.py's --scenario-option track_length=...).
 
     Pair with RACE_SPAWN_ROT (env_cfg.init_state.rot) so the robot actually
     faces -x, down the track, at spawn.
@@ -160,7 +164,7 @@ def default_race_props():
     Every entry is `fixed=True` -- static geometry, not dynamic rigid bodies
     like the ball prop, so they don't fall/get knocked away.
     """
-    finish_x = -RACE_TRACK_LENGTH
+    finish_x = -track_length
     mat_size = [1.0, 6.0, 1.8]  # [depth (x), width (y), height (z)] -- lying on its long
     # side (width along the ground, across the track), not standing on end: wide enough to
     # always be in the robot's path, still taller than the robot but not top-heavy-looking.

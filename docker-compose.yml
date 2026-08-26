@@ -74,6 +74,9 @@ services:
       HEADLESS: ${HEADLESS:-0}
       # Playback speed multiplier (1.0 = real-time 50 Hz).
       SPEED: ${SPEED:-0.35}
+      # Scenario to spawn next to the robot: "ball" or "race" (see
+      # legged_gym/utils/scenarios.py). Unset = no scenario.
+      SCENARIO: ${SCENARIO:-}
       # GPU selection — restricts which host GPU(s) the container sees.
       # Only effective when the GPU overlay is applied (docker-compose.gpu.yml).
       NVIDIA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}

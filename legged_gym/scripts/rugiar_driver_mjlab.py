@@ -215,9 +215,11 @@ def _argv_for_family_switch(cli: argparse.Namespace, new_task: str) -> Optional[
         # at all -- only relevant when the NEW task is itself mjlab-hosted.
         argv += ["--motion_file", cli.motion_file]
     if new_task == "g1" and script_name != "rugiar_driver_mjlab.py":
-        # g1's own default: land in the ball+camera demo setup, same default
-        # rugiar_driver.py's own _relaunch_for_family() applies -- see there.
-        argv += ["--ball", "--camera"]
+        # g1's own default: forced --camera (same default rugiar_driver.py's own
+        # _relaunch_for_family() applies for g1 -- see there). No --scenario override --
+        # add_scenario_args's own 'default' default already lands it in the full-admin
+        # scenario on its own; mjlab's own cli has no --scenario at all to forward here.
+        argv += ["--camera"]
     return argv, env
 
 

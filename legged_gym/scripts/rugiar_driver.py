@@ -73,9 +73,7 @@ from legged_gym import *
 from legged_gym.envs import *
 from legged_gym.utils import task_registry
 from legged_gym.utils.viser_viewer import create_viser_viewer
-from legged_gym.utils.props import (
-    default_ball_prop, default_race_props, RACE_SPAWN_ROT, RACE_TRACK_LENGTH, RACE_FAIL_HOLD_S,
-)
+from legged_gym.utils.scenarios import add_scenario_args, resolve_scenario, apply_scenario_to_env_cfg
 
 from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
@@ -255,7 +253,7 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
                   f"(see docs/mjlab_migration.md phase 0) -- staying on the current family.")
             return
         env["SIMULATOR"] = "mjlab"
-        # No --cruise_limit/--ball/--camera/--real: a tracking task has no
+        # No --cruise_limit/--scenario/--camera/--real: a tracking task has no
         # velocity command to cap (see MjlabAdapter's docstring), and the
         # mjlab driver has no Genesis props/camera/DDS path at all.
         argv = [interpreter, script, "--task", new_task,
@@ -273,10 +271,12 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
             argv += _bare_g1_policy_specs()
         if cli.control_port is not None:
             argv += ["--control_port", str(cli.control_port)]
-        if cli.ball or new_task == "g1":
-            argv.append("--ball")
-        if cli.race:
-            argv.append("--race")
+        # cli.scenario always carries a real value (add_scenario_args defaults it to
+        # 'default', never None/empty) -- whatever this process is running (including the
+        # implicit 'default' admin scenario) survives a family switch unchanged.
+        argv += ["--scenario", cli.scenario]
+        for opt in cli.scenario_option:
+            argv += ["--scenario-option", opt]
         if cli.camera or new_task == "g1":
             argv.append("--camera")
         if cli.real:
@@ -346,14 +346,7 @@ def main():
                               "(web/index.html: Docs/Simulator tabs + persistent controls panel + keyboard "
                               "shortcuts + a Stimuli panel for manual velocity commands) at "
                               "http://localhost:<control_port>/.")
-    parser.add_argument('--ball', action='store_true', default=False,
-                         help="spawn a physics-enabled ball prop next to the robot (Genesis only, for now)")
-    parser.add_argument('--race', action='store_true', default=False,
-                         help="spawn a race track for the sim/viser scene: a start line at the robot's spawn "
-                              "point, a finish line ~10m ahead, and a big blue crash-mat wall right behind the "
-                              "finish line to run into (see legged_gym/utils/props.py::default_race_props()). "
-                              "Genesis/viser only, for now -- sim scenery, no effect on training (cfg.props.list "
-                              "stays empty unless a caller like this one opts in).")
+    add_scenario_args(parser)
     parser.add_argument('--camera', action='store_true', default=False,
                          help="stream a robot-POV RGB camera feed to the control web at /camera.mjpg (Genesis "
                               "sim only, for now — see GenesisSimulator.get_camera_frame() and "
@@ -442,18 +435,13 @@ def main():
                 gs.init(backend=gs.cpu, logging_level='warning')
 
         env_cfg, _ = task_registry.get_cfgs(name=args.task)
-        if cli.ball or cli.race:
-            env_cfg.props.list = ([default_ball_prop()] if cli.ball else []) + \
-                (default_race_props() if cli.race else [])
-        if cli.race:
-            env_cfg.init_state.rot = RACE_SPAWN_ROT
-            # Normal training/demo behavior resets ~0.1s after a fail is
-            # detected (env_cfg.env.fail_to_terminal_time_s) -- too fast to
-            # ever actually see the robot go down. A race needs the crash
-            # (hitting the mat at the end) to stay on screen, results intact,
-            # until the operator hits Restart -- see RACE_FAIL_HOLD_S's own
-            # docstring in utils/props.py.
-            env_cfg.env.fail_to_terminal_time_s = RACE_FAIL_HOLD_S
+        scenario, scenario_options = resolve_scenario(cli)
+        # Normal training/demo behavior resets ~0.1s after a fail is detected
+        # (env_cfg.env.fail_to_terminal_time_s) -- too fast to ever actually see the robot
+        # go down. A scenario like race needs the crash (hitting the mat at the end) to
+        # stay on screen, results intact, until the operator hits Restart -- see
+        # Scenario.fail_to_terminal_time_s / RACE_FAIL_HOLD_S's own docstring in utils/props.py.
+        apply_scenario_to_env_cfg(env_cfg, scenario, scenario_options)
         if cli.camera:
             env_cfg.sensor.add_rgb_camera = True
 
@@ -604,6 +592,7 @@ def main():
         # adapter is Sim or Real — the Simulator tab just has nothing to
         # show in --real mode (no viser_viewer above).
         repo_root = Path(__file__).resolve().parents[2]
+        web_scenario, web_scenario_options = resolve_scenario(cli)
 
         @control_server.app.get("/config")
         def _web_config():
@@ -624,15 +613,24 @@ def main():
                     "vy": list(ranges.lin_vel_y),
                     "yaw": list(ranges.ang_vel_yaw),
                 },
-                # Lets the web panel show the "321 Ready!" race HUD (countdown,
-                # timer, finish detection against telemetry.base_pos_xy) and
-                # default to the race-friendly panel order — see
-                # default_race_props()/RACE_TRACK_LENGTH in utils/props.py for
-                # where the start/finish line positions this distance comes
-                # from. None (not 0) when --race wasn't passed, same
-                # "absent/None means unsupported" convention as camera_enabled.
-                "race_enabled": cli.race,
-                "race_track_length": RACE_TRACK_LENGTH if cli.race else None,
+                # Lets the web panel pick its scenario-specific UI (e.g. race's "321
+                # Ready!" HUD: countdown, timer, finish detection against
+                # telemetry.base_pos_xy) and default panel order — see
+                # legged_gym/utils/scenarios.py / web/app.js's SCENARIO_DEFAULT_ORDERS.
+                # None when --scenario wasn't passed, same "absent means unsupported"
+                # convention as camera_enabled. Resolved fresh here (not from the
+                # env-building branch above) since --scenario is accepted with --real
+                # too, even though scenario props are Genesis-only for now.
+                "scenario": web_scenario.name if web_scenario else None,
+                "scenario_options": web_scenario.web_options(web_scenario_options) if web_scenario else {},
+                # Lets the web panel show/hide (and, for the "armed_by_default" scenarios
+                # like race, auto-arm) the "321 Ready!" countdown/timer button — see
+                # Scenario.ready_button_visible/ready_button_armed_by_default and
+                # web/app.js's initRaceMode().
+                "ready_button": {
+                    "visible": web_scenario.ready_button_visible if web_scenario else False,
+                    "armed_by_default": web_scenario.ready_button_armed_by_default if web_scenario else False,
+                },
             }
 
         control_server.app.mount(

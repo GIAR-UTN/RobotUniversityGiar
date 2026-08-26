@@ -23,7 +23,7 @@ This is the driver for the "target-aware" family of tasks (g1_target and future
 siblings that set cfg.rewards.target_aware = True) — same plumbing as
 `legged_gym/scripts/rugiar_driver.py` (the "g1" walking family's driver),
 plus a per-tick step that overwrites the running task's last-2-obs-slots
-"target bearing" contract with the live --ball position (see
+"target bearing" contract with the live 'ball' scenario position (see
 _inject_target_obs() below) instead of whatever that task's own training-time
 sampler put there. Deliberately a separate, largely-duplicated script rather
 than a shared module: each registered task here is treated as its own
@@ -36,7 +36,7 @@ _script_for_task() below.
 Usage:
     python legged_gym/scripts/rugiar_driver_target.py \
         --policy target_smoke:policies/target_smoke/checkpoint.pt \
-        --active target_smoke --ball --camera
+        --active target_smoke --scenario ball --camera
 
 DUPLICATION WARNING: this file is a largely-duplicated sibling of
 rugiar_driver.py, not a caller of it (see above for why). Standalone helper
@@ -75,7 +75,7 @@ from legged_gym import *
 from legged_gym.envs import *
 from legged_gym.utils import task_registry
 from legged_gym.utils.viser_viewer import create_viser_viewer
-from legged_gym.utils.props import default_ball_prop, default_race_props, RACE_SPAWN_ROT
+from legged_gym.utils.scenarios import add_scenario_args, resolve_scenario, apply_scenario_to_env_cfg
 
 from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
@@ -132,7 +132,7 @@ def _inject_target_obs(obs: torch.Tensor, adapter, pitch_range, roll_range) -> t
     needed to face adapter.get_target_relative_pos() right now, in place of
     whatever the task's own per-episode training sampler put there. A no-op
     (returns obs unchanged) if there's no ball prop to read this tick -- e.g.
-    --ball wasn't passed. Clamped to the same ranges the policy was actually
+    --scenario ball wasn't passed. Clamped to the same ranges the policy was actually
     trained across (cfg.rewards.behavior_params_range), same reasoning as
     SimAdapter.set_command()'s clamp to cfg.commands.ranges: never ask a
     policy for something outside the envelope it learned.
@@ -283,7 +283,7 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
                   f"(see docs/mjlab_migration.md phase 0) -- staying on the current family.")
             return
         env["SIMULATOR"] = "mjlab"
-        # No --cruise_limit/--ball/--camera/--real: a tracking task has no
+        # No --cruise_limit/--scenario/--camera/--real: a tracking task has no
         # velocity command to cap (see MjlabAdapter's docstring), and the
         # mjlab driver has no Genesis props/camera/DDS path at all.
         argv = [interpreter, script, "--task", new_task,
@@ -301,10 +301,12 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
             argv += _bare_g1_policy_specs()
         if cli.control_port is not None:
             argv += ["--control_port", str(cli.control_port)]
-        if cli.ball or new_task == "g1":
-            argv.append("--ball")
-        if cli.race:
-            argv.append("--race")
+        # cli.scenario always carries a real value (add_scenario_args defaults it to
+        # 'default', never None/empty) -- whatever this process is running (including the
+        # implicit 'default' admin scenario) survives a family switch unchanged.
+        argv += ["--scenario", cli.scenario]
+        for opt in cli.scenario_option:
+            argv += ["--scenario-option", opt]
         if cli.camera or new_task == "g1":
             argv.append("--camera")
         if cli.real:
@@ -374,14 +376,7 @@ def main():
                               "(web/index.html: Docs/Simulator tabs + persistent controls panel + keyboard "
                               "shortcuts + a Stimuli panel for manual velocity commands) at "
                               "http://localhost:<control_port>/.")
-    parser.add_argument('--ball', action='store_true', default=False,
-                         help="spawn a physics-enabled ball prop next to the robot (Genesis only, for now)")
-    parser.add_argument('--race', action='store_true', default=False,
-                         help="spawn a race track for the sim/viser scene: a start line at the robot's spawn "
-                              "point, a finish line ~10m ahead, and a big blue crash-mat wall right behind the "
-                              "finish line to run into (see legged_gym/utils/props.py::default_race_props()). "
-                              "Genesis/viser only, for now -- sim scenery, no effect on training (cfg.props.list "
-                              "stays empty unless a caller like this one opts in).")
+    add_scenario_args(parser)
     parser.add_argument('--camera', action='store_true', default=False,
                          help="stream a robot-POV RGB camera feed to the control web at /camera.mjpg (Genesis "
                               "sim only, for now — see GenesisSimulator.get_camera_frame() and "
@@ -470,11 +465,8 @@ def main():
                 gs.init(backend=gs.cpu, logging_level='warning')
 
         env_cfg, _ = task_registry.get_cfgs(name=args.task)
-        if cli.ball or cli.race:
-            env_cfg.props.list = ([default_ball_prop()] if cli.ball else []) + \
-                (default_race_props() if cli.race else [])
-        if cli.race:
-            env_cfg.init_state.rot = RACE_SPAWN_ROT
+        scenario, scenario_options = resolve_scenario(cli)
+        apply_scenario_to_env_cfg(env_cfg, scenario, scenario_options, apply_fail_hold=False)
         if cli.camera:
             env_cfg.sensor.add_rgb_camera = True
 
@@ -485,7 +477,7 @@ def main():
     # contract (pitch_target, roll_target = the orientation needed to face
     # the current target) -- see the "G1 target" plan. Any task that opts in
     # (e.g. G1TargetCfg) gets those slots overwritten every tick, right before
-    # the policy sees them, with the live --ball target's actual bearing
+    # the policy sees them, with the live 'ball' scenario target's actual bearing
     # instead of whatever the task's own training-time sampler put there --
     # same slots, same meaning, just a different source at drive time.
     target_aware = bool(getattr(env_cfg.rewards, "target_aware", False))

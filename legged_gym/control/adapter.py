@@ -254,10 +254,10 @@ class SimAdapter:
 
     def get_target_relative_pos(self) -> Optional[torch.Tensor]:
         """Not part of RobotAdapter (same reasoning as get_camera_frame() above)
-        -- an optional, backend-specific extra. Returns the `--ball` prop's live
+        -- an optional, backend-specific extra. Returns the 'ball' scenario's live
         world position transformed into the robot's own base frame (x forward,
         y left, z up), shape (num_envs, 3), or None if no ball prop exists (
-        `--ball` wasn't passed) or this backend has no prop tracking at all.
+        `--scenario ball` wasn't passed) or this backend has no prop tracking at all.
         This is ground truth, not detection -- the real-camera equivalent
         (RealAdapter) has no prop to read and has no get_target_relative_pos
         at all; callers must treat a missing/absent method or a None return

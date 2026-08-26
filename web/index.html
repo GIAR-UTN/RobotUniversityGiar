@@ -773,7 +773,7 @@
   <div id="views">
     <div class="view" id="view-sim"></div>
 
-    <!-- Race HUD (--race only, see initRaceMode() in app.js): a HUD layer
+    <!-- Race HUD ('race' scenario only, see initRaceMode() in app.js): a HUD layer
          painted over the simulator, never intercepting clicks (viser's
          iframe is cross-origin, so this can't live inside it — it's a
          sibling positioned on top, same trick as #transition-overlay). -->
@@ -918,8 +918,8 @@
           <label for="episode-timeout-s">Interval (seconds)</label>
           <input type="number" id="episode-timeout-s" min="1" step="1" value="20">
         </div>
-        <!-- Only shown when /config's race_enabled is true (the driver was
-             launched with --race) — see initRaceMode() in app.js. A toggle
+        <!-- Only shown when /config's scenario is "race" (the driver was
+             launched with --scenario race) — see initRaceMode() in app.js. A toggle
              (aria-pressed), not a one-shot action: arms/disarms race mode.
              While armed, pressing R (Restart) re-homes the robot and starts
              a fresh 3-2-1-GO countdown on its own — see onRestartTriggered(). -->

@@ -351,8 +351,8 @@ class ControlService:
                 "value": vec3(state.base_pos_xy), "unit": "m", "source": "sim_ground_truth",
                 "label": "Position (x, y)",
                 "note": "World-frame base position — not measured by any real sensor. Used by the "
-                        "--race track overlay (web/app.js) to time a run and detect the finish "
-                        "line; simulator ground truth only, None on RealAdapter.",
+                        "'race' scenario's track overlay (web/app.js) to time a run and detect the "
+                        "finish line; simulator ground truth only, None on RealAdapter.",
             },
         }
 
