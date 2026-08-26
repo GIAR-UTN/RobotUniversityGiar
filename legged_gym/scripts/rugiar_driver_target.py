@@ -75,7 +75,7 @@ from legged_gym import *
 from legged_gym.envs import *
 from legged_gym.utils import task_registry
 from legged_gym.utils.viser_viewer import create_viser_viewer
-from legged_gym.utils.props import default_ball_prop
+from legged_gym.utils.props import default_ball_prop, default_race_props, RACE_SPAWN_ROT
 
 from legged_gym.control import (
     SimAdapter, PolicySupervisor, SafetyGovernor, ControlService,
@@ -296,6 +296,8 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
             argv += ["--control_port", str(cli.control_port)]
         if cli.ball or new_task == "g1":
             argv.append("--ball")
+        if cli.race:
+            argv.append("--race")
         if cli.camera or new_task == "g1":
             argv.append("--camera")
         if cli.real:
@@ -367,6 +369,12 @@ def main():
                               "http://localhost:<control_port>/.")
     parser.add_argument('--ball', action='store_true', default=False,
                          help="spawn a physics-enabled ball prop next to the robot (Genesis only, for now)")
+    parser.add_argument('--race', action='store_true', default=False,
+                         help="spawn a race track for the sim/viser scene: a start line at the robot's spawn "
+                              "point, a finish line ~10m ahead, and a big blue crash-mat wall right behind the "
+                              "finish line to run into (see legged_gym/utils/props.py::default_race_props()). "
+                              "Genesis/viser only, for now -- sim scenery, no effect on training (cfg.props.list "
+                              "stays empty unless a caller like this one opts in).")
     parser.add_argument('--camera', action='store_true', default=False,
                          help="stream a robot-POV RGB camera feed to the control web at /camera.mjpg (Genesis "
                               "sim only, for now — see GenesisSimulator.get_camera_frame() and "
@@ -455,8 +463,11 @@ def main():
                 gs.init(backend=gs.cpu, logging_level='warning')
 
         env_cfg, _ = task_registry.get_cfgs(name=args.task)
-        if cli.ball:
-            env_cfg.props.list = [default_ball_prop()]
+        if cli.ball or cli.race:
+            env_cfg.props.list = ([default_ball_prop()] if cli.ball else []) + \
+                (default_race_props() if cli.race else [])
+        if cli.race:
+            env_cfg.init_state.rot = RACE_SPAWN_ROT
         if cli.camera:
             env_cfg.sensor.add_rgb_camera = True
 

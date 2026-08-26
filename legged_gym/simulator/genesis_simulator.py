@@ -530,10 +530,15 @@ class GenesisSimulator(Simulator):
             )
             color = prop_cfg.get("color")
             surface = gs.surfaces.Default(color=tuple(color)) if color is not None else None
+            fixed = prop_cfg.get("fixed", False)
+            euler = prop_cfg.get("euler")
             if shape == "sphere":
-                morph = gs.morphs.Sphere(radius=prop_cfg.get("size", 0.1), pos=pos, fixed=False)
+                morph = gs.morphs.Sphere(radius=prop_cfg.get("size", 0.1), pos=pos, fixed=fixed)
             elif shape == "box":
-                morph = gs.morphs.Box(size=prop_cfg.get("size", [0.1, 0.1, 0.1]), pos=pos, fixed=False)
+                box_kwargs = dict(size=prop_cfg.get("size", [0.1, 0.1, 0.1]), pos=pos, fixed=fixed)
+                if euler is not None:
+                    box_kwargs["euler"] = euler
+                morph = gs.morphs.Box(**box_kwargs)
             else:
                 raise ValueError(f"Unsupported prop shape: {shape}")
             self._genesis_props[prop_cfg["name"]] = self._scene.add_entity(
@@ -545,6 +550,7 @@ class GenesisSimulator(Simulator):
         Runs after scene.build(), since entity state (mass, pose) is only queryable/settable then.
         """
         self._prop_reset_pos = {}
+        self._prop_reset_quat = {}
         self._prop_linear_damping = {}
         for prop_cfg in self._cfg.props.list:
             name = prop_cfg["name"]
@@ -559,6 +565,16 @@ class GenesisSimulator(Simulator):
             }
             self._prop_reset_pos[name] = torch.tensor(
                 prop_cfg.get("pos", [0.5, 0.0, 0.5]), device=self._device, dtype=torch.float)
+            # wxyz -- identity unless the prop declared its own construction-time `euler`
+            # (e.g. a rotated line segment spelling out race-track text), in which case
+            # every reset must re-assert THAT orientation, not identity, or the prop
+            # snaps back to unrotated (or, observed live, vanishes) on the next reset_idx().
+            euler = prop_cfg.get("euler")
+            if euler is not None:
+                quat_wxyz = trimesh.transformations.quaternion_from_euler(*np.radians(euler), axes='sxyz')
+            else:
+                quat_wxyz = (1.0, 0.0, 0.0, 0.0)
+            self._prop_reset_quat[name] = torch.tensor(quat_wxyz, device=self._device, dtype=torch.float)
             self._prop_linear_damping[name] = prop_cfg.get("linear_damping", 0.0)
         if self._genesis_props:
             self._reset_props(torch.arange(self._num_envs, device=self._device))
@@ -599,11 +615,13 @@ class GenesisSimulator(Simulator):
         prop resets next to world (0,0,0) while the robot resets at env_origins
         (which, for a single-env plane layout, can be tens of meters away).
         """
-        identity_quat = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self._device)  # wxyz
         for name, entity in self._genesis_props.items():
             reset_pos = self._env_origins[env_ids] + self._prop_reset_pos[name].unsqueeze(0)
+            reset_quat = self._prop_reset_quat[name]  # the prop's own construction-time
+            # orientation (identity, unless it declared a rotating `euler`) -- re-asserted
+            # explicitly on every reset rather than assumed to survive untouched.
             entity.set_pos(reset_pos, envs_idx=env_ids, zero_velocity=True)
-            entity.set_quat(identity_quat.unsqueeze(0).repeat(len(env_ids), 1), envs_idx=env_ids, zero_velocity=True)
+            entity.set_quat(reset_quat.unsqueeze(0).repeat(len(env_ids), 1), envs_idx=env_ids, zero_velocity=True)
 
     def _resolve_robot_indices(self):
         """One-time resolution of dof/link indices and domain-rand init, run once from _create_envs()."""

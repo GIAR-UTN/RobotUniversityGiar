@@ -483,9 +483,22 @@ class ViserViewer:
             mesh.visual = trimesh.visual.ColorVisuals(
                 vertex_colors=np.tile(color, (len(mesh.vertices), 1)))
 
+            euler = prop_cfg.get("euler")
+            # (w,x,y,z) -- matches add_mesh_trimesh's wxyz convention and Genesis's own
+            # "extrinsic x-y-z" morph.euler convention (trimesh's 'sxyz' == extrinsic/static xyz).
+            wxyz = tuple(trimesh.transformations.quaternion_from_euler(
+                *np.radians(euler), axes='sxyz')) if euler is not None else (1.0, 0.0, 0.0, 0.0)
+
             handle = self.server.scene.add_mesh_trimesh(
-                f"/props/{name}", mesh, cast_shadow=True, receive_shadow=True)
+                f"/props/{name}", mesh, wxyz=wxyz, cast_shadow=True, receive_shadow=True)
             self._prop_handles[name] = handle
+
+            label = prop_cfg.get("label")
+            if label:
+                # Fixed props (race markers) don't move, so this is placed once here
+                # rather than tracked in update_from_simulator() like the mesh handle.
+                label_pos = np.array(prop_cfg.get("pos", (0.0, 0.0, 0.0)), dtype=float) + np.array([0.0, 0.0, 0.5])
+                self.server.scene.add_label(f"/props/{name}_label", label, position=tuple(label_pos))
 
     def _setup_camera(self) -> None:
         self._camera_offset = np.array([2.0, 2.0, 1.5])
