@@ -263,6 +263,20 @@
   .drag-handle{cursor:grab; color:var(--muted); font-size:1rem; line-height:1; padding:2px 4px; touch-action:none; user-select:none;}
   .drag-handle:active{cursor:grabbing;}
 
+  /* content-less stand-in that reflows during a drag instead of the real
+     (possibly heavy) item — see the drag-to-reorder comment in app.js */
+  .drop-placeholder{border:2px dashed var(--accent2); border-radius:8px; background:var(--bg-raised); opacity:.55;}
+
+  .move-btns{display:flex; flex-direction:column; gap:1px; flex:none;}
+  .move-btn{
+    width:16px; height:11px; border:1px solid var(--line); background:var(--bg); color:var(--muted);
+    cursor:pointer; padding:0; line-height:1; font-size:9px; display:flex; align-items:center; justify-content:center;
+  }
+  .move-btn[data-dir="up"]{border-radius:4px 4px 0 0; border-bottom:none;}
+  .move-btn[data-dir="down"]{border-radius:0 0 4px 4px;}
+  .move-btn:hover:not(:disabled){border-color:var(--accent2); color:var(--accent2);}
+  .move-btn:disabled{opacity:.35; cursor:default;}
+
   .help-btn{
     width:18px; height:18px; border-radius:50%; border:1px solid var(--line);
     background:var(--bg); color:var(--muted); font:600 11px/1 sans-serif;

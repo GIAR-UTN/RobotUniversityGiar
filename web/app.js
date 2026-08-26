@@ -1837,47 +1837,103 @@ function bindKeycapActions() {
 
 // ---- generic drag-to-reorder ----
 // Shared by the draggable panel sections and the Policies list: pick up an
-// item by its .drag-handle, reflow live among siblings as the pointer
-// crosses their vertical midpoints, then hand off to a caller-supplied
-// onReorder() to persist the new order (and, for policies, to recompute
-// shortcut keys from it).
+// item by its .drag-handle, choose where it lands, then hand off to a
+// caller-supplied onReorder() to persist the new order (and, for policies,
+// to recompute shortcut keys from it).
+//
+// This used to reorder the *real* item live on every pointermove. For
+// panels holding canvas/video content (Simulator, Camera) that forces a
+// re-layout — and sometimes a re-init — of that content on every pixel of
+// movement, which is what read as flicker/lag. Now only a lightweight,
+// content-less placeholder reflows during the drag; the real item just sits
+// there dimmed until pointerup. On release we wait DROP_SETTLE_MS before
+// actually moving the item into the placeholder's slot — a single move,
+// not one per pointermove — so a quick drag-and-release doesn't visibly
+// bounce, and animate that one move with a short FLIP transform so it still
+// reads as a slide rather than a jump.
 
+const DROP_SETTLE_MS = 500;
 let dragState = null;
 
 function onDragHandleDown(e) {
   const handle = e.currentTarget;
   const { container, itemSelector, item, onReorder } = handle._sortableCtx;
   handle.setPointerCapture(e.pointerId);
-  dragState = { container, itemSelector, item, onReorder, pointerId: e.pointerId };
+
+  // A previous gesture on this same item may still be waiting out its
+  // settle delay — finish it immediately before starting a new one.
+  if (item._dropSettleTimer) {
+    clearTimeout(item._dropSettleTimer);
+    item._dropSettleTimer = null;
+    item._dropPlaceholder?.remove();
+    item._dropPlaceholder = null;
+  }
+
+  const rect = item.getBoundingClientRect();
+  const cs = getComputedStyle(item);
+  const placeholder = document.createElement('div');
+  placeholder.className = 'drop-placeholder';
+  placeholder.style.height = `${rect.height}px`;
+  placeholder.style.marginTop = cs.marginTop;
+  placeholder.style.marginBottom = cs.marginBottom;
+  placeholder.style.borderRadius = cs.borderRadius;
+  item.after(placeholder);
   item.classList.add('dragging');
+
+  dragState = { container, itemSelector, item, placeholder, onReorder, pointerId: e.pointerId };
   document.addEventListener('pointermove', onDragHandleMove);
   document.addEventListener('pointerup', onDragHandleUp, { once: true });
 }
 
 function onDragHandleMove(e) {
   if (!dragState) return;
-  const { container, itemSelector, item } = dragState;
+  const { container, itemSelector, item, placeholder } = dragState;
   const siblings = [...container.querySelectorAll(itemSelector)].filter((el) => el !== item);
   for (const sib of siblings) {
     const r = sib.getBoundingClientRect();
     const mid = r.top + r.height / 2;
-    if (e.clientY < mid && (sib.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-      container.insertBefore(item, sib);
+    if (e.clientY < mid && (sib.compareDocumentPosition(placeholder) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      container.insertBefore(placeholder, sib);
       break;
     }
-    if (e.clientY > mid && (item.compareDocumentPosition(sib) & Node.DOCUMENT_POSITION_FOLLOWING)) {
-      container.insertBefore(item, sib.nextSibling);
+    if (e.clientY > mid && (placeholder.compareDocumentPosition(sib) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+      container.insertBefore(placeholder, sib.nextSibling);
       break;
     }
   }
 }
 
 function onDragHandleUp() {
-  const { item, onReorder } = dragState;
-  item.classList.remove('dragging');
+  const { item, placeholder, onReorder } = dragState;
   document.removeEventListener('pointermove', onDragHandleMove);
-  onReorder();
   dragState = null;
+
+  item._dropPlaceholder = placeholder;
+  item._dropSettleTimer = setTimeout(() => {
+    item._dropSettleTimer = null;
+    item._dropPlaceholder = null;
+    const from = item.getBoundingClientRect();
+    placeholder.replaceWith(item);
+    item.classList.remove('dragging');
+    animateMove(item, from);
+    onReorder();
+  }, DROP_SETTLE_MS);
+}
+
+// FLIP: item already sits at its new DOM position: `from` is where it used
+// to be on screen, so sliding it there and releasing back to the real
+// position reads as a smooth move instead of a snap.
+function animateMove(el, from) {
+  const to = el.getBoundingClientRect();
+  const dy = from.top - to.top;
+  if (!dy) return;
+  el.style.transition = 'none';
+  el.style.transform = `translateY(${dy}px)`;
+  requestAnimationFrame(() => {
+    el.style.transition = 'transform .2s ease-out';
+    el.style.transform = '';
+  });
+  el.addEventListener('transitionend', () => { el.style.transition = ''; }, { once: true });
 }
 
 function makeSortable(container, itemSelector, handleSelector, onReorder) {
@@ -1919,6 +1975,7 @@ function initSectionDrag() {
 function savePanelOrder() {
   const order = [...panel.querySelectorAll('.panel-section')].map((s) => s.dataset.section);
   localStorage.setItem(panelOrderKey(), JSON.stringify(order));
+  updateMoveButtonStates();
 }
 
 function restorePanelOrder() {
@@ -1932,6 +1989,48 @@ function restorePanelOrder() {
   order.forEach((name) => {
     const s = panel.querySelector(`.panel-section[data-section="${name}"]`);
     if (s) panel.appendChild(s);
+  });
+  updateMoveButtonStates();
+}
+
+// ---- up/down move buttons ----
+// A click-driven alternative to dragging, next to each section's "?" help
+// button — reorders one step at a time and shares the same persisted order
+// (and the same FLIP-animated single move) as the drag handle above.
+
+function initSectionMoveButtons() {
+  panel.querySelectorAll(':scope > .panel-section > .section-head').forEach((head) => {
+    if (head.querySelector('.move-btns')) return;
+    const helpBtn = head.querySelector('.help-btn[aria-label="Help"]');
+    const wrap = document.createElement('span');
+    wrap.className = 'move-btns';
+    wrap.innerHTML =
+      '<button type="button" class="move-btn" data-dir="up" aria-label="Move section up" title="Move up">&#9652;</button>' +
+      '<button type="button" class="move-btn" data-dir="down" aria-label="Move section down" title="Move down">&#9662;</button>';
+    wrap.querySelector('[data-dir="up"]').addEventListener('click', () => moveSection(head.parentElement, -1));
+    wrap.querySelector('[data-dir="down"]').addEventListener('click', () => moveSection(head.parentElement, 1));
+    head.insertBefore(wrap, helpBtn || null);
+  });
+  updateMoveButtonStates();
+}
+
+function moveSection(section, dir) {
+  const siblings = [...panel.querySelectorAll(':scope > .panel-section')];
+  const target = siblings.indexOf(section) + dir;
+  if (target < 0 || target >= siblings.length) return;
+  const from = section.getBoundingClientRect();
+  panel.insertBefore(section, dir < 0 ? siblings[target] : siblings[target].nextSibling);
+  animateMove(section, from);
+  savePanelOrder();
+}
+
+function updateMoveButtonStates() {
+  const sections = [...panel.querySelectorAll(':scope > .panel-section')];
+  sections.forEach((s, i) => {
+    const up = s.querySelector(':scope > .section-head .move-btn[data-dir="up"]');
+    const down = s.querySelector(':scope > .section-head .move-btn[data-dir="down"]');
+    if (up) up.disabled = i === 0;
+    if (down) down.disabled = i === sections.length - 1;
   });
 }
 
@@ -4419,6 +4518,7 @@ async function boot() {
   bindKeycapActions();
   initSectionDrag();
   restorePanelOrder();
+  initSectionMoveButtons();
   initPopovers();
 
   connect();
