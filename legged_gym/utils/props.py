@@ -1,7 +1,9 @@
-"""Shared prop presets for the 'ball'/'race' scenarios (see legged_gym/utils/scenarios.py,
-selected via --scenario in play.py/rugiar_driver.py/rugiar_driver_target.py)."""
+"""Shared prop presets for the 'ball'/'race'/'rough_terrain' scenarios (see
+legged_gym/utils/scenarios.py, selected via --scenario in
+play.py/rugiar_driver.py/rugiar_driver_target.py)."""
 
 import math
+import random
 
 
 def default_ball_prop():
@@ -124,17 +126,22 @@ def _word_line_props(word, name_prefix, x0, color, forward_sign=-1.0,
     return props
 
 
-def _crossing_line_prop(name, x, color=(0.95, 0.95, 0.95, 1.0)):
+def _crossing_line_prop(name, x, color=(0.95, 0.95, 0.95, 1.0), height=0.02):
     """A simple straight bar across the lane marking the exact start/finish
     crossing point -- distinct from the START/FINISH line-text, which is a
     nearby legibility marking, not the precise measured point. RACE_TRACK_LENGTH
     is measured between this prop at x=0 and this prop at x=-RACE_TRACK_LENGTH.
+
+    `height` defaults to race's original 0.02 but can be thinned further (see
+    default_rough_terrain_props(), which wants this to read as flush paint, not
+    a raised strip, now that it sits right next to real climbable tiles rather
+    than race's flat open lane).
     """
     return {
         "name": name,
         "shape": "box",
-        "size": [0.06, RACE_CROSSING_LINE_WIDTH, 0.02],
-        "pos": [x, 0.0, 0.011],
+        "size": [0.06, RACE_CROSSING_LINE_WIDTH, height],
+        "pos": [x, 0.0, height / 2 + 0.001],
         "fixed": True,
         # Paint on the ground, not a curb -- collision=False so a walking
         # gait can't catch a foot on its edge (see _word_line_props()'s
@@ -142,6 +149,266 @@ def _crossing_line_prop(name, x, color=(0.95, 0.95, 0.95, 1.0)):
         "collision": False,
         "color": list(color),
     }
+
+
+def _word_sign_props(word, name_prefix, sign_x, z0, color, forward_offset=0.03,
+                      letter_w=0.4, letter_h=None, gap=0.15, thickness=0.06, mark_height=0.02):
+    """Same block-stroke lettering as `_word_line_props`, but painted onto a VERTICAL
+    face (an elevated sign board) instead of the ground: each letter's local "up" axis
+    (0->2) maps to world z (climbing the board) rather than world x (depth along the
+    track), and stays at a fixed world x (`sign_x` + a small `forward_offset` so the
+    paint sits just off the board's front face, not embedded in it). Letters are still
+    spread across world y (the lane width), centered on y=0, exactly like the ground
+    version.
+
+    Rotating a stroke within the vertical (y, z) plane takes a rotation about world X
+    (not Z, which is what rotates strokes flat on the ground) -- see the size/euler
+    layout below: size=[mark_height, length, thickness] puts the stroke's long axis on
+    local y (not local x), so an X-axis euler rotation carries it to any angle within
+    the y-z plane, while local x (mark_height, the paint's protrusion off the board)
+    is untouched by that rotation and stays pointing along world x as intended.
+    """
+    letter_h = RACE_LETTER_DEPTH / 2 if letter_h is None else letter_h
+    letters = word.upper()
+    total_width = len(letters) * letter_w + (len(letters) - 1) * gap
+    y0 = -total_width / 2
+    props = []
+    for i, ch in enumerate(letters):
+        cell_y0 = y0 + i * (letter_w + gap)
+        for j, ((lx1, ly1), (lx2, ly2)) in enumerate(_LETTER_SEGMENTS.get(ch, [])):
+            wy1, wy2 = cell_y0 + lx1 * letter_w, cell_y0 + lx2 * letter_w
+            wz1, wz2 = z0 + ly1 * letter_h, z0 + ly2 * letter_h
+            dy, dz = wy2 - wy1, wz2 - wz1
+            length = math.hypot(dy, dz)
+            if length < 1e-6:
+                continue
+            angle_deg = math.degrees(math.atan2(dz, dy))
+            props.append({
+                "name": f"{name_prefix}_{i}_{j}",
+                "shape": "box",
+                "size": [mark_height, length, thickness],
+                "pos": [sign_x + forward_offset, (wy1 + wy2) / 2, (wz1 + wz2) / 2],
+                "euler": [angle_deg, 0.0, 0.0],
+                "fixed": True,
+                # Paint on the board's face, not a physical relief -- see
+                # _word_line_props()'s identical reasoning for the ground version.
+                "collision": False,
+                "color": color,
+            })
+    return props
+
+
+def _sign_props(name_prefix, x, lane_width, word, word_color):
+    """An elevated start/finish marker: two thin poles at the edges of the lane (out of
+    the walking path down the center) holding up a board that spans between them, with
+    `word` painted on its face via `_word_sign_props`. Replaces race's ground-painted
+    START/FINISH text -- requested as "carteles elevados" (elevated signs) for the
+    rough_terrain scenario, like a real obstacle-course start/finish gantry, rather than
+    text a robot could be looking straight down at while stepping over broken ground.
+    """
+    pole_half = lane_width / 2 - ROUGH_TERRAIN_SIGN_POLE_THICKNESS / 2
+    board_z0 = ROUGH_TERRAIN_SIGN_POLE_HEIGHT
+    board_z_center = board_z0 + ROUGH_TERRAIN_SIGN_BOARD_HEIGHT / 2
+    props = []
+    for side, y in (("l", -pole_half), ("r", pole_half)):
+        props.append({
+            "name": f"{name_prefix}_pole_{side}",
+            "shape": "box",
+            "size": [ROUGH_TERRAIN_SIGN_POLE_THICKNESS, ROUGH_TERRAIN_SIGN_POLE_THICKNESS,
+                     ROUGH_TERRAIN_SIGN_POLE_HEIGHT],
+            "pos": [x, y, ROUGH_TERRAIN_SIGN_POLE_HEIGHT / 2],
+            "fixed": True,
+            "color": [0.15, 0.15, 0.15, 1.0],
+        })
+    props.append({
+        "name": f"{name_prefix}_board",
+        "shape": "box",
+        "size": [ROUGH_TERRAIN_SIGN_BOARD_THICKNESS, lane_width, ROUGH_TERRAIN_SIGN_BOARD_HEIGHT],
+        "pos": [x, 0.0, board_z_center],
+        "fixed": True,
+        "color": [0.95, 0.95, 0.95, 1.0],
+    })
+    # Letters climb from a small margin above the board's own bottom edge, sized to fit
+    # within its height (2 local "up" units -> ROUGH_TERRAIN_SIGN_BOARD_HEIGHT).
+    props += _word_sign_props(
+        word, f"{name_prefix}_text", sign_x=x, z0=board_z0 + 0.05, color=word_color,
+        letter_h=(ROUGH_TERRAIN_SIGN_BOARD_HEIGHT - 0.1) / 2)
+    return props
+
+
+# Square "laja"/pixel tile footprint -- a clean, simple paver size (roughly a big
+# footstep wide) that also tiles RACE_CROSSING_LINE_WIDTH and RACE_TRACK_LENGTH cleanly
+# enough to fill the lane without leaving slivers.
+ROUGH_TERRAIN_TILE_SIZE = 0.35
+# Every tile is at least this tall -- a real, solid slab even where the random walk
+# below bottoms out at zero extra height, not a degenerate zero-height box.
+ROUGH_TERRAIN_BASE_HEIGHT = 0.02
+# The tallest a tile can ever get (base height + this) -- reached only right at the
+# very end, per the exponential difficulty ramp below. A ~1.3m biped cannot climb a
+# ~2m wall -- this is deliberately a literal wall by the end, not just "hard": the
+# game is "how far did you get" precisely because finishing is meant to be
+# impossible, and to bite well before the very last tile too (requested: "más alto,
+# 2 metros al final... para que tenga más dificultad desde antes" -- the exponential
+# curve's own shape means raising the ceiling also raises every earlier point on the
+# curve, not just the final tile).
+ROUGH_TERRAIN_MAX_STEP = 2.0
+# How sharply the difficulty ramp curves -- see rough_terrain_baseline_height() below.
+# Higher = flatter for longer, then a steeper last-minute spike towards
+# ROUGH_TERRAIN_MAX_STEP ("algo parecido a una exponencial").
+ROUGH_TERRAIN_STEP_CURVE_K = 5.0
+# Per-tile random variation around its row's baseline height, as a fraction of that
+# baseline -- texture, not the difficulty mechanism itself (requested: tiles at the
+# same depth should look "parecidas... hasta un 10% diferencia").
+ROUGH_TERRAIN_HEIGHT_JITTER = 0.10
+# Same corridor as the 'race' scenario, reused for parity (requested: "el callejón que
+# llevaría hasta la meta del race") rather than inventing new geometry constants.
+ROUGH_TERRAIN_TRACK_LENGTH = RACE_TRACK_LENGTH
+ROUGH_TERRAIN_LANE_WIDTH = RACE_CROSSING_LINE_WIDTH
+# Sign geometry -- poles tall enough to clear BOTH the robot's own height and the
+# tallest tile the terrain ever reaches (ROUGH_TERRAIN_BASE_HEIGHT + MAX_STEP, right
+# next to the finish sign) so the board reads as an overhead gantry above the terrain,
+# not partly buried inside the final wall of tiles, plus a board with enough vertical
+# room for the block-stroke lettering.
+ROUGH_TERRAIN_SIGN_POLE_HEIGHT = 2.4
+ROUGH_TERRAIN_SIGN_POLE_THICKNESS = 0.06
+ROUGH_TERRAIN_SIGN_BOARD_HEIGHT = 0.5
+ROUGH_TERRAIN_SIGN_BOARD_THICKNESS = 0.05
+# Flat, tile-free clearance between the start crossing-line (x=0, where the robot
+# spawns) and the first tile -- without this, the first tile's edge sits right under
+# the robot's own starting stance, and a real collision box that close catches a foot
+# before the robot has even taken a step (reported live: "el pie queda pegado").
+# Tiles now only appear once you're already past this gap, not on top of the line.
+ROUGH_TERRAIN_START_GAP = 0.4
+
+
+def rough_terrain_baseline_height(frac):
+    """The row's own target height at progress `frac` (0 at the start row, 1 at the
+    finish row) along the track -- an exponential curve, near-flat for most of the
+    track and then rocketing up right at the end, rather than a straight linear ramp
+    -- requested directly ("algo parecido a una exponencial la altura random de las
+    lajas"), and it reads better too: a robot should visibly be coping fine for a
+    while before the terrain turns against it all at once, not sensing a steadily
+    worsening slope from the first tile. Every tile in a row is jittered a little
+    around this SAME baseline (see rough_terrain_tile_heights()) rather than drawn
+    independently, so the rising floor itself is what reads as "getting harder", not
+    per-tile randomness -- tiles at the same depth stay visibly similar to each other
+    ("un poco más parejo... lajas que son parecidas en altura"), the height itself is
+    what climbs.
+    frac=0 -> 0, frac=1 -> ROUGH_TERRAIN_MAX_STEP, monotonically increasing between.
+    """
+    return ROUGH_TERRAIN_MAX_STEP * (math.exp(ROUGH_TERRAIN_STEP_CURVE_K * frac) - 1) / (
+        math.exp(ROUGH_TERRAIN_STEP_CURVE_K) - 1)
+
+
+def rough_terrain_tile_heights(track_length=ROUGH_TERRAIN_TRACK_LENGTH,
+                                lane_width=ROUGH_TERRAIN_LANE_WIDTH, seed=None):
+    """Returns (rows, cols, heights) where heights[row][col] is that tile's EXTRA
+    height above ROUGH_TERRAIN_BASE_HEIGHT (0 at the easiest, up to
+    ROUGH_TERRAIN_MAX_STEP at the hardest) -- row 0 is at the start line (x=0), the
+    last row is at the finish line (x=-track_length).
+
+    Each tile is the row's own rough_terrain_baseline_height(frac), jittered by up to
+    +-ROUGH_TERRAIN_HEIGHT_JITTER (10%) independently per tile -- just enough
+    per-paver texture that it doesn't look like a perfectly flat poured slab, without
+    the wide swings a symmetric random WALK would produce (an earlier version of this
+    generator used one, and neighboring tiles late in the track could differ by close
+    to the full ROUGH_TERRAIN_MAX_STEP -- directly reported as not what was wanted:
+    tiles at a given point in the track should look like each other, "hasta un 10%
+    diferencia"). The anti-trip property ("que no se traben los pies") still holds --
+    zero gaps (tiles abut, see default_rough_terrain_props()) plus a jitter that's a
+    small fraction of the row's own height, not an unbounded step -- but the row-to-row
+    RISE in the baseline itself is what makes the far end genuinely unclimbable, per
+    "se pone cada vez más rugosa a medida que se acerca al final [...] tiene que ser
+    imposible que llegue al final completo". `seed` makes a run reproducible (e.g. for
+    judging a fixed course) but defaults to None -- genuinely random -- per the
+    request ("un random de las alturas").
+    """
+    rng = random.Random(seed)
+    cols = max(1, int(lane_width // ROUGH_TERRAIN_TILE_SIZE))
+    # The tile field itself only spans track_length - ROUGH_TERRAIN_START_GAP -- see
+    # default_rough_terrain_props()'s docstring on why the first tile is held back from
+    # the start line.
+    rows = max(1, int((track_length - ROUGH_TERRAIN_START_GAP) // ROUGH_TERRAIN_TILE_SIZE))
+    heights = []
+    for row in range(rows):
+        frac = row / (rows - 1) if rows > 1 else 1.0
+        baseline = rough_terrain_baseline_height(frac)
+        row_heights = []
+        for _col in range(cols):
+            jitter = rng.uniform(-ROUGH_TERRAIN_HEIGHT_JITTER, ROUGH_TERRAIN_HEIGHT_JITTER)
+            row_heights.append(min(max(baseline * (1.0 + jitter), 0.0), ROUGH_TERRAIN_MAX_STEP))
+        heights.append(row_heights)
+    return rows, cols, heights
+
+
+def default_rough_terrain_props(track_length=ROUGH_TERRAIN_TRACK_LENGTH, seed=None):
+    """Static scenery for the 'rough_terrain' scenario: the same start/finish crossing
+    lines as 'race' (see default_race_props()), but the flat lane between them is
+    replaced by a field of square paver tiles whose height gets rougher the closer
+    they are to the finish -- "caminando sobre una superficie que se pone cada vez más
+    rugosa a medida que se acerca al final, [...] quedando como un imposible llegar al
+    final" -- and the ground-painted START/FINISH text is replaced by elevated
+    overhead signs (see _sign_props()). Unlike race, there's no crash mat at the end:
+    the terrain itself is what stops the robot well before it (explicitly requested --
+    "la colchoneta azul no debe estar para este escenario" -- and there's nothing left
+    for a mat to catch once ROUGH_TERRAIN_MAX_STEP's ~1m final tiles are genuinely
+    unclimbable on their own).
+
+    The scoring game this enables isn't "did you finish" -- it's built not to be
+    reachable, see ROUGH_TERRAIN_MAX_STEP's docstring -- it's "how far did you get,
+    how fast", scored the instant SafetyGovernor trips (web/app.js's
+    onRoughTerrainFall(), reading status.safety_tripped) and held on screen briefly
+    before auto-restarting for another attempt.
+
+    `track_length`/`seed` are overridable via --scenario-option (seed isn't in this
+    scenario's default_options, so it's None -- genuinely random -- unless a caller
+    explicitly passes one).
+    """
+    finish_x = -track_length
+    lane_width = ROUGH_TERRAIN_LANE_WIDTH
+
+    props = [
+        # Thinned to near-flush (see _crossing_line_prop's `height` param) -- these two
+        # now sit right next to real climbable tiles rather than race's flat open lane,
+        # so even a purely-cosmetic step here is worth avoiding.
+        _crossing_line_prop("rough_terrain_start_line", x=0.0, height=0.005),
+        _crossing_line_prop("rough_terrain_finish_line", x=finish_x, height=0.005),
+    ]
+
+    rows, cols, heights = rough_terrain_tile_heights(track_length=track_length, lane_width=lane_width, seed=seed)
+    y0 = -(cols * ROUGH_TERRAIN_TILE_SIZE) / 2
+    for row in range(rows):
+        # Held back by ROUGH_TERRAIN_START_GAP -- the first tile appears only once
+        # you're already past the start line, not straddling it (see the constant's
+        # own docstring).
+        tile_x = -ROUGH_TERRAIN_START_GAP - (row + 0.5) * ROUGH_TERRAIN_TILE_SIZE
+        for col in range(cols):
+            extra_h = heights[row][col]
+            tile_h = ROUGH_TERRAIN_BASE_HEIGHT + extra_h
+            tile_y = y0 + (col + 0.5) * ROUGH_TERRAIN_TILE_SIZE
+            frac = extra_h / ROUGH_TERRAIN_MAX_STEP if ROUGH_TERRAIN_MAX_STEP > 0 else 0.0
+            # Orange, deepening toward red as a tile gets harder -- a free visual read
+            # of the difficulty ramp, not required for the physics.
+            color = [1.0, 0.55 - 0.35 * frac, 0.0, 1.0]
+            props.append({
+                "name": f"rough_terrain_tile_{row}_{col}",
+                "shape": "box",
+                "size": [ROUGH_TERRAIN_TILE_SIZE, ROUGH_TERRAIN_TILE_SIZE, tile_h],
+                "pos": [tile_x, tile_y, tile_h / 2],
+                "fixed": True,
+                # Unlike race's ground text/lines, these ARE meant to be physically
+                # climbed -- collision stays on (Genesis's own default).
+                "color": color,
+            })
+
+    # Both boards are white (see _sign_props) -- START's text needs a dark color to
+    # actually read against it (white-on-white was reported invisible live); FINISH
+    # already had enough contrast with orange, kept as-is.
+    props += _sign_props("rough_terrain_start_sign", x=0.0, lane_width=lane_width,
+                          word="START", word_color=[0.08, 0.08, 0.08, 1.0])
+    props += _sign_props("rough_terrain_finish_sign", x=finish_x, lane_width=lane_width,
+                          word="FINISH", word_color=[1.0, 0.55, 0.0, 1.0])
+    return props
 
 
 def default_race_props(track_length=RACE_TRACK_LENGTH):

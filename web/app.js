@@ -571,14 +571,15 @@ function familyButtonRow(name, current, hasPolicies) {
   btn.className = 'policy-btn' + (name === current ? ' active' : '');
   btn.textContent = name;
   // The race track (start/finish lines, spawn rotation — see
-  // default_race_props()/RACE_SPAWN_ROT in legged_gym/utils/props.py) has
-  // only been set up and tested against g1 so far; block switching away
-  // from it while the 'race' scenario is active rather than risk landing on
+  // default_race_props()/RACE_SPAWN_ROT in legged_gym/utils/props.py) and
+  // rough_terrain's paver field (default_rough_terrain_props(), same spawn
+  // rotation) have only been set up and tested against g1 so far; block
+  // switching away from either while active rather than risk landing on
   // scenery that doesn't match the new family.
-  const raceBlocked = currentScenario === 'race' && name !== 'g1';
+  const raceBlocked = (currentScenario === 'race' || currentScenario === 'rough_terrain') && name !== 'g1';
   btn.disabled = name === current || familySwitchInFlight || !hasPolicies || raceBlocked;
   if (!hasPolicies) btn.title = `No trained policies for '${name}' yet — train one first`;
-  else if (raceBlocked) btn.title = "Race mode is g1-only for now";
+  else if (raceBlocked) btn.title = "Race/rough terrain mode is g1-only for now";
   btn.onclick = () => {
     // Used to confirm ("Switch to family X?") THEN show a separate loading
     // overlay -- two modals back to back for one action. A family switch is
@@ -918,6 +919,7 @@ function applyStatus(status) {
   renderTrainingJobs(status.training_jobs || []);
   renderTelemetry(status.telemetry);
   onRaceTelemetry();
+  onRoughTerrainFall(status);
 }
 
 // ---- live telemetry panel ----
@@ -1026,20 +1028,21 @@ function renderTelemetry(telemetry) {
 // keeps moving/simulating past that point — only the clock and distance
 // readout stop.
 
-let currentScenario = null; // 'default' | 'ball' | 'race' | null, from /config's "scenario"
+let currentScenario = null; // 'default' | 'ball' | 'race' | 'rough_terrain' | null, from /config's "scenario"
 // Whether the "321 Ready!" button shows at all -- per-scenario, from /config's
 // "ready_button.visible" (see Scenario.ready_button_visible in legged_gym/utils/scenarios.py).
 // The countdown/timer/lock mechanism itself isn't race-specific (finish-line detection
 // already no-ops without a track -- see finishRace()'s raceTrackLength != null guard), so
 // every gate below keys off THIS, not off currentScenario === 'race' directly.
 let readyButtonVisible = false;
-let raceTrackLength = null; // meters, from /config's scenario_options.track_length; null unless the 'race' scenario is active
+let raceTrackLength = null; // meters, from /config's scenario_options.track_length; null for any scenario that doesn't set one
 let raceArmed = false; // the "321 Ready!" toggle: does Restart re-arm a countdown?
-let raceState = 'idle'; // 'idle' | 'countdown' | 'running' | 'finished' — THIS run
+let raceState = 'idle'; // 'idle' | 'countdown' | 'running' | 'finished' | 'fallen' — THIS run
 let raceStartX = null;
 let raceStartTime = null;
 let raceCountdownTimer = null;
 let racePartyTimer = null;
+let roughTerrainFallTimer = null; // rough_terrain only — see onRoughTerrainFall()
 
 const raceReadyBtn = $('#btn-race-ready');
 const raceReadyResult = $('#race-btn-result');
@@ -1050,7 +1053,30 @@ const raceFooterStatus = $('#race-footer-status');
 const raceFooterClock = $('#race-footer-clock');
 const raceFooterDist = $('#race-footer-dist');
 const raceParty = $('#race-party');
+const racePartyTitle = $('#race-party-title');
 const raceConfetti = $('#race-confetti');
+// rough_terrain's terrain is deliberately built to become unwalkable well before the
+// finish line (see ROUGH_TERRAIN_MAX_STEP in legged_gym/utils/props.py) — the actual
+// game there is "how far did you get, how fast", scored at the moment of a fall, not
+// at a finish line nobody is expected to reach. Falls onward, this long, are held
+// visible before auto-restarting: long enough to read the result, short enough to
+// keep the POC's runs coming.
+const ROUGH_TERRAIN_FALL_HOLD_MS = 5000;
+// A second, client-side "did it fall" check alongside status.safety_tripped (see
+// roughTerrainHasFallen() below) -- NOT the same test SafetyGovernor uses
+// (projected_gravity.z >= threshold, see legged_gym/control/safety.py), which only
+// catches tipping backward/upside-down: z stays near 0 -- not near its own upright
+// value of -1, but also not near +1 -- for a fall to either SIDE or face-down, so
+// that check alone was reported live as still missing real falls on rough_terrain's
+// terrain (which trips a robot in every direction, not just backward). The direction-
+// agnostic version: the HORIZONTAL magnitude of projected_gravity (its x/y components
+// combined) is ~0 upright and grows towards ~1 lying flat, in ANY direction --
+// "detectar que el ángulo de la base está muy horizontal".
+const ROUGH_TERRAIN_FALL_TILT_THRESHOLD = 0.7;
+// rough_terrain's scenario_options (see legged_gym/utils/scenarios.py's web_options
+// for this scenario) -- null until initRaceMode() sees them, which is enough to mirror
+// rough_terrain_baseline_height() client-side in roughTerrainHeightAtDistance() below.
+let roughTerrainCurve = null;
 
 // Movement inputs (WASD/arrows, HUD drags, mouse-look) check this — see
 // their pointerdown/keydown guards. Restart/Pause/the 321 toggle itself are
@@ -1080,7 +1106,14 @@ function initRaceMode(config) {
   currentScenario = config.scenario ?? null;
   const btnCfg = config.ready_button || {};
   readyButtonVisible = !!btnCfg.visible;
-  raceTrackLength = currentScenario === 'race' ? (config.scenario_options?.track_length ?? null) : null;
+  // Scenario-agnostic on purpose (see the comment on raceTrackLength's declaration) --
+  // rough_terrain sets scenario_options.track_length exactly like race does, and
+  // reuses this whole countdown/distance-HUD/finish mechanism for free. Its finish
+  // line just essentially never gets reached, by design (the game there is "how far
+  // did you get", not "did you finish").
+  raceTrackLength = config.scenario_options?.track_length ?? null;
+  roughTerrainCurve = (currentScenario === 'rough_terrain' && config.scenario_options)
+    ? config.scenario_options : null;
   raceReadyBtn.hidden = !readyButtonVisible;
   if (!readyButtonVisible) { disarmRace(); return; }
   // Property assignment (not addEventListener) so re-running this after a
@@ -1111,7 +1144,21 @@ function armRace() {
   raceReadyBtn.classList.add('armed');
   raceReadyBtn.setAttribute('aria-pressed', 'true');
   raceReadyResult.textContent = '';
-  send('restart');
+  sendRestartOnceConnected();
+}
+
+// boot() calls applyRuntimeConfig(config) -- and so initRaceMode(), and so armRace()
+// for any scenario with ready_button_armed_by_default (race, rough_terrain) -- BEFORE
+// it calls connect(), which is what actually creates `ws`. A plain send('restart')
+// here would hit send()'s own "not connected yet" early return and silently do
+// nothing: the countdown that's supposed to auto-start on page load never would,
+// which surfaced as "the fall detector never detects anything" for rough_terrain --
+// not a fall-detection bug, the run itself just never started. Retries briefly until
+// connect()'s WebSocket is actually open, rather than firing once and giving up.
+function sendRestartOnceConnected(attemptsLeft = 50) {
+  if (ws && ws.readyState === WebSocket.OPEN) { send('restart'); return; }
+  if (attemptsLeft <= 0) return;
+  setTimeout(() => sendRestartOnceConnected(attemptsLeft - 1), 200);
 }
 
 function disarmRace() {
@@ -1141,6 +1188,10 @@ function resetRaceRun() {
   raceCountdownTimer = null;
   clearTimeout(racePartyTimer);
   racePartyTimer = null;
+  // A manual Restart during the post-fall achievement hold shouldn't leave a stale
+  // auto-restart timer pending — this run is already being reset.
+  clearTimeout(roughTerrainFallTimer);
+  roughTerrainFallTimer = null;
   raceState = 'idle';
   raceStartX = null;
   raceStartTime = null;
@@ -1231,7 +1282,13 @@ function finishRace(elapsed) {
 
 const CONFETTI_COLORS = ['#ff3cac', '#784ba0', '#2b86c5', '#00e5a0', '#ffd93d', '#ff5e5e', '#4fd1c1'];
 
-function celebrateFinish() {
+// `title`/`holdMs` let rough_terrain's per-fall "how far, how fast" achievement (see
+// onRoughTerrainFall() below) reuse the exact same party/confetti overlay a real race
+// finish uses, instead of a second parallel UI for what's visually the same moment —
+// just with a different headline and a longer hold (it's the actual scoring moment
+// there, not a bonus animation after scoring already happened in the footer).
+function celebrateFinish(title = 'FINISHED!', holdMs = 3200) {
+  racePartyTitle.textContent = title;
   raceConfetti.innerHTML = '';
   const frag = document.createDocumentFragment();
   for (let i = 0; i < 80; i++) {
@@ -1246,7 +1303,63 @@ function celebrateFinish() {
   raceConfetti.appendChild(frag);
   raceParty.hidden = false;
   clearTimeout(racePartyTimer);
-  racePartyTimer = setTimeout(() => { raceParty.hidden = true; }, 3200);
+  racePartyTimer = setTimeout(() => { raceParty.hidden = true; }, holdMs);
+}
+
+// Mirrors legged_gym/utils/props.py's rough_terrain_baseline_height() using the
+// scenario_options this scenario's web_options exposes (see scenarios.py) — an
+// approximation (it treats the row index as continuous instead of the real discrete
+// tile grid) good enough to report which rough height band a fall happened in,
+// without needing a server round-trip for it.
+function roughTerrainHeightAtDistance(distance) {
+  if (!roughTerrainCurve) return null;
+  const { start_gap: startGap, track_length: trackLength, max_step: maxStep,
+    curve_k: curveK, base_height: baseHeight } = roughTerrainCurve;
+  const usable = trackLength - startGap;
+  if (!(usable > 0)) return null;
+  const frac = Math.min(1, Math.max(0, (distance - startGap) / usable));
+  const extra = maxStep * (Math.exp(curveK * frac) - 1) / (Math.exp(curveK) - 1);
+  return baseHeight + extra;
+}
+
+// Was status.safety_tripped alone; also ORs in a direct, direction-agnostic tilt
+// check against the live telemetry as a second path to the same conclusion, per
+// request ("por la inclinación, el ángulo de la base, deberíamos saber que cayó") —
+// catches a fall the instant the base goes horizontal, even on a tick where
+// safety_tripped hasn't latched yet, and regardless of which way it went down (see
+// ROUGH_TERRAIN_FALL_TILT_THRESHOLD's own comment on why this isn't just gravity.z).
+function roughTerrainHasFallen(status) {
+  if (status.safety_tripped) return true;
+  const g = status.telemetry?.projected_gravity?.value;
+  if (!g) return false;
+  const horizontalTilt = Math.hypot(g[0], g[1]); // ~0 upright, ~1 lying flat, any direction
+  return horizontalTilt >= ROUGH_TERRAIN_FALL_TILT_THRESHOLD;
+}
+
+// rough_terrain's own scoring moment: the run ends the instant a fall is detected
+// (see roughTerrainHasFallen()), not at a finish line the terrain is deliberately
+// built to make unreachable (see ROUGH_TERRAIN_MAX_STEP's docstring in
+// legged_gym/utils/props.py). Freezes distance/height/time as the "how far, how high,
+// how fast" result, holds it on screen, then auto-restarts — a fresh attempt without
+// anyone having to press Restart, since the whole point of this scenario is repeated
+// attempts against a track that only gets harder to reason about with more tries
+// watched, not fewer.
+function onRoughTerrainFall(status) {
+  if (currentScenario !== 'rough_terrain') return;
+  if (raceState !== 'running') return;
+  if (!roughTerrainHasFallen(status)) return;
+  const elapsed = raceStartTime != null ? (performance.now() - raceStartTime) / 1000 : 0;
+  const x = raceCurrentX();
+  const distance = (raceStartX != null && x != null) ? Math.max(0, raceStartX - x) : 0;
+  const height = roughTerrainHeightAtDistance(distance);
+  const heightPart = height != null ? `, ${(height * 100).toFixed(0)}cm tiles` : '';
+  raceState = 'fallen';
+  raceFooterStatus.textContent = 'Fell';
+  raceReadyResult.textContent = `(${distance.toFixed(2)}m${heightPart}, ${elapsed.toFixed(2)}s)`;
+  celebrateFinish(`${distance.toFixed(2)}m${heightPart} in ${elapsed.toFixed(2)}s`,
+    ROUGH_TERRAIN_FALL_HOLD_MS - 200);
+  clearTimeout(roughTerrainFallTimer);
+  roughTerrainFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
 }
 
 // ---- HUD rendering ----
@@ -1961,6 +2074,7 @@ function makeSortable(container, itemSelector, handleSelector, onReorder) {
 const SCENARIO_DEFAULT_ORDERS = {
   default: ['camera', 'command', 'policies', 'telemetry'],
   race: ['camera', 'command', 'policies', 'family'],
+  rough_terrain: ['camera', 'command', 'policies', 'family'],
   ball: ['camera', 'command'],
 };
 
