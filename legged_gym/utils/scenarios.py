@@ -15,6 +15,8 @@ from typing import Callable, Optional
 
 from legged_gym.utils.props import (
     default_ball_prop, default_race_props, RACE_SPAWN_ROT, RACE_TRACK_LENGTH, RACE_FAIL_HOLD_S,
+    default_rough_terrain_props, ROUGH_TERRAIN_TRACK_LENGTH, ROUGH_TERRAIN_START_GAP,
+    ROUGH_TERRAIN_MAX_STEP, ROUGH_TERRAIN_STEP_CURVE_K, ROUGH_TERRAIN_BASE_HEIGHT,
 )
 
 
@@ -71,6 +73,31 @@ SCENARIOS: dict = {
         ready_button_visible=True,
         ready_button_armed_by_default=True,
     ),
+    "rough_terrain": Scenario(
+        name="rough_terrain",
+        # Same corridor as 'race' (start/finish crossing lines this same track_length
+        # apart), but the flat lane is replaced by a field of paver tiles that get
+        # rougher towards the finish -- see default_rough_terrain_props()'s docstring.
+        default_options={"track_length": ROUGH_TERRAIN_TRACK_LENGTH},
+        spawn_props=lambda opts: default_rough_terrain_props(
+            track_length=opts["track_length"], seed=opts.get("seed")),
+        init_state_rot=RACE_SPAWN_ROT,
+        fail_to_terminal_time_s=RACE_FAIL_HOLD_S,
+        # start_gap/max_step/curve_k/base_height let the web UI mirror
+        # rough_terrain_baseline_height() client-side (see onRoughTerrainFall() in
+        # web/app.js) to report the terrain height reached at the moment of a fall --
+        # requested alongside distance/time ("indicando la distancia, la altura y el
+        # tiempo que demoró").
+        web_options=lambda opts: {
+            "track_length": opts["track_length"],
+            "start_gap": ROUGH_TERRAIN_START_GAP,
+            "max_step": ROUGH_TERRAIN_MAX_STEP,
+            "curve_k": ROUGH_TERRAIN_STEP_CURVE_K,
+            "base_height": ROUGH_TERRAIN_BASE_HEIGHT,
+        },
+        ready_button_visible=True,
+        ready_button_armed_by_default=True,
+    ),
 }
 
 
@@ -90,6 +117,10 @@ def add_scenario_args(parser: argparse.ArgumentParser) -> None:
                               "start line at the robot's spawn, a finish line down the "
                               "track, and a crash-mat wall to run into -- see "
                               "legged_gym/utils/props.py::default_race_props(). "
+                              "'rough_terrain': same start/finish corridor as 'race', "
+                              "but paved with tiles that get rougher towards the finish "
+                              "-- see "
+                              "legged_gym/utils/props.py::default_rough_terrain_props(). "
                               "See legged_gym/utils/scenarios.py::SCENARIOS.")
     parser.add_argument('--scenario-option', action='append', default=[], metavar='KEY=VALUE',
                          dest='scenario_option',
