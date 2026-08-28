@@ -63,6 +63,16 @@ jobs:
         with:
           python-version: "3.12"
 
+      # mujoco (mjlab's own sim backend) hits the exact same headless EGL/GL path
+      # as Genesis does at import time -- confirmed live: this job's first real
+      # run failed with `AttributeError: 'NoneType' object has no attribute
+      # 'eglQueryString'` deep inside mujoco.egl before this step existed. Keep
+      # this list in sync with the genesis job's own copy above.
+      - name: Install headless-rendering system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxrender1 libglib2.0-0
+
       # Mirrors install.sh's --with-mjlab path exactly (the `mjlab` extra in
       # pyproject.toml) -- deliberately a SEPARATE venv, never the one above (see
       # that extra's own comment for why: incompatible mujoco pins + an rsl_rl
