@@ -38,13 +38,13 @@ source .venv/bin/activate
 
 echo -e "${CYAN}[3/7]${RESET} Installing Python dependencies (this can take a few minutes) ..."
 pip install --upgrade pip
-pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser
+pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser pytest
 pip install genesis-world warp-lang
 pip install -e .
 
 if [ "$WITH_KAGGLE" -eq 1 ]; then
   echo -e "${CYAN}[4/7]${RESET} Installing Kaggle cloud-training extra ..."
-  pip install -e .[cloud]
+  pip install -e '.[cloud]'
   if [ ! -f "$HOME/.kaggle/kaggle.json" ]; then
     echo -e "${YELLOW}No ~/.kaggle/kaggle.json found yet — see README §2 'Kaggle (cloud GPU)' for how to get one.${RESET}"
   fi
@@ -61,7 +61,8 @@ if [ "$WITH_MJLAB" -eq 1 ]; then
   echo -e "${CYAN}[5/7]${RESET} Creating the separate mjlab venv at .venv-mjlab ..."
   python3.12 -m venv .venv-mjlab
   ./.venv-mjlab/bin/pip install --upgrade pip
-  ./.venv-mjlab/bin/pip install -e .[mjlab]
+  ./.venv-mjlab/bin/pip install pytest
+  ./.venv-mjlab/bin/pip install -e '.[mjlab]'
 else
   echo -e "${CYAN}[5/7]${RESET} Skipping mjlab venv (pass --with-mjlab to build .venv-mjlab)."
 fi

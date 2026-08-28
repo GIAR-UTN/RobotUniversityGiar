@@ -45,7 +45,7 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
-          pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser
+          pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser pytest
           pip install genesis-world warp-lang
           pip install -e .
 
@@ -71,7 +71,8 @@ jobs:
         run: |
           python -m venv .venv-mjlab
           .venv-mjlab/bin/pip install --upgrade pip
-          .venv-mjlab/bin/pip install -e .[mjlab]
+          .venv-mjlab/bin/pip install pytest
+          .venv-mjlab/bin/pip install -e '.[mjlab]'
 
       # SIMULATOR=mjlab, NOT genesis -- see legged_gym/__init__.py: this is the one
       # value that imports neither genesis nor isaacgym/isaaclab, which .venv-mjlab
