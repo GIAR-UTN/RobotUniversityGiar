@@ -1,0 +1,81 @@
+name: Tests
+
+# Two independent jobs, mirroring the two SEPARATE local venvs this repo requires
+# (see install.sh / docs/compute_backends.md): Genesis (.venv, SIMULATOR=genesis)
+# and mjlab (.venv-mjlab, SIMULATOR=mjlab) -- genesis and mjlab can't coexist in one
+# venv (incompatible mujoco pins + an rsl_rl name collision, see pyproject.toml's
+# `mjlab` extra comment). Kaggle/IsaacGym backends are NOT covered here -- they need
+# real GPU credits/hardware this runner doesn't have, and stay a manual
+# watch-it-walk check before trusting a checkpoint (see .claude/skills/rugiar/SKILL.md).
+#
+# If a job here starts failing for reasons that turn out to be CI-environment-only
+# (not a real bug), the fix is almost always something in these steps, not the tests
+# themselves -- see each job's own comments for the specific risk.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  genesis:
+    name: Genesis tests (.venv)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Genesis renders even for "headless" unit tests (scene construction touches
+      # its OpenGL/EGL path) -- these are the system libs a bare Ubuntu runner is
+      # missing that a dev's own Mac/Linux desktop already has. If this job fails
+      # on an EGL/GL import error specifically (not a real test failure), this list
+      # is the first thing to revisit.
+      - name: Install headless-rendering system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxrender1 libglib2.0-0
+
+      # Mirrors install.sh's default (no-flags) path exactly -- one place owns
+      # "how to build .venv", so this can't silently drift from what a human
+      # follows locally.
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser
+          pip install genesis-world warp-lang
+          pip install -e .
+
+      - name: Run tests
+        run: |
+          source .venv/bin/activate
+          SIMULATOR=genesis pytest tests/ -q
+
+  mjlab:
+    name: mjlab tests (.venv-mjlab)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Mirrors install.sh's --with-mjlab path exactly (the `mjlab` extra in
+      # pyproject.toml) -- deliberately a SEPARATE venv, never the one above (see
+      # that extra's own comment for why: incompatible mujoco pins + an rsl_rl
+      # name collision).
+      - name: Install dependencies
+        run: |
+          python -m venv .venv-mjlab
+          .venv-mjlab/bin/pip install --upgrade pip
+          .venv-mjlab/bin/pip install -e .[mjlab]
+
+      # SIMULATOR=mjlab, NOT genesis -- see legged_gym/__init__.py: this is the one
+      # value that imports neither genesis nor isaacgym/isaaclab, which .venv-mjlab
+      # deliberately doesn't have installed at all.
+      - name: Run tests
+        run: |
+          SIMULATOR=mjlab .venv-mjlab/bin/python -m pytest tests/ -q
