@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Pre-push validation -- runs whatever test suite(s) THIS machine can actually run
+# (Genesis .venv always, if built; mjlab .venv-mjlab only if that separate venv was
+# also built -- see install.sh's --with-mjlab flag) and prints a LOUD but
+# NON-BLOCKING summary. This hook never fails the push -- it exists to catch a
+# mistake before GitHub Actions does (see .github/workflows/tests.yml, the real
+# gate), not to gate anything itself: a dev without .venv-mjlab built locally
+# (the common case -- it's a heavy, opt-in extra) must still be able to push
+# mjlab-side changes and let CI be the one that actually validates them.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+# Skip for one push:      git push --no-verify
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 0
+
+BOLD=$'\033[1m'; RED=$'\033[1;91m'; GREEN=$'\033[1;92m'; YELLOW=$'\033[1;93m'; CYAN=$'\033[1;96m'; RESET=$'\033[0m'
+
+overall_ok=1
+ran_any=0
+
+run_suite() {
+  local label="$1" python_bin="$2" simulator="$3"
+  if [ ! -x "$python_bin" ]; then
+    printf '%s\n' "${YELLOW}⚠ Skipping ${label}: ${python_bin} not found on this machine (not built here -- GitHub Actions will still cover it).${RESET}"
+    return
+  fi
+  ran_any=1
+  printf '%s\n' "${CYAN}▶ Running ${label} tests (SIMULATOR=${simulator})...${RESET}"
+  if SIMULATOR="$simulator" "$python_bin" -m pytest tests/ -q; then
+    printf '%s\n' "${GREEN}✓ ${label} tests passed.${RESET}"
+  else
+    overall_ok=0
+    printf '\n%s\n' "${RED}${BOLD}"
+    printf '%s\n' "╔══════════════════════════════════════════════════════════════════╗"
+    printf '%s\n' "║  ⚠️  ${label} TESTS FAILED -- pushing anyway (this hook never blocks),"
+    printf '%s\n' "║      but something that should pass locally doesn't. Check the"
+    printf '%s\n' "║      output above before trusting this branch or opening a PR."
+    printf '%s\n' "╚══════════════════════════════════════════════════════════════════╝"
+    printf '%s\n' "${RESET}"
+  fi
+}
+
+run_suite "Genesis (.venv)" ".venv/bin/python" "genesis"
+run_suite "mjlab (.venv-mjlab)" ".venv-mjlab/bin/python" "mjlab"
+
+echo ""
+if [ "$ran_any" -eq 0 ]; then
+  printf '%s\n' "${YELLOW}No local venv found at all -- nothing validated locally. GitHub Actions will run the full suite on push.${RESET}"
+elif [ "$overall_ok" -eq 1 ]; then
+  printf '%s\n' "${GREEN}${BOLD}✓ All local suites green -- pushing.${RESET}"
+else
+  printf '%s\n' "${RED}${BOLD}⚠ Pushing anyway (this hook is a warning, not a gate) -- see failures above.${RESET}"
+fi
+
+exit 0

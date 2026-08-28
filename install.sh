@@ -29,27 +29,27 @@ if ! command -v python3.12 &>/dev/null; then
   exit 1
 fi
 
-echo -e "${CYAN}[1/6]${RESET} Creating venv at .venv ..."
+echo -e "${CYAN}[1/7]${RESET} Creating venv at .venv ..."
 python3.12 -m venv .venv
 
-echo -e "${CYAN}[2/6]${RESET} Activating .venv ..."
+echo -e "${CYAN}[2/7]${RESET} Activating .venv ..."
 # shellcheck source=/dev/null
 source .venv/bin/activate
 
-echo -e "${CYAN}[3/6]${RESET} Installing Python dependencies (this can take a few minutes) ..."
+echo -e "${CYAN}[3/7]${RESET} Installing Python dependencies (this can take a few minutes) ..."
 pip install --upgrade pip
-pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser
+pip install torch torchvision matplotlib tensorboard xlsxwriter pandas tqdm scipy pygame trimesh rich-argparse viser pytest
 pip install genesis-world warp-lang
 pip install -e .
 
 if [ "$WITH_KAGGLE" -eq 1 ]; then
-  echo -e "${CYAN}[4/6]${RESET} Installing Kaggle cloud-training extra ..."
-  pip install -e .[cloud]
+  echo -e "${CYAN}[4/7]${RESET} Installing Kaggle cloud-training extra ..."
+  pip install -e '.[cloud]'
   if [ ! -f "$HOME/.kaggle/kaggle.json" ]; then
     echo -e "${YELLOW}No ~/.kaggle/kaggle.json found yet — see README §2 'Kaggle (cloud GPU)' for how to get one.${RESET}"
   fi
 else
-  echo -e "${CYAN}[4/6]${RESET} Skipping Kaggle extra (pass --with-kaggle to include it)."
+  echo -e "${CYAN}[4/7]${RESET} Skipping Kaggle extra (pass --with-kaggle to include it)."
 fi
 
 # mjlab MUST live in its own venv, never in .venv above: the repo vendors a
@@ -58,15 +58,29 @@ fi
 # Deliberately built with a SUBSHELL-free explicit interpreter path instead of
 # `source`, so the .venv activated above stays the active one for this script.
 if [ "$WITH_MJLAB" -eq 1 ]; then
-  echo -e "${CYAN}[5/6]${RESET} Creating the separate mjlab venv at .venv-mjlab ..."
+  echo -e "${CYAN}[5/7]${RESET} Creating the separate mjlab venv at .venv-mjlab ..."
   python3.12 -m venv .venv-mjlab
   ./.venv-mjlab/bin/pip install --upgrade pip
-  ./.venv-mjlab/bin/pip install -e .[mjlab]
+  ./.venv-mjlab/bin/pip install pytest
+  ./.venv-mjlab/bin/pip install -e '.[mjlab]'
 else
-  echo -e "${CYAN}[5/6]${RESET} Skipping mjlab venv (pass --with-mjlab to build .venv-mjlab)."
+  echo -e "${CYAN}[5/7]${RESET} Skipping mjlab venv (pass --with-mjlab to build .venv-mjlab)."
 fi
 
-echo -e "${CYAN}[6/6]${RESET} Done."
+# Non-destructive: only sets it if nothing else already points core.hooksPath
+# somewhere else, so this never silently overrides a dev's own existing hook
+# setup. See .githooks/pre-push's own header for what this actually runs (a
+# non-blocking local test check before every push).
+echo -e "${CYAN}[6/7]${RESET} Configuring git hooks (non-blocking pre-push test check) ..."
+current_hooks_path="$(git config --local --get core.hooksPath || true)"
+if [ -z "$current_hooks_path" ]; then
+  git config core.hooksPath .githooks
+elif [ "$current_hooks_path" != ".githooks" ]; then
+  echo -e "${YELLOW}core.hooksPath is already set to '${current_hooks_path}' -- leaving it alone.${RESET}"
+  echo -e "${YELLOW}Run 'git config core.hooksPath .githooks' yourself to opt into the pre-push check.${RESET}"
+fi
+
+echo -e "${CYAN}[7/7]${RESET} Done."
 echo ""
 echo -e "${GREEN}Setup complete.${RESET} Every new terminal session needs:"
 echo -e "  ${CYAN}source .venv/bin/activate${RESET}"
