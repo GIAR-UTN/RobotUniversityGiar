@@ -174,6 +174,20 @@
   @keyframes race-shimmer{ from{background-position:0% 50%;} to{background-position:300% 50%;} }
   @keyframes race-pop{ from{transform:scale(1.5); opacity:0;} to{transform:scale(1); opacity:1;} }
 
+  /* ---- scenario-name flash -- see onRestartTriggered()/showScenarioBanner() in
+     app.js. Same rainbow-shimmer/pop text as the race countdown/finish title, sized
+     down and parked near the top so it doesn't collide with either of those when a
+     race-family scenario also shows its own countdown a beat later. */
+  #scenario-banner{position:absolute; inset:0; top:8%; bottom:auto;}
+  #scenario-banner:not([hidden]){display:flex; justify-content:center;}
+  #scenario-banner-title{
+    display:inline-block; font:900 7vh/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    background:linear-gradient(90deg,#ff3cac,#784ba0,#2b86c5,#00e5a0,#ffd93d,#ff3cac);
+    background-size:300% 100%; -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 4px 20px rgba(0,0,0,.6));
+    animation:race-shimmer 1.4s linear infinite, race-pop .35s ease-out;
+  }
+
   /* ---- finish-line party (confetti + big rainbow title) ----
      Triggered once by celebrateFinish() in app.js, auto-hides itself a few
      seconds later — the race result itself keeps living in #race-footer
@@ -792,6 +806,12 @@
          iframe is cross-origin, so this can't live inside it — it's a
          sibling positioned on top, same trick as #transition-overlay). -->
     <div class="view" id="race-hud">
+      <!-- Scenario-name flash: shown briefly on every restart (R / Restart button /
+           family switch / armRace's re-home -- see onRestartTriggered() in app.js),
+           for ANY scenario, not just race -- same rainbow-shimmer text treatment as
+           race-party-title below, just its own independent element so it doesn't
+           fight with the confetti/finish-title lifecycle. -->
+      <div id="scenario-banner" hidden><span id="scenario-banner-title"></span></div>
       <div id="race-countdown-wrap" hidden><span id="race-countdown-text"></span></div>
       <div id="race-party" hidden>
         <div id="race-confetti"></div>

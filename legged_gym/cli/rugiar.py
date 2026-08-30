@@ -58,6 +58,10 @@ from typing import Optional
 # than hand-listed — a new backend descriptor becomes a valid --backend value
 # with no edit here. See legged_gym/control/backends/__init__.py.
 from legged_gym.control.backends import REQUESTABLE_BACKENDS, requestable_backend_options
+# Same reasoning as the backends import above -- this is just the SCENARIOS dict
+# (legged_gym/utils/scenarios.py), needed so 'drive's --scenario choices are derived,
+# not hand-listed a second time.
+from legged_gym.utils.scenarios import SCENARIOS
 
 try:
     from rich_argparse import RawDescriptionRichHelpFormatter as _HelpFormatter
@@ -263,6 +267,28 @@ def _build_drive_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
                          "default (see resources/reference_motion/unitree_g1/mjlab_run/*.npz). Lets you "
                          "sanity-check a new clip retargets/plays sensibly on the robot before spending "
                          "a training run on it. Errors if passed with --system genesis.")
+    p.add_argument("--ramp_ticks", type=int, default=None,
+                    help="control ticks to cross-fade over on a policy switch -- forwarded to either "
+                         "backend as-is. mjlab's own preset already passes 15 by default; this overrides "
+                         "that (or genesis's own script default) when given.")
+    p.add_argument("--scenario", type=str, default=None, choices=sorted(SCENARIOS),
+                    help="genesis only -- which named scenario's props/scenery/web-UI config to use "
+                         "(see legged_gym/utils/scenarios.py::SCENARIOS). Forwarded as-is; errors if "
+                         "passed with --system mjlab, which has no --scenario of its own.")
+    p.add_argument("--scenario-option", action="append", default=[], metavar="KEY=VALUE",
+                    dest="scenario_option",
+                    help="genesis only -- override one of --scenario's default options, e.g. "
+                         "track_length=10 (repeatable). Errors if passed with --system mjlab.")
+    p.add_argument("--camera", action="store_true", default=False,
+                    help="genesis only -- stream a robot-POV RGB camera feed to the control web. "
+                         "Errors if passed with --system mjlab.")
+    p.add_argument("--speed", type=float, default=None,
+                    help="genesis only -- sim playback speed multiplier (1.0 = real-time 50Hz). "
+                         "Errors if passed with --system mjlab (mjlab paces off its own control_dt).")
+    p.add_argument("--cruise_limit", type=float, default=None,
+                    help="genesis only -- startup default for ControlService.set_operator_speed_limit() "
+                         "(fraction of the trained command envelope, 1.0 = full range). Errors if passed "
+                         "with --system mjlab.")
     p.add_argument("--no_replace", action="store_true", default=False,
                     help="don't stop an existing process on --control_port first -- fail instead "
                          "if the port's already taken")
@@ -279,11 +305,39 @@ def _pids_listening_on(port: int) -> list:
     return [int(pid) for pid in out.stdout.split() if pid.strip()]
 
 
+def _stop_listening_on(port: int, label: str = "process") -> list:
+    """SIGTERMs whatever's listening on `port`, waits up to 8s, then SIGKILLs any
+    holdout -- the same "stop whatever's already here" logic 'drive' uses before
+    launching, factored out so 'stop' (bring the environment down without starting
+    anything new) can reuse it verbatim. Returns the pid(s) it found (empty if the
+    port was already free)."""
+    import os
+    import signal
+    import time
+
+    existing = _pids_listening_on(port)
+    if not existing:
+        return []
+    print(f"[rugiar] stopping {label} on port {port}: pid(s) {existing}")
+    for pid in existing:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.time() + 8
+    while time.time() < deadline and _pids_listening_on(port):
+        time.sleep(0.3)
+    for pid in _pids_listening_on(port):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    return existing
+
+
 def run_drive(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     import os
     import shlex
-    import signal
-    import time
 
     preset = DRIVE_PRESETS[args.system]
     repo_root = Path.cwd()
@@ -298,26 +352,23 @@ def run_drive(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         parser.error(f"{preset['script']} not found under {repo_root} -- run this from the repo root.")
     if args.motion_file and args.system != "mjlab":
         parser.error("--motion_file only applies to --system mjlab")
+    # --scenario/--scenario-option/--camera/--speed/--cruise_limit are genesis-only --
+    # rugiar_driver_mjlab.py has no equivalent flags at all (see its own --help).
+    genesis_only = {
+        "--scenario": args.scenario, "--scenario-option": args.scenario_option,
+        "--camera": args.camera, "--speed": args.speed, "--cruise_limit": args.cruise_limit,
+    }
+    if args.system != "genesis":
+        bad = [flag for flag, val in genesis_only.items() if val]
+        if bad:
+            parser.error(f"{', '.join(bad)} only apply(ies) to --system genesis")
 
-    existing = _pids_listening_on(args.control_port)
-    if existing:
-        if args.no_replace:
-            parser.error(f"port {args.control_port} is already in use by pid(s) {existing} "
+    if args.no_replace:
+        if _pids_listening_on(args.control_port):
+            parser.error(f"port {args.control_port} is already in use "
                          f"(pass without --no_replace to stop it automatically)")
-        print(f"[rugiar] stopping existing process on port {args.control_port}: pid(s) {existing}")
-        for pid in existing:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-        deadline = time.time() + 8
-        while time.time() < deadline and _pids_listening_on(args.control_port):
-            time.sleep(0.3)
-        for pid in _pids_listening_on(args.control_port):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    else:
+        _stop_listening_on(args.control_port, label="existing process")
 
     task = args.task or preset["default_task"]
     argv = [str(python_bin), str(script), "--task", task,
@@ -327,6 +378,22 @@ def run_drive(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
         argv.append("--headless")
     if args.motion_file:
         argv += ["--motion_file", args.motion_file]
+    # Appended AFTER preset["extra_args"] deliberately -- for a non-append flag like
+    # --ramp_ticks, argparse (and every underlying script here) takes the LAST value
+    # given, so an explicit --ramp_ticks on this command always wins over mjlab's own
+    # preset default of 15, without needing to special-case that preset here.
+    if args.ramp_ticks is not None:
+        argv += ["--ramp_ticks", str(args.ramp_ticks)]
+    if args.scenario:
+        argv += ["--scenario", args.scenario]
+    for opt in args.scenario_option:
+        argv += ["--scenario-option", opt]
+    if args.camera:
+        argv.append("--camera")
+    if args.speed is not None:
+        argv += ["--speed", str(args.speed)]
+    if args.cruise_limit is not None:
+        argv += ["--cruise_limit", str(args.cruise_limit)]
 
     env = os.environ.copy()
     env.update(preset["env"])
@@ -337,6 +404,40 @@ def run_drive(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     os.chdir(repo_root)
     os.execvpe(argv[0], argv, env)  # replaces this process -- Ctrl-C behaves exactly like a direct launch
     return 0  # unreachable, execvpe never returns on success
+
+
+def _build_stop_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "stop",
+        formatter_class=_HelpFormatter,
+        help="Stop whatever 'rugiar drive' session (genesis or mjlab) is listening on a port",
+        description=(
+            "Brings a running 'rugiar drive' session down without starting a replacement -- the "
+            "same SIGTERM-then-SIGKILL-on-timeout logic 'drive' already runs before launching, "
+            "exposed on its own for 'just stop it' / 'stop the one on port X, leave the other "
+            "running' without needing a second 'drive' invocation to trigger it."
+        ),
+        epilog=(
+            "examples:\n"
+            "  # stop whatever's on the default control port\n"
+            "  rugiar stop\n\n"
+            "  # stop a session running on a non-default port (e.g. a second, parallel one)\n"
+            "  rugiar stop --control_port 9018\n"
+        ),
+    )
+    p.add_argument("--control_port", type=int, default=9017,
+                    help="port to stop whatever's listening on (default: 9017, same default 'drive' "
+                         "uses)")
+    return p
+
+
+def run_stop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    stopped = _stop_listening_on(args.control_port, label="session")
+    if not stopped:
+        print(f"[rugiar] nothing was listening on port {args.control_port}")
+    else:
+        print(f"[rugiar] stopped pid(s) {stopped} on port {args.control_port}")
+    return 0
 
 
 def _build_order_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -655,8 +756,9 @@ def build_parser():
     fuse_parser = _build_fuse_parser(subparsers)
     distill_parser = _build_distill_parser(subparsers)
     drive_parser = _build_drive_parser(subparsers)
+    stop_parser = _build_stop_parser(subparsers)
     return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser,
-                     "distill": distill_parser, "drive": drive_parser}
+                     "distill": distill_parser, "drive": drive_parser, "stop": stop_parser}
 
 
 def _print_lines(title: str, rows) -> None:
@@ -871,6 +973,8 @@ def main(argv: Optional[list] = None) -> None:
         sys.exit(run_distill(args, subparsers["distill"]))
     elif args.command == "drive":
         sys.exit(run_drive(args, subparsers["drive"]))
+    elif args.command == "stop":
+        sys.exit(run_stop(args, subparsers["stop"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)

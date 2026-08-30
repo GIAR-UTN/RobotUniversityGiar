@@ -19,6 +19,13 @@ from legged_gym.utils.props import (
     ROUGH_TERRAIN_MAX_STEP, ROUGH_TERRAIN_STEP_CURVE_K, ROUGH_TERRAIN_BASE_HEIGHT,
     ROUGH_TERRAIN_SPAWN_SETBACK,
 )
+from legged_gym.utils.competition_props import (
+    default_factory_handling_props, default_factory_sorting_props,
+    default_hospital_pharmacy_props, default_hospital_dispensing_props,
+    default_hotel_reception_props, default_hotel_cleaning_props,
+    default_warehouse_sorting_props, default_obstacle_course_props,
+    OBSTACLE_COURSE_SPAWN_SETBACK,
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +60,12 @@ class Scenario:
     # raceTrackLength != null guard), so any scenario can opt into showing it.
     ready_button_visible: bool = False
     ready_button_armed_by_default: bool = False
+
+
+# Computed once, not per-request -- default_obstacle_course_props() is deterministic
+# (no seed/randomization, unlike default_rough_terrain_props()), so there's nothing to
+# recompute on every 'obstacle_course' spawn_props()/web_options() call.
+_OBSTACLE_COURSE_PROPS, _OBSTACLE_COURSE_LENGTH = default_obstacle_course_props()
 
 
 SCENARIOS: dict = {
@@ -110,6 +123,75 @@ SCENARIOS: dict = {
         ready_button_visible=True,
         ready_button_armed_by_default=True,
     ),
+    # -- World Humanoid Robot Games (Beijing) 场景赛 scenarios -- static furniture
+    # layouts for navigation/manipulation practice, digitized from the official
+    # rulebooks (see legged_gym/utils/competition_props.py's module docstring for
+    # sources). init_state_rot=RACE_SPAWN_ROT here (same as 'race') pairs with
+    # each props function's own _rotate_yaw180() -- robot and furniture spin
+    # together, 180 degrees from this repo's plain +x-facing default. Requested
+    # directly: with the default facing, furniture sat between the robot and the
+    # viser viewer's (currently fixed) default camera position, hiding the robot.
+    "factory_handling": Scenario(
+        name="factory_handling",
+        spawn_props=lambda opts: default_factory_handling_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    "factory_sorting": Scenario(
+        name="factory_sorting",
+        spawn_props=lambda opts: default_factory_sorting_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    "hospital_pharmacy": Scenario(
+        name="hospital_pharmacy",
+        spawn_props=lambda opts: default_hospital_pharmacy_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    "hospital_dispensing": Scenario(
+        name="hospital_dispensing",
+        spawn_props=lambda opts: default_hospital_dispensing_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    "hotel_reception": Scenario(
+        name="hotel_reception",
+        spawn_props=lambda opts: default_hotel_reception_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    "hotel_cleaning": Scenario(
+        name="hotel_cleaning",
+        spawn_props=lambda opts: default_hotel_cleaning_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    "warehouse_sorting": Scenario(
+        name="warehouse_sorting",
+        spawn_props=lambda opts: default_warehouse_sorting_props(),
+        init_state_rot=RACE_SPAWN_ROT,
+        ready_button_visible=True,
+    ),
+    # -- The 100m-obstacle event: the harder ALTERNATIVE to plain 'race' (added
+    # last, deliberately, once every task-arena scenario above was in) -- same
+    # start/finish-line, -x-facing corridor convention as 'race'/'rough_terrain',
+    # but with the event's own 10 real obstacles instead of an open lane or
+    # randomized tiles. total_length isn't random (no seed, unlike
+    # rough_terrain) so it's computed once at import time.
+    "obstacle_course": Scenario(
+        name="obstacle_course",
+        spawn_props=lambda opts: _OBSTACLE_COURSE_PROPS,
+        init_state_rot=RACE_SPAWN_ROT,
+        # +x setback (same mechanism as rough_terrain's own) so the robot starts a
+        # step short of the start line -- the first obstacle sits right at x=0 with
+        # no clearance, and feet kept burying into its raised edge without this.
+        init_state_pos_offset=[OBSTACLE_COURSE_SPAWN_SETBACK, 0.0, 0.0],
+        fail_to_terminal_time_s=RACE_FAIL_HOLD_S,
+        web_options=lambda opts: {"track_length": _OBSTACLE_COURSE_LENGTH},
+        ready_button_visible=True,
+        ready_button_armed_by_default=True,
+    ),
 }
 
 
@@ -133,6 +215,16 @@ def add_scenario_args(parser: argparse.ArgumentParser) -> None:
                               "but paved with tiles that get rougher towards the finish "
                               "-- see "
                               "legged_gym/utils/props.py::default_rough_terrain_props(). "
+                              "'factory_handling'/'factory_sorting'/'hospital_pharmacy'/"
+                              "'hospital_dispensing'/'hotel_reception'/'hotel_cleaning'/"
+                              "'warehouse_sorting': task-arena furniture layouts digitized "
+                              "from the World Humanoid Robot Games (Beijing) rulebooks -- "
+                              "see legged_gym/utils/competition_props.py. "
+                              "'obstacle_course': that same event's 100m-obstacle track, "
+                              "the harder alternative to 'race' -- 10 real obstacles down "
+                              "the same start/finish corridor -- see "
+                              "legged_gym/utils/competition_props.py::"
+                              "default_obstacle_course_props(). "
                               "See legged_gym/utils/scenarios.py::SCENARIOS.")
     parser.add_argument('--scenario-option', action='append', default=[], metavar='KEY=VALUE',
                          dest='scenario_option',
