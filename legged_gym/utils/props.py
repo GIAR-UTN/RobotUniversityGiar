@@ -254,8 +254,13 @@ ROUGH_TERRAIN_BASE_HEIGHT = 0.02
 ROUGH_TERRAIN_MAX_STEP = 2.0
 # How sharply the difficulty ramp curves -- see rough_terrain_baseline_height() below.
 # Higher = flatter for longer, then a steeper last-minute spike towards
-# ROUGH_TERRAIN_MAX_STEP ("algo parecido a una exponencial").
-ROUGH_TERRAIN_STEP_CURVE_K = 5.0
+# ROUGH_TERRAIN_MAX_STEP ("algo parecido a una exponencial"). Lowered from 5.0 -- still
+# clearly exponential (not linear), but the climb starts noticeably sooner so the
+# challenge doesn't take as long to actually show up (requested: "que la rampa crezca
+# un poco más rápido, un poco no más, para que no tarde tanto en enfrentar el
+# desafío"). At the midpoint (frac=0.5) this roughly doubles the difficulty already
+# reached vs. the old value (~12% of MAX_STEP vs ~8%).
+ROUGH_TERRAIN_STEP_CURVE_K = 4.0
 # Per-tile random variation around its row's baseline height, as a fraction of that
 # baseline -- texture, not the difficulty mechanism itself (requested: tiles at the
 # same depth should look "parecidas... hasta un 10% diferencia").
@@ -264,6 +269,11 @@ ROUGH_TERRAIN_HEIGHT_JITTER = 0.10
 # llevaría hasta la meta del race") rather than inventing new geometry constants.
 ROUGH_TERRAIN_TRACK_LENGTH = RACE_TRACK_LENGTH
 ROUGH_TERRAIN_LANE_WIDTH = RACE_CROSSING_LINE_WIDTH
+# How far behind the start line (+x, since the track runs along -x) the robot spawns
+# -- a deliberately small setback so it starts a step short of the line, not standing
+# on top of it (x=0) or already past it (negative x). Requested directly: "el robot
+# debería empezar un poquito atrás de la línea blanca, no sobre ni por delante".
+ROUGH_TERRAIN_SPAWN_SETBACK = 0.15
 # Sign geometry -- poles tall enough to clear BOTH the robot's own height and the
 # tallest tile the terrain ever reaches (ROUGH_TERRAIN_BASE_HEIGHT + MAX_STEP, right
 # next to the finish sign) so the board reads as an overhead gantry above the terrain,

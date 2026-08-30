@@ -22,7 +22,8 @@ from legged_gym.utils.scenarios import (
 from legged_gym.utils.props import (
     RACE_TRACK_LENGTH, ROUGH_TERRAIN_TRACK_LENGTH, ROUGH_TERRAIN_MAX_STEP,
     ROUGH_TERRAIN_BASE_HEIGHT, ROUGH_TERRAIN_TILE_SIZE, ROUGH_TERRAIN_START_GAP,
-    ROUGH_TERRAIN_HEIGHT_JITTER, rough_terrain_tile_heights, rough_terrain_baseline_height,
+    ROUGH_TERRAIN_HEIGHT_JITTER, ROUGH_TERRAIN_SPAWN_SETBACK,
+    rough_terrain_tile_heights, rough_terrain_baseline_height,
 )
 
 
@@ -311,7 +312,7 @@ class _FakeEnvCfg:
     leak into another test via a shared class attribute."""
     def __init__(self):
         self.props = _Namespace(list=None)
-        self.init_state = _Namespace(rot=[0.0, 0.0, 0.0, 1.0])
+        self.init_state = _Namespace(rot=[0.0, 0.0, 0.0, 1.0], pos=[0.0, 0.0, 1.0])
         self.env = _Namespace(fail_to_terminal_time_s=0.1)
 
 
@@ -319,10 +320,12 @@ class TestApplyScenarioToEnvCfg(unittest.TestCase):
     def test_none_scenario_is_a_noop(self):
         env_cfg = _FakeEnvCfg()
         original_rot = env_cfg.init_state.rot
+        original_pos = env_cfg.init_state.pos
         original_fail_hold = env_cfg.env.fail_to_terminal_time_s
         apply_scenario_to_env_cfg(env_cfg, None, {})
         self.assertIsNone(env_cfg.props.list)
         self.assertEqual(env_cfg.init_state.rot, original_rot)
+        self.assertEqual(env_cfg.init_state.pos, original_pos)
         self.assertEqual(env_cfg.env.fail_to_terminal_time_s, original_fail_hold)
 
     def test_ball_sets_props_only(self):
@@ -336,19 +339,31 @@ class TestApplyScenarioToEnvCfg(unittest.TestCase):
 
     def test_race_sets_props_rot_and_fail_hold_by_default(self):
         env_cfg = _FakeEnvCfg()
+        original_pos = list(env_cfg.init_state.pos)
         scenario, options = resolve_scenario(_parse(['--scenario', 'race']))
         apply_scenario_to_env_cfg(env_cfg, scenario, options)
         self.assertTrue(len(env_cfg.props.list) > 0)
         self.assertEqual(env_cfg.init_state.rot, scenario.init_state_rot)
         self.assertEqual(env_cfg.env.fail_to_terminal_time_s, scenario.fail_to_terminal_time_s)
+        # race doesn't override spawn position -- unlike rough_terrain, it has no
+        # setback of its own.
+        self.assertEqual(env_cfg.init_state.pos, original_pos)
 
-    def test_rough_terrain_sets_props_rot_and_fail_hold_by_default(self):
+    def test_rough_terrain_sets_props_rot_fail_hold_and_spawn_setback_by_default(self):
         env_cfg = _FakeEnvCfg()
+        original_pos = list(env_cfg.init_state.pos)
         scenario, options = resolve_scenario(_parse(['--scenario', 'rough_terrain']))
         apply_scenario_to_env_cfg(env_cfg, scenario, options)
         self.assertTrue(len(env_cfg.props.list) > 0)
         self.assertEqual(env_cfg.init_state.rot, scenario.init_state_rot)
         self.assertEqual(env_cfg.env.fail_to_terminal_time_s, scenario.fail_to_terminal_time_s)
+        # Spawns a bit BEHIND the start line (+x, since the track runs along -x) --
+        # not on it (0) and not past it (negative) -- requested: "el robot debería
+        # empezar un poquito atrás de la línea blanca, no sobre ni por delante". Only
+        # x should move; y/z stay whatever the task's own default already was.
+        self.assertGreater(env_cfg.init_state.pos[0], original_pos[0])
+        self.assertEqual(env_cfg.init_state.pos[0], original_pos[0] + ROUGH_TERRAIN_SPAWN_SETBACK)
+        self.assertEqual(env_cfg.init_state.pos[1:], original_pos[1:])
 
     def test_apply_fail_hold_false_skips_fail_hold_but_keeps_rot(self):
         # play.py's override_configs() never applied fail_to_terminal_time_s even for

@@ -17,6 +17,7 @@ from legged_gym.utils.props import (
     default_ball_prop, default_race_props, RACE_SPAWN_ROT, RACE_TRACK_LENGTH, RACE_FAIL_HOLD_S,
     default_rough_terrain_props, ROUGH_TERRAIN_TRACK_LENGTH, ROUGH_TERRAIN_START_GAP,
     ROUGH_TERRAIN_MAX_STEP, ROUGH_TERRAIN_STEP_CURVE_K, ROUGH_TERRAIN_BASE_HEIGHT,
+    ROUGH_TERRAIN_SPAWN_SETBACK,
 )
 
 
@@ -30,6 +31,13 @@ class Scenario:
     # env_cfg.init_state.rot override, if this scenario needs the robot to spawn facing
     # a particular direction (e.g. race, facing down the track). None = don't touch it.
     init_state_rot: Optional[list] = None
+    # [dx, dy, dz] ADDED to whatever env_cfg.init_state.pos already is (not a
+    # replacement -- the task's own default z/height stays whatever it was, only the
+    # scenario-relevant axes shift), if this scenario needs the robot to spawn
+    # somewhere other than the task's default spawn point (e.g. rough_terrain,
+    # a small +x setback so it starts short of the start line, not on/past it).
+    # None = don't touch it.
+    init_state_pos_offset: Optional[list] = None
     # env_cfg.env.fail_to_terminal_time_s override, if this scenario needs a fall to stay
     # on screen longer than the training default (e.g. race, so a crash is visible until
     # the operator hits Restart). None = don't touch it.
@@ -82,6 +90,10 @@ SCENARIOS: dict = {
         spawn_props=lambda opts: default_rough_terrain_props(
             track_length=opts["track_length"], seed=opts.get("seed")),
         init_state_rot=RACE_SPAWN_ROT,
+        # A small +x setback so the robot starts a step short of the start line, not
+        # standing on top of it (0.0) or already past it -- requested: "el robot
+        # debería empezar un poquito atrás de la línea blanca, no sobre ni por delante".
+        init_state_pos_offset=[ROUGH_TERRAIN_SPAWN_SETBACK, 0.0, 0.0],
         fail_to_terminal_time_s=RACE_FAIL_HOLD_S,
         # start_gap/max_step/curve_k/base_height let the web UI mirror
         # rough_terrain_baseline_height() client-side (see onRoughTerrainFall() in
@@ -176,5 +188,9 @@ def apply_scenario_to_env_cfg(env_cfg, scenario: Optional[Scenario], options: di
     env_cfg.props.list = scenario.spawn_props(options)
     if scenario.init_state_rot is not None:
         env_cfg.init_state.rot = scenario.init_state_rot
+    if scenario.init_state_pos_offset is not None:
+        env_cfg.init_state.pos = [
+            p + d for p, d in zip(env_cfg.init_state.pos, scenario.init_state_pos_offset)
+        ]
     if apply_fail_hold and scenario.fail_to_terminal_time_s is not None:
         env_cfg.env.fail_to_terminal_time_s = scenario.fail_to_terminal_time_s
