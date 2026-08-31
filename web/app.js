@@ -920,6 +920,7 @@ function applyStatus(status) {
   renderTelemetry(status.telemetry);
   onRaceTelemetry();
   onRoughTerrainFall(status);
+  onObstacleCourseFall(status);
 }
 
 // ---- live telemetry panel ----
@@ -1043,6 +1044,7 @@ let raceStartTime = null;
 let raceCountdownTimer = null;
 let racePartyTimer = null;
 let roughTerrainFallTimer = null; // rough_terrain only — see onRoughTerrainFall()
+let obstacleCourseFallTimer = null; // obstacle_course only — see onObstacleCourseFall()
 
 const raceReadyBtn = $('#btn-race-ready');
 const raceReadyResult = $('#race-btn-result');
@@ -1055,6 +1057,9 @@ const raceFooterDist = $('#race-footer-dist');
 const raceParty = $('#race-party');
 const racePartyTitle = $('#race-party-title');
 const raceConfetti = $('#race-confetti');
+const scenarioBanner = $('#scenario-banner');
+const scenarioBannerTitle = $('#scenario-banner-title');
+let scenarioBannerTimer = null;
 // rough_terrain's terrain is deliberately built to become unwalkable well before the
 // finish line (see ROUGH_TERRAIN_MAX_STEP in legged_gym/utils/props.py) — the actual
 // game there is "how far did you get, how fast", scored at the moment of a fall, not
@@ -1168,10 +1173,35 @@ function disarmRace() {
   resetRaceRun();
 }
 
+// How long the scenario-name flash stays up before it fades itself out.
+const SCENARIO_BANNER_HOLD_MS = 5000;
+
+// 'factory_handling' -> 'FACTORY HANDLING' — the scenario's own key from /config's
+// "scenario" (see legged_gym/utils/scenarios.py::SCENARIOS), not a separate display
+// name to keep in sync.
+function formatScenarioName(name) {
+  return name.replace(/_/g, ' ').toUpperCase();
+}
+
+// Flashes the current scenario's name, big and rainbow-shimmering (same treatment as
+// the race countdown/finish-line title), for every scenario, not just race — requested
+// directly: "cuando cargamos un scenario ... veremos en texto multicolor el nombre
+// del scenario un ratito y luego se va". Hooked from onRestartTriggered() below so it
+// fires on every restart (R / button / family switch / armRace's re-home), which is
+// also the only moment "loading a scenario" actually shows up client-side.
+function showScenarioBanner() {
+  if (!currentScenario) return;
+  scenarioBannerTitle.textContent = formatScenarioName(currentScenario);
+  scenarioBanner.hidden = false;
+  clearTimeout(scenarioBannerTimer);
+  scenarioBannerTimer = setTimeout(() => { scenarioBanner.hidden = true; }, SCENARIO_BANNER_HOLD_MS);
+}
+
 // Hooked from send()'s 'restart' branch — covers the user's own Restart
 // click, the automatic restart after a family switch, AND armRace()'s own
 // re-home above, uniformly.
 function onRestartTriggered() {
+  showScenarioBanner();
   resetRaceRun();
   if (readyButtonVisible && raceArmed) {
     // A beat for the teleport to actually land server-side (and for a
@@ -1192,6 +1222,8 @@ function resetRaceRun() {
   // auto-restart timer pending — this run is already being reset.
   clearTimeout(roughTerrainFallTimer);
   roughTerrainFallTimer = null;
+  clearTimeout(obstacleCourseFallTimer);
+  obstacleCourseFallTimer = null;
   raceState = 'idle';
   raceStartX = null;
   raceStartTime = null;
@@ -1360,6 +1392,29 @@ function onRoughTerrainFall(status) {
     ROUGH_TERRAIN_FALL_HOLD_MS - 200);
   clearTimeout(roughTerrainFallTimer);
   roughTerrainFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
+}
+
+// obstacle_course's own scoring moment, same rules as rough_terrain's
+// onRoughTerrainFall() above (requested directly: "las mismas reglas que hicimos
+// para rough_terrain") -- the run ends the instant a fall is detected, not at the
+// (very real, ~46m-away) finish line, since a fall against one of the 10 real
+// obstacles is the far more likely outcome. Freezes distance/time as the "how far,
+// how fast" result, holds it on screen, then auto-restarts — no need to press
+// Restart between attempts. No height readout here (unlike rough_terrain): there's
+// no monotonic difficulty curve to report a height for, just 10 fixed obstacles.
+function onObstacleCourseFall(status) {
+  if (currentScenario !== 'obstacle_course') return;
+  if (raceState !== 'running') return;
+  if (!roughTerrainHasFallen(status)) return;
+  const elapsed = raceStartTime != null ? (performance.now() - raceStartTime) / 1000 : 0;
+  const x = raceCurrentX();
+  const distance = (raceStartX != null && x != null) ? Math.max(0, raceStartX - x) : 0;
+  raceState = 'fallen';
+  raceFooterStatus.textContent = 'Fell';
+  raceReadyResult.textContent = `(${distance.toFixed(2)}m, ${elapsed.toFixed(2)}s)`;
+  celebrateFinish(`${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`, ROUGH_TERRAIN_FALL_HOLD_MS - 200);
+  clearTimeout(obstacleCourseFallTimer);
+  obstacleCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
 }
 
 // ---- HUD rendering ----
@@ -2075,7 +2130,17 @@ const SCENARIO_DEFAULT_ORDERS = {
   default: ['camera', 'command', 'policies', 'telemetry'],
   race: ['camera', 'command', 'policies', 'family'],
   rough_terrain: ['camera', 'command', 'policies', 'family'],
+  obstacle_course: ['camera', 'command', 'policies', 'family'],
   ball: ['camera', 'command'],
+  // World Humanoid Robot Games task-arena scenarios -- navigation/manipulation
+  // practice, not races, so the same panel emphasis as 'default'.
+  factory_handling: ['camera', 'command', 'policies', 'telemetry'],
+  factory_sorting: ['camera', 'command', 'policies', 'telemetry'],
+  hospital_pharmacy: ['camera', 'command', 'policies', 'telemetry'],
+  hospital_dispensing: ['camera', 'command', 'policies', 'telemetry'],
+  hotel_reception: ['camera', 'command', 'policies', 'telemetry'],
+  hotel_cleaning: ['camera', 'command', 'policies', 'telemetry'],
+  warehouse_sorting: ['camera', 'command', 'policies', 'telemetry'],
 };
 
 function panelOrderKey() {

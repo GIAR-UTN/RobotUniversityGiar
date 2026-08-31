@@ -20,7 +20,8 @@ from legged_gym.utils.scenarios import (
     SCENARIOS, add_scenario_args, resolve_scenario, apply_scenario_to_env_cfg,
 )
 from legged_gym.utils.props import (
-    RACE_TRACK_LENGTH, ROUGH_TERRAIN_TRACK_LENGTH, ROUGH_TERRAIN_MAX_STEP,
+    RACE_TRACK_LENGTH, RACE_SPAWN_ROT, RACE_FAIL_HOLD_S,
+    ROUGH_TERRAIN_TRACK_LENGTH, ROUGH_TERRAIN_MAX_STEP,
     ROUGH_TERRAIN_BASE_HEIGHT, ROUGH_TERRAIN_TILE_SIZE, ROUGH_TERRAIN_START_GAP,
     ROUGH_TERRAIN_HEIGHT_JITTER, ROUGH_TERRAIN_SPAWN_SETBACK,
     rough_terrain_tile_heights, rough_terrain_baseline_height,
@@ -34,8 +35,15 @@ def _parse(argv):
 
 
 class TestScenarioRegistry(unittest.TestCase):
-    def test_registers_exactly_default_ball_race_and_rough_terrain(self):
-        self.assertEqual(set(SCENARIOS), {"default", "ball", "race", "rough_terrain"})
+    def test_registers_exactly_the_known_scenario_set(self):
+        self.assertEqual(set(SCENARIOS), {
+            "default", "ball", "race", "rough_terrain",
+            # World Humanoid Robot Games (Beijing) scenarios -- see
+            # legged_gym/utils/competition_props.py.
+            "factory_handling", "factory_sorting", "hospital_pharmacy",
+            "hospital_dispensing", "hotel_reception", "hotel_cleaning",
+            "warehouse_sorting", "obstacle_course",
+        })
 
     def test_default_spawns_no_props(self):
         self.assertEqual(SCENARIOS["default"].spawn_props({}), [])
@@ -149,6 +157,74 @@ class TestScenarioRegistry(unittest.TestCase):
         # Requested removal: "la colchoneta azul no debe estar para este escenario".
         props = SCENARIOS["rough_terrain"].spawn_props(dict(SCENARIOS["rough_terrain"].default_options))
         self.assertFalse(any("mat" in p["name"] for p in props))
+
+
+TASK_ARENA_SCENARIOS = (
+    "factory_handling", "factory_sorting", "hospital_pharmacy", "hospital_dispensing",
+    "hotel_reception", "hotel_cleaning", "warehouse_sorting",
+)
+
+
+class TestWHRGTaskArenaScenarios(unittest.TestCase):
+    """The 7 World Humanoid Robot Games (Beijing) task-arena scenarios -- static
+    furniture layouts digitized from the official rulebooks, see
+    legged_gym/utils/competition_props.py."""
+
+    def test_each_spawns_at_least_one_prop(self):
+        for name in TASK_ARENA_SCENARIOS:
+            with self.subTest(scenario=name):
+                self.assertGreater(len(SCENARIOS[name].spawn_props({})), 0)
+
+    def test_each_has_no_duplicate_prop_names(self):
+        for name in TASK_ARENA_SCENARIOS:
+            with self.subTest(scenario=name):
+                props = SCENARIOS[name].spawn_props({})
+                names = [p["name"] for p in props]
+                self.assertEqual(len(names), len(set(names)))
+
+    def test_each_faces_the_robot_toward_its_rotated_furniture(self):
+        # All 7 pair RACE_SPAWN_ROT with _rotate_yaw180()'d furniture (negative x/y) --
+        # requested directly: with this repo's plain +x-facing default, furniture sat
+        # between the robot and the viser viewer's fixed default camera, hiding it.
+        for name in TASK_ARENA_SCENARIOS:
+            with self.subTest(scenario=name):
+                self.assertEqual(SCENARIOS[name].init_state_rot, RACE_SPAWN_ROT)
+                props = SCENARIOS[name].spawn_props({})
+                self.assertTrue(any(p["pos"][0] < 0 for p in props))
+
+
+class TestObstacleCourseScenario(unittest.TestCase):
+    """The 100m-obstacle event -- the harder ALTERNATIVE to 'race', added last on
+    purpose (see scenarios.py's own comment on the entry)."""
+
+    def test_spawns_start_and_finish_lines_matching_its_own_track_length(self):
+        options = dict(SCENARIOS["obstacle_course"].default_options)
+        props = SCENARIOS["obstacle_course"].spawn_props(options)
+        web_opts = SCENARIOS["obstacle_course"].web_options(options)
+        start = next(p for p in props if p["name"] == "obstacle_start_line")
+        finish = next(p for p in props if p["name"] == "obstacle_finish_line")
+        self.assertEqual(start["pos"][0], 0.0)
+        self.assertAlmostEqual(finish["pos"][0], -web_opts["track_length"])
+
+    def test_has_no_duplicate_prop_names(self):
+        props = SCENARIOS["obstacle_course"].spawn_props({})
+        names = [p["name"] for p in props]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_reuses_race_spawn_rotation_and_fail_hold(self):
+        self.assertEqual(SCENARIOS["obstacle_course"].init_state_rot, RACE_SPAWN_ROT)
+        self.assertEqual(SCENARIOS["obstacle_course"].fail_to_terminal_time_s, RACE_FAIL_HOLD_S)
+        self.assertTrue(SCENARIOS["obstacle_course"].ready_button_visible)
+        self.assertTrue(SCENARIOS["obstacle_course"].ready_button_armed_by_default)
+
+    def test_spawn_is_set_back_from_the_start_line(self):
+        # The first obstacle (gravel road) sits right at x=0 with no clearance, unlike
+        # rough_terrain's own ROUGH_TERRAIN_START_GAP -- so the robot's own spawn is
+        # what's pulled back instead. Requested directly after feet kept burying into
+        # the first obstacle's raised edge with no setback at all.
+        offset = SCENARIOS["obstacle_course"].init_state_pos_offset
+        self.assertIsNotNone(offset)
+        self.assertGreater(offset[0], 0.0)
 
 
 class TestRoughTerrainTileHeights(unittest.TestCase):
