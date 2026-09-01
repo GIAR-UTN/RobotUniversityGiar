@@ -1386,6 +1386,12 @@
             <select id="distill-method"></select>
             <p class="field-hint" id="distill-method-description"></p>
 
+            <div class="field-row" id="distill-gpu-row">
+              <label for="distill-gpu">Compute</label>
+              <label class="toggle-row" for="distill-gpu"><input type="checkbox" id="distill-gpu"> Run on this machine's NVIDIA GPU (CUDA)</label>
+              <p class="field-hint">Speeds up the rollout phase (simulator-bound, same as a training run) — but only pays off at a higher parallel-environment count than the 1-env default, since a single env is latency-bound rather than vectorized.</p>
+            </div>
+
             <details id="distill-advanced">
               <summary class="field-hint">Advanced — behavior-cloning hyperparameters (optional, sane defaults if left blank)</summary>
               <div class="field-row">

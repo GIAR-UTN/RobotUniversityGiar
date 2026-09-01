@@ -529,7 +529,7 @@ class ControlService:
     def start_distillation(self, teacher: str, task: str, out_name: str,
                             rollout_steps: Optional[int] = None, bc_epochs: Optional[int] = None,
                             lr: Optional[float] = None, num_envs: Optional[int] = None,
-                            method: str = "behavior_cloning") -> str:
+                            method: str = "behavior_cloning", gpu: bool = False) -> str:
         """Launches a new distillation job; returns its job id — same "runs
         out-of-process, returns immediately, progress shows up in
         status()['training_jobs'], hot-loaded automatically once it
@@ -540,7 +540,12 @@ class ControlService:
         including ones with no train_checkpoint.pt at all (fuse_policies()
         requires one; this is the feature that doesn't), like `stable`. See
         distillation.DISTILL_METHODS (surfaced via training_catalog()'s
-        `distill_methods` key) for the method options."""
+        `distill_methods` key) for the method options. `gpu` runs the job on
+        this machine's NVIDIA GPU (CUDA) — see start_training()'s
+        `backend='local-nvidia'` note; only available when
+        system_info()['local_nvidia'] is non-null, and it's refused up front
+        if that probe fails (TrainingManager.start_distillation()'s own
+        cuda_is_usable() check)."""
         if self.training is None:
             raise NotImplementedError("no TrainingManager configured for this ControlService")
         kwargs = {}
@@ -552,6 +557,8 @@ class ControlService:
             kwargs["lr"] = lr
         if num_envs is not None:
             kwargs["num_envs"] = num_envs
+        if gpu:
+            kwargs["gpu"] = True
         return self.training.start_distillation(teacher, task, out_name, method=method, **kwargs)
 
     def task_defaults(self, task: str) -> dict:

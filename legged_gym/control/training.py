@@ -1735,7 +1735,8 @@ class TrainingManager:
                             method: str = "behavior_cloning",
                             dagger_rounds: Optional[int] = None,
                             dagger_beta0: Optional[float] = None,
-                            dagger_beta_decay: Optional[float] = None) -> str:
+                            dagger_beta_decay: Optional[float] = None,
+                            gpu: bool = False) -> str:
         """Behavior-clones `teacher` — ANY known local policy, crucially
         including ones with no train_checkpoint.pt at all (e.g. `stable` —
         see policy.py's module docstring for the checkpoint shapes that
@@ -1753,11 +1754,33 @@ class TrainingManager:
         exported module's own hidden-state buffers and simply crash on a
         larger batch (confirmed the hard way: 'stable' failing with
         `Expected hidden[0] size (1, 64, 64), got [1, 1, 64]`). A locally-
-        trained teacher (ExplicitStatePolicy — this repo's own export
+        trained         teacher (ExplicitStatePolicy — this repo's own export
         convention) has no such limit and can pass a higher num_envs for a
         faster rollout, but 1 is the only value guaranteed safe for ANY
-        teacher, so it's the default."""
+        teacher, so it's the default.
+
+        `gpu` runs the whole job on this machine's NVIDIA GPU (CUDA) instead
+        of CPU: web_distill.py's --gpu makes gs.init(backend=gs.gpu) and puts
+        the student on cuda. The bottleneck it accelerates is the ROLLOUT
+        phase (rolling the teacher through the target task's simulator for
+        rollout_steps ticks — simulator-bound exactly like a training run);
+        the BC phase is a few cheap MSE epochs. Note the num_envs=1 default
+        above: at a single env, GPU gains little (latency-bound, not
+        vectorized) — the speedup materializes with a locally-trained
+        teacher run at a higher --num_envs. gpu=True is refused up front
+        unless a real CUDA context can be created AND used (the same
+        cuda_is_usable() probe the local-nvidia backend's preflight runs) —
+        an enumerated-but-unusable GPU is a clean error here, not a
+        mid-`gs.init` crash."""
         from legged_gym.control import distillation
+
+        if gpu:
+            from legged_gym.control import cuda_utils
+            usable, reason = cuda_utils.cuda_is_usable()
+            if not usable:
+                raise ValueError(
+                    f"distillation on GPU requested but no usable CUDA device was found: {reason}. "
+                    f"Re-run without --gpu (CPU) or fix the GPU and retry.")
 
         method_info = distillation.DISTILL_METHODS.get(method)
         if method_info is None:
@@ -1818,7 +1841,7 @@ class TrainingManager:
             "--teacher_checkpoint", source["checkpoint"],
             "--method", method,
             "--rollout_steps", str(rollout_steps), "--bc_epochs", str(bc_epochs), "--lr", str(lr),
-            "--num_envs", str(num_envs), "--headless", "--cpu",
+            "--num_envs", str(num_envs), "--headless", "--gpu" if gpu else "--cpu",
             "--dagger_rounds", str(dagger_rounds), "--dagger_beta0", str(dagger_beta0),
             "--dagger_beta_decay", str(dagger_beta_decay),
             "--result_path", str(result_path), "--progress_path", str(progress_path),
@@ -1833,7 +1856,8 @@ class TrainingManager:
             id=job_id, policy_name=out_name, task=task,
             command=(f"rugiar distill --teacher {teacher} --task {task} --name {out_name} "
                      f"--rollout_steps {rollout_steps} --bc_epochs {bc_epochs} --lr {lr} --num_envs {num_envs}"
-                     + (f" --dagger_rounds {dagger_rounds}" if method == "dagger" else "")),
+                     + (f" --dagger_rounds {dagger_rounds}" if method == "dagger" else "")
+                     + (" --gpu" if gpu else "")),
             log_path=str(log_path), result_path=str(result_path), progress_path=str(progress_path),
             started_at=time.time(),
             max_iterations=total_bc_epochs, max_minutes=None, num_envs=num_envs,

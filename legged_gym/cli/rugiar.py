@@ -548,6 +548,10 @@ def _build_distill_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
             "examples:\n"
             "  # clone 'stable' (no training history of its own) into a fine-tunable policy\n"
             "  rugiar distill --teacher stable --task g1 --name stable_distilled\n\n"
+            "  # faster rollout on this machine's NVIDIA GPU, with a locally-trained teacher\n"
+            "  # at more envs (the GPU only pays off vectorized, not at the 1-env default)\n"
+            "  rugiar distill --teacher stable_home_made_4 --task g1 --name gpu_clone \\\n"
+            "      --num_envs 64 --gpu\n\n"
             "  # then keep training it normally\n"
             "  rugiar train --task g1 --name stable_distilled_ft --from_policy stable_distilled \\\n"
             "      --max_iterations 500\n\n"
@@ -592,7 +596,13 @@ def _build_distill_parser(subparsers: argparse._SubParsersAction) -> argparse.Ar
                            help="list every local ./policies/<name>/ available to distill from — "
                                 "same as `train --list_policies`, but here fine-tunable=no is fine too")
 
-    poll = p.add_argument_group("Polling")
+    poll = p.add_argument_group("Execution")
+    poll.add_argument("--gpu", action="store_true", default=False,
+                      help="run the rollout + BC training on this machine's NVIDIA GPU (CUDA) "
+                           "instead of CPU — speeds up the rollout phase (simulator-bound, same "
+                           "as a training run), which only pays off at a higher --num_envs than "
+                           "the 1-env default (a single env is latency-bound, not vectorized). "
+                           "Refused up front if no usable CUDA context exists.")
     poll.add_argument("--poll_interval", type=float, default=2.0,
                        help="seconds between progress checks while the job runs (default: 2.0)")
     return p
@@ -630,7 +640,7 @@ def run_distill(args: argparse.Namespace, parser: argparse.ArgumentParser) -> in
             args.teacher, args.task, args.name, rollout_steps=args.rollout_steps,
             bc_epochs=args.bc_epochs, lr=args.lr, num_envs=args.num_envs, method=args.method,
             dagger_rounds=args.dagger_rounds, dagger_beta0=args.dagger_beta0,
-            dagger_beta_decay=args.dagger_beta_decay,
+            dagger_beta_decay=args.dagger_beta_decay, gpu=args.gpu,
         )
     except ValueError as e:
         parser.error(str(e))

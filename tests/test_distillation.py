@@ -457,6 +457,51 @@ class TestStartDistillation(unittest.TestCase):
         self.assertEqual(mgr.jobs[job_id].policy_name, "stable_distilled")
         mgr._log_files[job_id].close()
 
+    def test_gpu_flag_replaces_cpu_in_argv(self):
+        """gpu=True must run web_distill.py with --gpu (never --cpu), and
+        surface as --gpu on the job's copyable rugiar command — the distill
+        counterpart of the local-nvidia backend's --gpu dispatch."""
+        import unittest.mock as mock
+        mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
+        fake_proc = types.SimpleNamespace(poll=lambda: None, terminate=lambda: None)
+        with mock.patch("legged_gym.control.cuda_utils.cuda_is_usable",
+                        return_value=(True, "")) as probe, \
+                mock.patch.object(training_mod.subprocess, "Popen", return_value=fake_proc) as popen:
+            job_id = mgr.start_distillation("t", "g1", "out_gpu", num_envs=2, gpu=True)
+        probe.assert_called_once()  # the preflight ran before anything was launched
+        argv = popen.call_args.args[0]
+        self.assertIn("--gpu", argv)
+        self.assertNotIn("--cpu", argv)
+        self.assertIn("--gpu", mgr.jobs[job_id].command)
+        mgr._log_files[job_id].close()
+
+    def test_cpu_is_the_default(self):
+        import unittest.mock as mock
+        mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
+        fake_proc = types.SimpleNamespace(poll=lambda: None, terminate=lambda: None)
+        with mock.patch.object(training_mod.subprocess, "Popen", return_value=fake_proc) as popen:
+            job_id = mgr.start_distillation("t", "g1", "out_cpu", num_envs=2)
+        argv = popen.call_args.args[0]
+        self.assertIn("--cpu", argv)
+        self.assertNotIn("--gpu", argv)
+        self.assertNotIn("--gpu", mgr.jobs[job_id].command)
+        mgr._log_files[job_id].close()
+
+    def test_gpu_refused_when_cuda_is_unusable(self):
+        """An enumerated-but-unusable GPU must be a clean up-front rejection
+        (the same cuda_is_usable trap the local-nvidia backend guards), never
+        a launch followed by a mid-`gs.init` crash."""
+        import unittest.mock as mock
+        mgr = self._mgr({"t": {"task": "g1", "checkpoint": "x", "train_checkpoint": None}})
+        with mock.patch("legged_gym.control.cuda_utils.cuda_is_usable",
+                        return_value=(False, "torch.cuda.is_available() is False")), \
+                mock.patch.object(training_mod.subprocess, "Popen") as popen:
+            with self.assertRaises(ValueError) as ctx:
+                mgr.start_distillation("t", "g1", "out", num_envs=2, gpu=True)
+        self.assertIn("GPU", str(ctx.exception))
+        popen.assert_not_called()  # refused before anything was launched
+        self.assertEqual(mgr.jobs, {})
+
 
 if __name__ == "__main__":
     unittest.main()

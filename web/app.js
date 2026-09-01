@@ -2455,6 +2455,8 @@ function refreshSystemInfo() {
     // tab with no change to this file.
     const offered = offeredBackends(info);
     renderTrainBackendTabs(offered);
+    // The Distill panel's GPU checkbox follows the same usable-CUDA probe.
+    refreshDistillGpuVisibility();
     // One choice is not a choice: with only 'local' offerable (the usual
     // case — no ~/.kaggle/kaggle.json server-side, see kaggle_available)
     // there's nothing to toggle, so the row stays hidden exactly as before.
@@ -2755,6 +2757,8 @@ const distillRolloutSteps = $('#distill-rollout-steps');
 const distillBcEpochs = $('#distill-bc-epochs');
 const distillLr = $('#distill-lr');
 const distillNumEnvs = $('#distill-num-envs');
+const distillGpu = $('#distill-gpu');
+const distillGpuRow = $('#distill-gpu-row');
 const distillCmdPreview = $('#distill-cmd-preview');
 const distillCmdCopy = $('#distill-cmd-copy');
 distillCmdCopy.addEventListener('click', () => copyToClipboard(distillCmdPreview.textContent, distillCmdCopy));
@@ -2830,6 +2834,16 @@ function updateDistillMethodDescription() {
   distillMethodDescription.textContent = info?.description || '';
 }
 
+// The GPU toggle only exists when this machine actually has a usable CUDA
+// context — same probe that gates the local-nvidia training tab
+// (system_info()'s local_nvidia, see offeredBackends()).
+function refreshDistillGpuVisibility() {
+  const available = !!systemInfo?.local_nvidia;
+  distillGpuRow.hidden = !available;
+  if (!available) distillGpu.checked = false;
+  updateDistillCmdPreview();
+}
+
 function updateDistillCmdPreview() {
   const parts = ['rugiar distill'];
   if (distillTeacher.value) parts.push(`--teacher ${distillTeacher.value}`);
@@ -2840,6 +2854,7 @@ function updateDistillCmdPreview() {
   if (distillBcEpochs.value.trim()) parts.push(`--bc_epochs ${distillBcEpochs.value.trim()}`);
   if (distillLr.value.trim()) parts.push(`--lr ${distillLr.value.trim()}`);
   if (distillNumEnvs.value.trim()) parts.push(`--num_envs ${distillNumEnvs.value.trim()}`);
+  if (distillGpu.checked) parts.push('--gpu');
   distillCmdPreview.textContent = parts.join(' ');
 }
 
@@ -2850,6 +2865,7 @@ distillMethod.addEventListener('change', () => { updateDistillMethodDescription(
 for (const el of [distillRolloutSteps, distillBcEpochs, distillLr, distillNumEnvs]) {
   el.addEventListener('input', updateDistillCmdPreview);
 }
+distillGpu.addEventListener('change', updateDistillCmdPreview);
 
 btnDistillPolicy.addEventListener('click', () => {
   const opening = distillPolicyForm.hidden;
@@ -2859,7 +2875,7 @@ btnDistillPolicy.addEventListener('click', () => {
     showDistillError('');
     refreshDistillTeachers();
     refreshDistillMethods();
-    updateDistillCmdPreview();
+    refreshDistillGpuVisibility();
   }
 });
 
@@ -2897,6 +2913,7 @@ distillPolicyForm.addEventListener('submit', (e) => {
   call('start_distillation', {
     teacher, task, out_name: name, method: distillMethod.value,
     rollout_steps: rolloutSteps, bc_epochs: bcEpochs, lr, num_envs: numEnvs,
+    gpu: distillGpu.checked,
   }).then(() => {
     // Same "runs out-of-process, shows up in the training-jobs list" story
     // as createPolicyForm's own submit handler above — not fuse's blocking
