@@ -390,8 +390,9 @@ class TrainingJob:
     policy_path: Optional[str] = None
     train_checkpoint_path: Optional[str] = None  # rsl_rl's raw model_N.pt for this run,
                                                   # if web_train.py found one — see poll()
-    backend: str = "local"  # "local" | "kaggle" — see backends/kaggle.py's module docstring
-                             # for why a Kaggle job's poll() branch never touches the network
+    backend: str = "local"  # the descriptor's job_backend: "local" | "local-nvidia" | "kaggle" —
+                            # persisted shape, see TrainingBackend.job_backend. For a Kaggle job,
+                            # poll()'s branch never touches the network (see backends/kaggle.py).
     kaggle_kernel_slug: Optional[str] = None  # "<username>/<slug>" once push succeeds —
                                                # the UI's "view on Kaggle" link, kaggle jobs only
     motion_file: Optional[str] = None  # the exact --motion_file this job was launched with, for
@@ -492,15 +493,41 @@ class TrainingManager:
         """No claims beyond what's directly measurable on THIS machine —
         the panel this feeds exists specifically so the user isn't guessing
         at what their hardware can do (see the conversation that asked for
-        this). cuda/mps availability is informational only: every training
-        job launched from this UI runs Genesis on CPU (see web_train.py's
-        gs.init(backend=gs.cpu if cli.cpu else gs.gpu) — cli.cpu defaults
-        True), so a GPU being present doesn't currently change anything."""
+        this). cuda/mps availability is informational only in the sense that
+        `--backend local` still trains on CPU either way; a GPU that actually
+        passes the cuda_is_usable() probe is what makes `--backend
+        local-nvidia` a real choice (see backends/local_nvidia.py), and the
+        profile below is what the Create Policy panel's envs hint reads when
+        that backend is selected."""
         cpu_count = os.cpu_count() or 1
+        local_nvidia = None
         try:
             import torch
             cuda_available = torch.cuda.is_available()
             mps_available = getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available()
+            if cuda_available:
+                # Same robust probe the local-nvidia backend's own preflight
+                # runs, so "enumerates but can't create a context" reads as
+                # not-usable here too, not just at job launch.
+                from legged_gym.control import cuda_utils
+                usable, _reason = cuda_utils.cuda_is_usable()
+                if usable:
+                    props = torch.cuda.get_device_properties(0)
+                    vram_gb = round(props.total_memory / (1024 ** 3), 1)
+                    local_nvidia = {
+                        "gpu": props.name,
+                        "vram_gb": vram_gb,
+                        "compute_capability": f"{props.major}.{props.minor}",
+                        # Same conservative "comfortable below the proven
+                        # ceiling" sizing spirit as kaggle_profile — VRAM is
+                        # the dominant constraint for these obs/action-sized
+                        # humanoid envs (a 16GB P100 confirmed g1 up to 4096),
+                        # so scale the suggestion off this GPU's own VRAM.
+                        "suggested_num_envs": {
+                            "comfortable": max(64, int(vram_gb * 80)),
+                            "upper": int(vram_gb * 250),
+                        },
+                    }
         except Exception:  # noqa: BLE001 - torch import shouldn't be fatal to a status panel
             cuda_available = False
             mps_available = False
@@ -512,6 +539,11 @@ class TrainingManager:
             "ram_gb": round(_total_ram_bytes() / (1024 ** 3), 1) if _total_ram_bytes() else None,
             "cuda_available": cuda_available,
             "mps_available": mps_available,
+            # A real local CUDA profile ({gpu, vram_gb, compute_capability,
+            # suggested_num_envs}) — only when a context is actually usable,
+            # which is also the precondition for the local-nvidia backend
+            # (None otherwise; None is what tells the UI "no GPU choice").
+            "local_nvidia": local_nvidia,
             # Whether the Create Policy panel should even offer "Run on Kaggle" —
             # true once ~/.kaggle/kaggle.json exists (see backends/kaggle.py). Not a
             # guarantee start(backend="kaggle") will succeed (e.g. GPU quota could
@@ -1481,7 +1513,7 @@ class TrainingManager:
                reward_scale_overrides: Optional[Dict[str, float]] = None,
                motion_file: Optional[str] = None,
                backend: str = "local") -> str:
-        """`backend` is a REQUEST ("local" | "kaggle"), not the descriptor
+        """`backend` is a REQUEST ("local" | "local-nvidia" | "kaggle"), not the descriptor
         that ends up serving it: which concrete backend runs the job is
         (request, task stack) -> BACKENDS entry, resolved by
         resolve_training_backend() below. Nothing in this method knows what
@@ -1882,14 +1914,14 @@ class TrainingManager:
                     job.iterations_done = result.get("iterations_done")
                     job.status = "done"
                     newly_done.append(job)
-                    # Recorded under backend="kaggle" — a separate bucket
-                    # from local history (see estimate()'s docstring); mixing
-                    # regimes would corrupt both estimates.
+                    # Recorded under THIS descriptor's own job_backend (a
+                    # separate bucket from local history — see estimate()'s
+                    # docstring); mixing regimes would corrupt both estimates.
                     if job.iterations_done:
                         self._history.append({
                             "task": job.task, "max_iterations": job.iterations_done,
                             "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
-                            "backend": "kaggle", "simulator": job.simulator,
+                            "backend": job_backend.job_backend, "simulator": job.simulator,
                         })
                         self._save_history()
                 except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop
@@ -1937,7 +1969,12 @@ class TrainingManager:
                     self._history.append({
                         "task": job.task, "max_iterations": job.iterations_done,
                         "num_envs": job.num_envs, "elapsed_s": job.finished_at - job.started_at,
-                        "backend": "local", "simulator": job.simulator,
+                        # The descriptor's own job_backend ("local" for the
+                        # two CPU local stacks, "local-nvidia" for the GPU
+                        # pair) — so local-GPU runs get their own estimate
+                        # bucket instead of being pooled with CPU-local runs.
+                        "backend": job_backend.job_backend if job_backend is not None else "local",
+                        "simulator": job.simulator,
                     })
                     self._save_history()
             except Exception as e:  # noqa: BLE001 - report to the UI, don't crash the sim loop

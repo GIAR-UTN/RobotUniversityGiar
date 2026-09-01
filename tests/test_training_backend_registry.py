@@ -10,7 +10,7 @@ TrainingManager.start()'s validation/dispatch. The load-bearing test here is
 test_a_brand_new_backend_needs_no_core_change, which registers a synthetic
 descriptor at runtime and drives a real start() through it end to end.
 
-Everything else pins the three real backends' persisted/observable shape so
+Everything else pins the registered backends' persisted/observable shape so
 this refactor can't silently drift them:
   - which (requested backend, task stack) pair resolves to which descriptor;
   - the TrainingJob.backend / .simulator values written to meta.json;
@@ -73,7 +73,7 @@ class TestRegistryShape(unittest.TestCase):
 
     def test_requestable_backends_are_derived_not_hardcoded(self):
         self.assertEqual(set(REQUESTABLE_BACKENDS), {b.requested_as for b in BACKENDS})
-        self.assertEqual(set(REQUESTABLE_BACKENDS), {"local", "kaggle"})
+        self.assertEqual(set(REQUESTABLE_BACKENDS), {"local", "kaggle", "local-nvidia"})
 
     def test_local_backends_are_launchable_and_remote_ones_are_not(self):
         for backend in BACKENDS:
@@ -96,7 +96,9 @@ class TestResolution(unittest.TestCase):
         cases = [
             ("g1", "local", "local-genesis", "local", "genesis"),
             ("g1", "kaggle", "kaggle", "kaggle", "isaacgym"),
+            ("g1", "local-nvidia", "local-nvidia-genesis", "local-nvidia", "genesis"),
             (MJLAB_TASK, "local", "local-mjlab", "local", "mjlab"),
+            (MJLAB_TASK, "local-nvidia", "local-nvidia-mjlab", "local-nvidia", "mjlab"),
         ]
         for task, requested, backend_id, job_backend, simulator in cases:
             with self.subTest(task=task, requested=requested):
@@ -112,7 +114,7 @@ class TestResolution(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             resolve_training_backend("g1", "gpu-farm")
         self.assertEqual(str(ctx.exception),
-                         "unknown backend 'gpu-farm' — must be 'local' or 'kaggle'")
+                         "unknown backend 'gpu-farm' — must be 'local' or 'local-nvidia' or 'kaggle'")
 
     def test_kaggle_refuses_an_mjlab_task_with_the_documented_message(self):
         with _pin_registries({MJLAB_TASK}, None):
@@ -247,6 +249,56 @@ class TestEnvHooksStayOpposites(unittest.TestCase):
     def test_mjlab_drops_pythonpath_entirely_when_repo_root_was_all_of_it(self):
         env = self._prepare("local-mjlab", str(training_mod.REPO_ROOT))
         self.assertNotIn("PYTHONPATH", env)
+
+
+class TestLocalNvidiaBackend(unittest.TestCase):
+    """The local-nvidia backend's own hooks: env preparation is the matching
+    CPU-local prepare_env with CUDA made VISIBLE again (never the '' the mjlab
+    CPU variant forces), and its preflight refuses an enumerated-but-unusable
+    GPU the way the rugiar drivers do (the cuda_is_usable probe — see
+    legged_gym/control/cuda_utils.py). Behavioral dispatch (the actual
+    --gpu/--device argv) lives in tests/test_mjlab_training_dispatch.py."""
+
+    def _backend(self, task_stack):
+        return next(b for b in BACKENDS
+                    if b.requested_as == "local-nvidia" and b.task_stack == task_stack)
+
+    def test_both_stacks_are_registered(self):
+        self.assertEqual({b.task_stack for b in BACKENDS if b.requested_as == "local-nvidia"},
+                         {"genesis", "mjlab"})
+
+    def test_genesis_env_is_cpu_local_plus_cuda_visible(self):
+        env = {"PYTHONPATH": "/somewhere/else"}
+        self._backend("genesis").prepare_env(env)
+        self.assertEqual(env["PYTHONPATH"].split(os.pathsep)[0], str(training_mod.REPO_ROOT))
+        self.assertEqual(env["SIMULATOR"], "genesis")
+        self.assertNotEqual(env.get("CUDA_VISIBLE_DEVICES"), "")
+
+    def test_mjlab_env_strips_repo_root_and_keeps_cuda_visible(self):
+        env = {"PYTHONPATH": str(training_mod.REPO_ROOT)}
+        self._backend("mjlab").prepare_env(env)
+        self.assertNotIn("PYTHONPATH", env)
+        self.assertEqual(env["SIMULATOR"], "mjlab")
+        self.assertNotEqual(env.get("CUDA_VISIBLE_DEVICES"), "")
+
+    def test_mjlab_env_clears_an_inherited_cuda_disabling_marker(self):
+        """local-mjlab's own prepare_env sets CUDA_VISIBLE_DEVICES='' — the
+        exact inherited state this backend exists to undo, not preserve."""
+        env = {}
+        self._backend("mjlab").prepare_env(env)
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", env)
+
+    def test_preflight_accepts_a_usable_cuda_device(self):
+        with mock.patch("legged_gym.control.backends.local_nvidia.cuda_utils.cuda_is_usable",
+                        return_value=(True, "")):
+            self._backend("genesis").preflight()  # must not raise
+
+    def test_preflight_rejects_an_unusable_cuda_device(self):
+        with mock.patch("legged_gym.control.backends.local_nvidia.cuda_utils.cuda_is_usable",
+                        return_value=(False, "torch.cuda.is_available() is False")):
+            with self.assertRaises(ValueError) as ctx:
+                self._backend("genesis").preflight()
+        self.assertIn("local-nvidia", str(ctx.exception))
 
 
 if __name__ == "__main__":

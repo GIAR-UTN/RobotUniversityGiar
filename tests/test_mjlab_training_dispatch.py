@@ -300,6 +300,77 @@ class TestGenesisDispatchUnchanged(unittest.TestCase):
         self.assertEqual(argv[0], str(training_mod.GENESIS_PYTHON))
 
 
+class TestNvidiaLocalDispatch(unittest.TestCase):
+    """The local-nvidia backend's argv/env dispatch — the CUDA counterpart to
+    the CPU-local tests above: a Genesis task must run web_train.py with --gpu
+    (never --cpu), an mjlab task must run mjlab_train.py with --device cuda:0,
+    and both must keep CUDA visible (never the '' local-mjlab's env forces).
+    The backend's real preflight probes THIS machine's GPU, so it's mocked —
+    these assert DISPATCH, not whether the GPU works."""
+
+    NVIDIA_PROBE = "legged_gym.control.backends.local_nvidia.cuda_utils.cuda_is_usable"
+
+    def test_genesis_task_runs_web_train_with_gpu_flags(self):
+        if not training_mod.GENESIS_PYTHON.exists():
+            self.skipTest("no .venv on this machine")
+        with _pin_registries(None, {"g1"}), \
+                mock.patch(self.NVIDIA_PROBE, return_value=(True, "")):
+            job, argv, env = _start_capturing(
+                TrainingManager(python_exe=str(training_mod.GENESIS_PYTHON)),
+                policy_name="t_nvidia_genesis", task="g1", num_envs=8,
+                max_iterations=5, backend="local-nvidia")
+        self.assertEqual(argv[2], str(training_mod.TRAIN_SCRIPT))
+        self.assertIn("--gpu", argv)
+        self.assertNotIn("--cpu", argv)
+        self.assertEqual(env["SIMULATOR"], "genesis")
+        self.assertNotEqual(env.get("CUDA_VISIBLE_DEVICES"), "")
+        self.assertEqual(job.simulator, "genesis")
+        self.assertEqual(job.backend, "local-nvidia")
+
+    def test_mjlab_task_runs_mjlab_train_with_cuda_device(self):
+        if not training_mod.MJLAB_PYTHON.exists():
+            self.skipTest("no .venv-mjlab on this machine")
+        with _pin_registries({MJLAB_TASK}, None), \
+                mock.patch(self.NVIDIA_PROBE, return_value=(True, "")):
+            job, argv, env = _start_capturing(
+                TrainingManager(), policy_name="t_nvidia_mjlab", task=MJLAB_TASK,
+                num_envs=8, max_iterations=5, motion_file=MOTION, backend="local-nvidia")
+        self.assertEqual(argv[0], str(training_mod.MJLAB_PYTHON))
+        self.assertEqual(argv[2], str(training_mod.MJLAB_TRAIN_SCRIPT))
+        self.assertIn("--device", argv)
+        self.assertIn("cuda:0", argv)
+        self.assertNotIn("--cpu", argv)
+        self.assertEqual(env["SIMULATOR"], "mjlab")
+        self.assertNotEqual(env.get("CUDA_VISIBLE_DEVICES"), "")
+        self.assertEqual(job.simulator, "mjlab")
+        self.assertEqual(job.backend, "local-nvidia")
+
+    def test_mjlab_task_still_rejects_genesis_only_knobs(self):
+        """local-nvidia's mjlab descriptor reuses local-mjlab's validation —
+        a Genesis-only knob must be refused here too, not silently ignored."""
+        if not training_mod.MJLAB_PYTHON.exists():
+            self.skipTest("no .venv-mjlab on this machine")
+        with _pin_registries({MJLAB_TASK}, None), \
+                mock.patch(self.NVIDIA_PROBE, return_value=(True, "")):
+            with self.assertRaises(ValueError) as ctx:
+                TrainingManager().start(
+                    policy_name="t_nvidia_mjlab2", task=MJLAB_TASK, num_envs=8,
+                    max_iterations=5, motion_file=MOTION, backend="local-nvidia",
+                    base_height_target=0.5)
+        self.assertIn("base_height_target", str(ctx.exception))
+
+    def test_genesis_task_refuses_when_cuda_is_unusable(self):
+        """An enumerated-but-unusable GPU (the cuda_is_usable trap) must be
+        a clean preflight rejection before anything is launched."""
+        with _pin_registries(None, {"g1"}), \
+                mock.patch(self.NVIDIA_PROBE, return_value=(False, "no CUDA here")):
+            with self.assertRaises(ValueError) as ctx:
+                TrainingManager().start(
+                    policy_name="t_nvidia_nogpu", task="g1", num_envs=8,
+                    max_iterations=5, backend="local-nvidia")
+        self.assertIn("local-nvidia", str(ctx.exception))
+
+
 class TestFinalizePolicySuffix(unittest.TestCase):
     """§5c.7 — load_policy_backend() dispatches on the file suffix, so an
     .onnx export copied to checkpoint.pt is simply unloadable."""

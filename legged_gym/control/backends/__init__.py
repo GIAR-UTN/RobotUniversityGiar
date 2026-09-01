@@ -4,19 +4,21 @@ The training-backend registry.
 WHAT THIS IS. A training backend is one answer to "where and how does a
 training job actually run": which interpreter, which entrypoint script,
 which subprocess env, which simulator ends up recorded on the resulting
-policy, and which tasks it can serve at all. There are three today —
-`local-genesis`, `local-mjlab`, `kaggle`, one module each — and
-TrainingManager.start() contains ZERO knowledge of any of them: it validates
-the request, resolves ONE descriptor out of BACKENDS, and drives that
-descriptor's hooks. This replaced a set of scattered `if backend == "kaggle"
-/ if train_backend == "mjlab"` branches that had to be edited in five places
-at once.
+policy, and which tasks it can serve at all. There are five today —
+`local-genesis`, `local-mjlab`, `local-nvidia-genesis`, `local-nvidia-mjlab`,
+`kaggle` (the local-nvidia pair shares one module and one requestable name),
+and TrainingManager.start() contains ZERO knowledge of any of them: it
+validates the request, resolves ONE descriptor out of BACKENDS, and drives
+that descriptor's hooks. This replaced a set of scattered
+`if backend == "kaggle" / if train_backend == "mjlab"` branches that had to
+be edited in five places at once.
 
   base.py           the TrainingBackend dataclass + the repo paths/interpreters
-  local_genesis.py  Genesis locomotion tasks, on this machine
+  local_genesis.py  Genesis locomotion tasks, on this machine (CPU)
   local_mjlab.py    mjlab motion-tracking tasks, on this machine (CPU)
+  local_nvidia.py   the same two stacks, on THIS machine's NVIDIA GPU (CUDA) —
+                    requestable as `local-nvidia`, two descriptors (one per stack)
   kaggle.py         KaggleRunner + the remote Kaggle GPU descriptor
-  local_nvidia.py   PLACEHOLDER — a dedicated local NVIDIA GPU (not registered)
   nvidia_cloud.py   PLACEHOLDER — NVIDIA's cloud stack (not registered)
 
 HOW TO ADD A NEW BACKEND. Nothing in start()/poll()/the validation block
@@ -43,10 +45,13 @@ changes — adding one is these three steps and no others:
      --backend` choices and start()'s "unknown backend" message are all
      derived from BACKENDS.
 
-The two NVIDIA placeholders are deliberately NOT in BACKENDS: they carry no
-implementation yet, and a registered-but-broken entry would show up as a
-real choice in the CLI and the web. Registering one is literally adding
-`local_nvidia.BACKEND` to the list below once its hooks are real.
+The one NVIDIA cloud placeholder is deliberately NOT in BACKENDS: it carries
+no implementation yet, and a registered-but-broken entry would show up as a
+real choice in the CLI and the web. Registering it is literally adding
+`nvidia_cloud.BACKEND` to the list below once its hooks are real. (The old
+`local_nvidia` placeholder is gone for the same reason, the other direction:
+its hooks ARE real now, so it was registered — see local_nvidia.py's own
+module docstring.)
 
 Deliberately NOT a plugin system: no dynamic imports, no config files, no
 entry points. A new backend is a Python literal in this list, which is
@@ -56,7 +61,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from legged_gym.control.backends import kaggle, local_genesis, local_mjlab
+from legged_gym.control.backends import kaggle, local_genesis, local_mjlab, local_nvidia
 from legged_gym.control.backends.base import (
     GENESIS_PYTHON, MJLAB_PYTHON, MJLAB_TRAIN_SCRIPT, REPO_ROOT, TRAIN_SCRIPT,
     TrainingBackend,
@@ -65,6 +70,8 @@ from legged_gym.control.backends.base import (
 BACKENDS: List[TrainingBackend] = [
     local_genesis.BACKEND,
     local_mjlab.BACKEND,
+    local_nvidia.BACKEND_GENESIS,
+    local_nvidia.BACKEND_MJLAB,
     kaggle.BACKEND,
 ]
 
@@ -140,5 +147,5 @@ __all__ = [
     "requestable_backend_options", "resolve_training_backend",
     "backend_descriptor", "backend_for_job",
     "REPO_ROOT", "TRAIN_SCRIPT", "MJLAB_TRAIN_SCRIPT", "MJLAB_PYTHON", "GENESIS_PYTHON",
-    "kaggle", "local_genesis", "local_mjlab",
+    "kaggle", "local_genesis", "local_mjlab", "local_nvidia",
 ]

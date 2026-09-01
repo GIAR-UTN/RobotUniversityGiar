@@ -178,8 +178,9 @@ def _build_train_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     backend.add_argument("--backend", type=str, default="local", choices=list(REQUESTABLE_BACKENDS),
                           help="where training runs: " + ", ".join(
                               f"'{o['id']}' ({o['label']})" for o in requestable_backend_options())
-                              + ". 'local' runs on this machine (CPU); 'kaggle' uploads and runs on "
-                                "a Kaggle GPU kernel (requires ~/.kaggle/kaggle.json)")
+                              + ". 'local' runs on this machine's CPU; 'local-nvidia' runs on this "
+                                "machine's NVIDIA GPU (CUDA) when one is usable; 'kaggle' uploads and "
+                                "runs on a Kaggle GPU kernel (requires ~/.kaggle/kaggle.json)")
 
     discover = p.add_argument_group("Discovery (print information and exit — no training)")
     discover.add_argument("--list_tasks", action="store_true",

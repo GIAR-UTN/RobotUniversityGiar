@@ -2284,8 +2284,13 @@ function renderHardwarePanel(info) {
   const localRows = [
     ['OS', info.os], ['Machine', info.machine], ['CPU', info.cpu_brand],
     ['Cores', info.cpu_count], ['RAM', `${info.ram_gb ?? '?'} GB`],
-    ['GPU', info.cuda_available ? 'CUDA available (unused — local training runs CPU)'
-      : info.mps_available ? 'Metal available (unused — local training runs CPU)' : 'none'],
+    // info.local_nvidia is only set when a CUDA context is actually usable
+    // (same probe the local-nvidia backend's preflight runs) — that's also
+    // what gates the Create Policy "local-nvidia" tab.
+    ['GPU', info.local_nvidia
+      ? `${info.local_nvidia.gpu} (${info.local_nvidia.vram_gb} GB, sm_${info.local_nvidia.compute_capability}) — usable for local CUDA training`
+      : info.cuda_available ? 'CUDA enumerated but not usable — local training runs CPU'
+        : info.mps_available ? 'Metal available (unused — local training runs CPU)' : 'none'],
     ['Simulator', `${info.simulator} (${info.genesis_backend})`],
     ['Control backend', info.control_backend],
     ['Suggested parallel envs', `${info.suggested_num_envs.comfortable}–${info.suggested_num_envs.upper}`],
@@ -2369,16 +2374,22 @@ function renderHardwarePanel(info) {
 
 // Which backends this server will actually accept right now. The list
 // itself is the server's (system_info()'s `backends`, derived from the
-// TrainingBackend registry); the only thing filtered here is a remote
-// backend whose credentials aren't set up server-side — a Kaggle job would
-// otherwise fail immediately with a credentials error. The fallback covers
+// TrainingBackend registry); the only things filtered here are choices
+// whose precondition isn't met server-side — Kaggle without credentials
+// (a job would fail immediately with a credentials error), and
+// local-nvidia without a usable CUDA context (system_info()'s local_nvidia
+// is the same probe the backend's own preflight runs). The fallback covers
 // an older server that doesn't send `backends` yet.
 function offeredBackends(info) {
   const all = Array.isArray(info.backends) && info.backends.length
     ? info.backends
     : [{ id: 'local', label: 'This machine', remote: false },
        { id: 'kaggle', label: 'Kaggle (GPU)', remote: true }];
-  return all.filter((b) => (b.id === 'kaggle' ? !!info.kaggle_available : true));
+  return all.filter((b) => (
+    b.id === 'kaggle' ? !!info.kaggle_available
+      : b.id === 'local-nvidia' ? !!info.local_nvidia
+        : true
+  ));
 }
 
 // Rebuilds the "Run on" tabs from that list. Clicks are handled by a
@@ -2398,7 +2409,8 @@ function renderTrainBackendTabs(backends) {
 // The suggestion (both the number and the hint text) reflects whichever
 // backend is currently selected — local's is CPU-core-based, Kaggle's comes
 // from a real diagnostic kernel (see kaggle_profile's own comment in
-// training.py) — never a blend of the two.
+// training.py), local-nvidia's from THIS machine's own VRAM profile (see
+// system_info()'s local_nvidia) — never a blend of the two.
 function updateEnvsHint() {
   if (!systemInfo) return;
   if (trainBackend === 'kaggle') {
@@ -2411,6 +2423,16 @@ function updateEnvsHint() {
     trainEnvsHint.textContent =
       `Suggested for Kaggle's GPU: ${kp.suggested_num_envs.comfortable}–${kp.suggested_num_envs.upper} ` +
       `— confirmed g1 creates cleanly up to 4096 envs on that hardware (see Hardware tab).`;
+  } else if (trainBackend === 'local-nvidia') {
+    const n = systemInfo.local_nvidia;
+    if (!n || !n.suggested_num_envs) {
+      trainEnvsHint.textContent = 'Suggested range unavailable — no usable CUDA device detected on this machine.';
+      return;
+    }
+    if (!envsFieldTouched) trainEnvs.value = n.suggested_num_envs.comfortable;
+    trainEnvsHint.textContent =
+      `Suggested for ${n.gpu}: ${n.suggested_num_envs.comfortable}–${n.suggested_num_envs.upper} ` +
+      `(${n.vram_gb} GB VRAM) — a rough VRAM-based range, calibrated by the first real run's history.`;
   } else {
     const s = systemInfo.suggested_num_envs;
     if (!envsFieldTouched) trainEnvs.value = s.comfortable;
@@ -2927,7 +2949,8 @@ function updateEstimate() {
     // always shows the iteration count it's expected to buy (not just
     // "time-boxed to N minutes" with no sense of how much training that
     // actually is) — see TrainingManager.estimate()'s own docstring.
-    const where = trainBackend === 'kaggle' ? 'on Kaggle' : 'on this machine';
+    const where = trainBackend === 'kaggle' ? 'on Kaggle'
+      : trainBackend === 'local-nvidia' ? 'on this machine (GPU)' : 'on this machine';
     call('estimate_training_time', {
       num_envs: numEnvs,
       max_iterations: hasIters ? iterations : null,
@@ -2987,7 +3010,9 @@ function setTrainBackend(value) {
   trainBackendTabs.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.backend === trainBackend));
   trainBackendHint.textContent = trainBackend === 'kaggle'
     ? 'Runs on a free Kaggle GPU kernel instead of this machine’s CPU — much faster, and there’s no live iteration count while it runs. Clone-from uploads the base checkpoint to Kaggle automatically (as a private Dataset) before the kernel starts.'
-    : '';
+    : trainBackend === 'local-nvidia'
+      ? 'Runs on this machine’s NVIDIA GPU (CUDA) instead of its CPU — same Genesis/mjlab stack as local, just the GPU backend. Uses whatever VRAM the active GPU has free, so keep num_envs within the suggested range.'
+      : '';
   refreshCloneFromMismatchWarning();
 }
 

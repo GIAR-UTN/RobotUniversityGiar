@@ -26,7 +26,7 @@ Hoy A corre local (CPU en laptops) y en Kaggle (GPU gratuita, cola compartida, s
 
 - Cada training job es una corrida PPO de un modelo pequeño (policy de locomoción o motion-tracking), no un LLM: son minutos a ~1 hora en una GPU consumer/datacenter chica (clase T4/A10G), no se necesita una GPU de gama alta tipo A100/H100.
 - Referencia real: el free tier de Kaggle (GPU Tesla P100, Pascal) ya es suficiente para entrenar — o sea, el piso de hardware requerido es bajo.
-- Hoy no hay backend NVIDIA propio (ni local ni cloud) implementado — son placeholders en el código (`local-nvidia`, `nvidia-cloud`) reservados para esta migración.
+- Hoy hay un backend NVIDIA **local** implementado (`rugiar train --backend local-nvidia`, GPU CUDA de la máquina — ver `docs/compute_backends.md`); el backend NVIDIA en la **nube** (`nvidia-cloud`) sigue siendo placeholder, reservado para esta migración.
 - **Punto crítico de diseño: el entrenamiento debe pasar por una cola con concurrencia limitada** ("semáforo"), no ejecutarse indiscriminadamente. Esto es tanto una decisión de costo como de seguridad de cuota — ver §4.
 
 ## 3. Parte B — Simulador (viewer en la web)

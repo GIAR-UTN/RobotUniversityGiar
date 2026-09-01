@@ -46,8 +46,8 @@ RobotUniversityGiar (RUgiar) is a Genesis/Isaac-Gym-based fork of `unitree_rl_gy
 |---|---|---|---|---|
 | `local_genesis.py` | this machine, `.venv` | Genesis (CPU today — the descriptor fixes `--headless --cpu`) | locomotion tasks | active |
 | `local_mjlab.py` | this machine, `.venv-mjlab` | mjlab/MuJoCo (CPU forced: `CUDA_VISIBLE_DEVICES=""`) | motion-tracking tasks | active |
+| `local_nvidia.py` | this machine's NVIDIA GPU (CUDA) | Genesis (`--gpu`) and mjlab (`--device cuda:0`) | locomotion + motion-tracking | active (requestable as `local-nvidia`; guarded by a `cuda_is_usable` preflight) |
 | `kaggle.py` | remote Kaggle kernel, Tesla P100 | Isaac Gym (Genesis's GPU JIT needs Volta+; P100 is Pascal) | locomotion tasks only | active |
-| `local_nvidia.py` | dedicated local NVIDIA GPU | Isaac Lab / Isaac Gym (TBD) | — | **placeholder** |
 | `nvidia_cloud.py` | NVIDIA cloud compute | Isaac Lab / Isaac Gym (TBD) | — | **placeholder**, another team in parallel |
 
 `TrainingManager` never branches on a backend name: it resolves ONE descriptor and drives its hooks. Adding a backend is one new module plus one entry in `BACKENDS` — `REQUESTABLE_BACKENDS` and the "unknown backend" error are derived, never hand-maintained. `job_backend`/`simulator` are *persisted shape* (they land in `meta.json` and the UI) — don't repoint them casually.
@@ -159,7 +159,7 @@ This is the cleanest boundary in the repo and worth preserving deliberately: if 
 
 This area is about **third-party data and ecosystem work**, not compute. Read the routing rule first, because it has been gotten wrong before:
 
-> **Compute integrations do NOT land here, and do not land in the Web UI.** A new place to run training — a dedicated local NVIDIA GPU, NVIDIA cloud, any other cluster — is a **training backend**: it goes in `legged_gym/control/backends/`, where `local_nvidia.py` and `nvidia_cloud.py` are already reserved for exactly that. See §1b and [`docs/compute_backends.md`](../../docs/compute_backends.md). The Web UI only ever gets a new *option* in an existing form, if anything.
+> **Compute integrations do NOT land here, and do not land in the Web UI.** A new place to run training — NVIDIA cloud, any other cluster — is a **training backend**: it goes in `legged_gym/control/backends/`, where `nvidia_cloud.py` is the remaining reserved slot (`local_nvidia.py` was that slot too, and is now a real backend). See §1b and [`docs/compute_backends.md`](../../docs/compute_backends.md). The Web UI only ever gets a new *option* in an existing form, if anything.
 
 What genuinely belongs here is motion/asset data from other projects — no code for it exists in this repo yet, but the upstream work is real:
 
@@ -276,4 +276,4 @@ Files below are grouped by area. "Collision risk" flags concurrency invariants, 
 - Risk: training jobs are orphaned as background subprocesses if a family switch relaunches the driver process mid-run — no persistent daemon exists yet to survive that.
 
 **Third-Party Integrations** — no files yet. When motion/asset integration lands, expect it to add files under `web/` (per the stated integration point) plus possibly a new area-owned module elsewhere; until then there is nothing to collide with, but also nothing to build against — confirm the actual integration contract with that collaborator before writing code that assumes one.
-- Routing: a new *compute* target (local NVIDIA GPU, NVIDIA cloud, any cluster) is **not** this area. It is a training backend under `legged_gym/control/backends/` — see §1b. `backends/local_nvidia.py` and `backends/nvidia_cloud.py` are the reserved, unclaimed starting points; nothing else in the repo touches them yet, so they're conflict-free to pick up.
+- Routing: a new *compute* target (NVIDIA cloud, any cluster) is **not** this area. It is a training backend under `legged_gym/control/backends/` — see §1b. `backends/nvidia_cloud.py` is the remaining reserved, unclaimed starting point; `local_nvidia.py` was claimed and is now a real backend, so it's no longer conflict-free.

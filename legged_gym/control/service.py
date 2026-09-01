@@ -475,6 +475,10 @@ class ControlService:
         TrainingManager.start()/backends/kaggle.py; only available when
         system_info()['kaggle_available'] is true, and Clone-from
         (base_policy/from_checkpoint) isn't supported on it yet.
+        backend='local-nvidia' runs it on THIS machine's NVIDIA GPU (CUDA)
+        instead of CPU — see backends/local_nvidia.py; only available when
+        system_info()['local_nvidia'] is non-null (a real CUDA context
+        exists).
         motion_file is the reference-motion clip to train against — REQUIRED
         for an mjlab motion-tracking task (e.g. Rugiar-G1-Mimic, whose
         registered command term has no default clip) and ignored by tasks

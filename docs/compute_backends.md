@@ -17,8 +17,8 @@ motion-tracking mjlab (`Rugiar-G1-Mimic`) usan el mismo comando; el despacho es 
 |---|---|---|---|---|---|
 | `local-genesis` | Tu máquina (probado en Mac Apple Silicon), **CPU** | Genesis | locomoción (`g1`, `go2`, `k1`, `tron1*`, …) | `rugiar train --backend local` | **activo** |
 | `local-mjlab` | Tu máquina, cualquier plataforma | mjlab (MuJoCo) | motion-tracking (`Rugiar-G1-Mimic`) | `rugiar train --backend local` | **activo** |
+| `local-nvidia` | Tu máquina, **GPU NVIDIA (CUDA)** | Genesis o mjlab | locomoción **y** motion-tracking | `rugiar train --backend local-nvidia` | **activo** |
 | `kaggle` | Kernel remoto de Kaggle (GPU Tesla P100) | Isaac Gym | locomoción únicamente | `rugiar train --backend kaggle` | **activo** |
-| `local-nvidia` | GPU NVIDIA local dedicada | Isaac Lab / Isaac Gym (a definir) | — | — | **placeholder, no implementado** |
 | `nvidia-cloud` | Cómputo NVIDIA en la nube | Isaac Lab / Isaac Gym (a definir) | — | — | **placeholder, no implementado** |
 
 `--backend local` es un solo valor pedible: `local-genesis` y `local-mjlab` se distinguen
@@ -33,8 +33,30 @@ por la task, no por lo que escribís.
   `gs.init(backend=gs.gpu)` — y `gs.gpu` lo resuelve Genesis según la plataforma (Metal en
   macOS, CUDA en Linux+NVIDIA) — pero el registry **no** pasa ese flag. Ver
   `legged_gym/scripts/web_train.py:142` y `TrainingManager.system_info()`.
-- **Decisión actual: se queda en CPU.** Usar Metal en Mac no es prioridad hoy — se
-  evaluará como mejora futura si hace falta acelerar el entrenamiento local de Genesis.
+- **Decisión actual: `local` se queda en CPU.** Usar Metal en Mac no es prioridad hoy.
+  Para una GPU NVIDIA local, el backend dedicado es `local-nvidia` (abajo), no `local`.
+
+### `local-nvidia`
+
+- Corre **en esta máquina**, con la GPU NVIDIA (CUDA) — el contraparte CUDA del par CPU
+  (`local-genesis` / `local-mjlab`). Un descriptor por stack, ambos pedibles con
+  `rugiar train --backend local-nvidia`.
+- Para tasks **Genesis** (`g1`, …): `legged_gym/scripts/web_train.py` con los flags fijos
+  `--headless --gpu` → `gs.init(backend=gs.gpu)` y rsl_rl en `cuda:0`. El JIT de GPU de
+  Genesis requiere Volta+ (sm_70+).
+- Para tasks **mjlab** (`Rugiar-G1-Mimic`): `mjlab_train.py` con `--device cuda:0`.
+- **Preflight obligatorio**: antes de lanzar nada, `cuda_utils.cuda_is_usable()` crea y usa
+  un contexto CUDA real. Una GPU que enumera pero no puede crear contexto (driver roto,
+  firmware GSP roto) se rechaza con un error claro, no muere a mitad del `gs.init` del
+  subproceso — el mismo guard que ya usan los drivers `rugiar_driver*.py`.
+- `CUDA_VISIBLE_DEVICES=""` heredado (p. ej. de un entorno mjlab CPU) se limpia, no se
+  respeta: este backend existe para darle la GPU al hijo. Un valor no vacío que pinne una
+  GPU específica se conserva.
+- Persiste `job_backend="local-nvidia"`: el historial de throughput GPU vive en su propio
+  bucket de `estimate()`, no mezclado con el CPU-local.
+- `system_info()['local_nvidia']` (nombre del GPU, VRAM, rango sugerido de `num_envs`)
+  solo se setea cuando el probe pasa — es también lo que habilita la pestaña
+  "local-nvidia" del Create Policy en la web.
 
 ### `local-mjlab`
 
@@ -60,13 +82,13 @@ por la task, no por lo que escribís.
   privado y reapunta la ruta al mount `/kaggle/input/`.
 - Setup de credenciales (`~/.kaggle/kaggle.json`): README §2 "Kaggle (cloud GPU training)".
 
-### `local-nvidia` y `nvidia-cloud` — reservados, sin implementar
+### `nvidia-cloud` — reservado, sin implementar
 
-No hay implementación todavía. Los archivos
-`legged_gym/control/backends/local_nvidia.py` y
-`legged_gym/control/backends/nvidia_cloud.py` existen como **lugar reservado**: ahí va una
-GPU NVIDIA local dedicada y el cómputo NVIDIA en la nube (Isaac Lab / Isaac Gym), este
-último en desarrollo por otro equipo en paralelo. Nada los pide todavía desde el CLI.
+No hay implementación todavía. El archivo
+`legged_gym/control/backends/nvidia_cloud.py` existe como **lugar reservado** para el
+cómputo NVIDIA en la nube (Isaac Lab / Isaac Gym), en desarrollo por otro equipo en
+paralelo. Nada lo pide todavía desde el CLI. (`local_nvidia.py` ya no es placeholder —
+ver `local-nvidia` arriba.)
 
 ---
 
@@ -77,8 +99,8 @@ El paquete es `legged_gym/control/backends/`:
 | Archivo | Qué es |
 |---|---|
 | `base.py` | El descriptor `TrainingBackend` y sus hooks (`interpreter`, `prepare_env`, `validate_params`, `preflight`, `launch_remote`, …). |
-| `local_genesis.py`, `local_mjlab.py`, `kaggle.py` | Los tres backends activos. |
-| `local_nvidia.py`, `nvidia_cloud.py` | Placeholders — **empezá acá** si venís a sumar cómputo NVIDIA. |
+| `local_genesis.py`, `local_mjlab.py`, `local_nvidia.py`, `kaggle.py` | Los backends activos (CPU local ×2, GPU local ×2, Kaggle). |
+| `nvidia_cloud.py` | Placeholder — **empezá acá** si venís a sumar cómputo NVIDIA en la nube. |
 | `__init__.py` | El registry: `BACKENDS`, `REQUESTABLE_BACKENDS`, `resolve_training_backend()`. |
 
 La forma, en dos pasos:

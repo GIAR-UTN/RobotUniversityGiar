@@ -135,11 +135,11 @@ panel de rewards con las 9 variables de tracking de este mundo (`motion_body_pos
 `legged_gym/scripts/process_reference_motion_mjlab.py` · `legged_gym/scripts/mjlab_train.py` ·
 `docs/motion_imitation_integration.md` · `docs/mjlab_training_contract.md`
 
-> **Frontera todavía abierta acá:** el pipeline de arriba corre sobre Genesis/mjlab, en CPU hoy
-> (Metal en Mac es una mejora futura, no implementada — ver `docs/compute_backends.md`), sin
-> depender de NVIDIA. El stack de simuladores NVIDIA (Isaac Lab / Isaac Gym) para este
-> mismo mundo de motion imitation lo está avanzando otro equipo, integración pendiente —
-> el lugar donde entra es §9, `legged_gym/control/backends/nvidia_cloud.py`.
+> **Frontera todavía abierta acá:** el pipeline de arriba corre sobre Genesis/mjlab — en CPU
+> hoy con `--backend local`, o en la GPU NVIDIA de tu máquina con `--backend local-nvidia`
+> (ver `docs/compute_backends.md`). El stack de simuladores NVIDIA (Isaac Lab / Isaac Gym)
+> para este mismo mundo de motion imitation lo está avanzando otro equipo, integración
+> pendiente — el lugar donde entra es §9, `legged_gym/control/backends/nvidia_cloud.py`.
 > Más allá de eso: sumar nuevas fuentes de movimiento — video propio digitalizado, otros
 > datasets de motion capture, captura desde el robot mismo — sigue siendo terreno real para
 > quien se sume. `tu nombre acá`
@@ -170,12 +170,12 @@ Hoy hay tres backends de entrenamiento reales y ninguno usa una GPU NVIDIA propi
 `kaggle` (kernel remoto con una P100 prestada y un free tier de por medio). Todo el proyecto
 nació justamente de la restricción de no tener una GPU NVIDIA a mano.
 
-Sumar cómputo NVIDIA — una GPU local dedicada, o procesamiento en la nube con Isaac Lab /
-Isaac Gym — es un área con lugar ya reservado y **sin dueño**:
+Sumar cómputo NVIDIA **en la nube** — procesamiento con Isaac Lab / Isaac Gym — es un área
+con lugar ya reservado y **sin dueño**:
 
-`legged_gym/control/backends/local_nvidia.py` · `legged_gym/control/backends/nvidia_cloud.py`
+`legged_gym/control/backends/nvidia_cloud.py`
 
-Los dos archivos existen como placeholders vacíos dentro del paquete de backends. Un backend
+El archivo existe como placeholder vacío dentro del paquete de backends. Un backend
 nuevo son dos cosas: los hooks que necesite (intérprete, entorno, preflight de credenciales,
 launch remoto) en su propio archivo, y una entrada en la lista `BACKENDS`. A partir de ahí
 `rugiar train --backend <lo-tuyo>` lo acepta solo — el nombre válido se deriva del registry,
@@ -336,7 +336,7 @@ graph LR
 | Driver del robot | `rugiar_driver.py` | Cambios en helpers compartidos van también a `rugiar_driver_target.py` (hay un test de paridad por AST que lo verifica). |
 | Hardware real | `deploy_real/real_adapter.py` | Sin probar en robot físico — si tenés acceso a un G1, sos quien puede cerrar esa brecha. |
 | Integraciones de terceros | Nada todavía | Hablá con quien hace el retargeting, o proponé vos el contrato. |
-| Cómputo NVIDIA (GPU local / nube) | `docs/compute_backends.md`, después `backends/local_nvidia.py` · `backends/nvidia_cloud.py` | Placeholders vacíos, sin dueño y sin conflictos. Un backend = hooks propios + una entrada en `BACKENDS`. |
+| Cómputo NVIDIA (nube) | `docs/compute_backends.md`, después `backends/nvidia_cloud.py` | Placeholder vacío, sin dueño y sin conflictos. (La GPU local ya está hecha: `--backend local-nvidia`.) Un backend = hooks propios + una entrada en `BACKENDS`. |
 
 ---
 
