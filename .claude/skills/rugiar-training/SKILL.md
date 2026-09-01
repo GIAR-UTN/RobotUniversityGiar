@@ -1,236 +1,23 @@
 ---
-name: rugiar
-description: Front door to the RobotUniversityGiar (RUgiar) system from the command line — the FULL combined system, equivalent to the sum of three narrower optional skills that also exist (`rugiar-training` for `rugiar train`/`fuse`/`distill`, `rugiar-movement` for driving/watching a robot with `rugiar_driver.py`, `rugiar-management` for the `rugiar_mcp` server/control-web/port lifecycle) — use one of those instead when the task is clearly scoped to just one area; use this one when the task spans more than one, or the scope is unclear. Covers training/fine-tuning policies with the `rugiar` CLI (BOTH Genesis locomotion tasks like `g1` and mjlab motion-tracking tasks like `Rugiar-G1-Mimic`, auto-dispatched to whichever backend a task needs, same flags either way — see "Training an mjlab motion-tracking task" below), fusing/merging already-trained policies' weights with `rugiar fuse`, behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`, AND running/controlling a robot (sim today, real G1 once wired up) with `rugiar_driver.py` — policy switching, pause/restart, E-STOP, manual velocity commands, over a WebSocket control protocol any client (the built-in web UI, a home-made joystick controller, or the `rugiar_mcp` MCP server — see "rugiar_mcp — controlling the robot via MCP" below) can speak. Use whenever the user wants to train/fine-tune a policy (locomotion or motion-tracking), fuse/merge policies, distill/clone a policy's behavior into a fine-tunable one, discover tasks/reward scales/local policies/reference-motion clips, connect to or drive a robot (sim or `--real`), understand/build a controller against the control protocol or the `rugiar_mcp` MCP tools, or anything else about using this system day to day.
-allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*) Bash(python legged_gym/scripts/rugiar_driver.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver.py:*) Bash(python legged_gym/scripts/rugiar_driver_target.py:*) Bash(.venv/bin/python legged_gym/scripts/rugiar_driver_target.py:*) Bash(python legged_gym/scripts/play.py:*) Bash(.venv/bin/python legged_gym/scripts/play.py:*)
+name: rugiar-training
+description: Training/fine-tuning policies with the `rugiar` CLI (BOTH Genesis locomotion tasks like `g1` and mjlab motion-tracking tasks like `Rugiar-G1-Mimic`, auto-dispatched to whichever backend a task needs, same flags either way), fusing/merging already-trained policies' weights with `rugiar fuse`, and behavior-cloning ANY policy (including externally-sourced ones with no train_checkpoint.pt, like `stable`) into a fresh fine-tunable one with `rugiar distill`. Use whenever the user wants to train/fine-tune a policy (locomotion or motion-tracking), fuse/merge policies, distill/clone a policy's behavior, discover tasks/reward scales/local policies/reference-motion clips, or judge whether a checkpoint is actually good. Does NOT cover driving/watching a robot live with `rugiar_driver.py` (see rugiar-movement) or standing up/managing the control web or MCP server (see rugiar-management) — this skill is the CLI/training half only.
+allowed-tools: Bash(rugiar:*) Bash(.venv/bin/rugiar:*) Bash(pip install:*) Bash(python3 -c:*) Bash(mkdir -p ~/.kaggle:*) Bash(chmod 600 ~/.kaggle/kaggle.json) Bash(mv:*) Bash(export SIMULATOR=*)
 ---
 
-# RUgiar system — training CLI (`rugiar`) and running/control (`rugiar_driver.py`)
+# RUgiar training — CLI for creating RobotUniversityGiar policies
 
-This skill covers the two command-line ways someone actually touches this
-system day to day: **training** a policy (`rugiar`, this file's original
-scope) and **running/driving a robot with one** (`rugiar_driver.py`,
-covered in the section right below). If a user's ask is "connect to the
-robot," "switch policies live," "let me drive it with a gamepad," or
-anything about the WebSocket control protocol, that's the second section —
-don't assume it's a training question.
+This skill is one of three optional splits of the original `rugiar` skill
+(the other two: `rugiar-movement` for driving/watching a robot with
+`rugiar_driver.py`, and `rugiar-management` for `rugiar_mcp`/control-web
+server-lifecycle concerns). The original `rugiar` skill still exists and
+covers all three combined — use this narrower one when the task is
+specifically about training, fusing, or distilling a policy, not
+driving/watching one live or managing server infrastructure.
 
-For the system-wide picture beyond this skill's CLI/driver scope — how
-Training, Policy Operations, Control, the Web UI, the CLI, the Robot Driver,
-and Third-Party Integrations fit together, and which files a change in one
-area is likely to collide with in another — see
-**`legged_gym/control/ARCHITECTURE.md`**, not this file. This skill stays
-focused on day-to-day CLI/driver usage; that doc stays focused on module
-boundaries and cross-area calls. Don't duplicate one into the other.
-
-## rugiar_driver.py — running / controlling a robot (sim today, real G1 once wired up)
-
-This is the process behind the control web: it loads one or more trained
-policies, exposes policy-switching/pause/restart/E-STOP/velocity commands
-over a WebSocket, and drives either the Genesis simulator or (with `--real`)
-an actual robot over DDS. Full walkthrough with diagrams: **docs/index.html
-§12 "Switching policies live"** (architecture) and **§13 "Talking to the
-robot: the control protocol"** (the wire protocol, for building clients).
-§9 "Onto the real robot" explains the physical DDS/remote-control gating
-sequence `--real` drives through.
-
-**The live, authoritative flag reference is `python legged_gym/scripts/
-rugiar_driver.py --help`** (needs `SIMULATOR` set first, same as `rugiar`
-— see "Prerequisite" below). Snapshot as of this writing, so you don't have
-to run it just to see what exists:
-
-```
-usage: rugiar_driver.py [-h] --policy POLICY_SPECS [--active ACTIVE]
-                          [--ramp_ticks RAMP_TICKS] [--headless]
-                          [--viser_port VISER_PORT] [--speed SPEED]
-                          [--control_port CONTROL_PORT] [--scenario {ball,default,race}]
-                          [--scenario-option KEY=VALUE] [--real]
-                          [--net_interface NET_INTERFACE]
-                          [--robot_config ROBOT_CONFIG] [--token TOKEN]
-
---policy POLICY_SPECS   name:/path/to/policy.pt — repeatable, optional: any local
-                        policies/<name>/ folder trained for --task is auto-discovered
-                        regardless (this is only for policies not registered that way).
---task TASK             registered task this server's scene is built for (default: 'g1').
-                        All --policy specs and auto-discovered ones must be for this task.
---active ACTIVE         which --policy name starts active (default: first one given)
---ramp_ticks N          control ticks to cross-fade over on a switch
---headless              no viewer — runs a scripted smoke test (switch once, then exit).
-                        Mutually exclusive with --real (see below).
---viser_port PORT       raw 3D viewer port (sim only — Genesis's native viewer has a
-                        rendering bug on Mac/this asset combo, so viser is what's used)
---speed FLOAT           sim playback speed multiplier (1.0 = real-time 50Hz). Ignored
-                        with --real — the real control loop paces itself off the
-                        robot's own control_dt.
---control_port PORT     starts a networked ControlServer (JSON-over-WebSocket at /ws)
-                        on this port. Unless --headless, also serves the unified
-                        control web (policies/pause/restart/E-STOP/velocity panel +
-                        Docs tab) at http://localhost:<control_port>/.
---scenario {ball,default,race}
-                        which named scenario's props/web-UI config to use (Genesis only).
-                        Defaults to 'default' (full admin: no props, every web-UI control
-                        visible). 'ball': a physics ball prop. 'race': a start/finish line
-                        and crash-mat track (see legged_gym/utils/scenarios.py).
---scenario-option KEY=VALUE
-                        override one of the scenario's default options (repeatable),
-                        e.g. --scenario-option track_length=10.
---camera                stream a robot-POV RGB camera feed to the control web
-                        (Genesis only, needs cfg.sensor.add_rgb_camera support)
---real                  drive an actual robot over DDS (deploy_real/real_adapter.py::
-                        RealAdapter) instead of Genesis. No sim env, no viser.
-                        Incompatible with --headless — a real robot's reset() blocks
-                        on a human at the physical remote, no unattended smoke test.
---net_interface IFACE   DDS network interface on the robot's onboard computer
-                        (e.g. 'eth0', 'enp3s0') — required with --real.
---robot_config PATH     a deploy_real/configs/*.yaml (see g1.yaml) — required with --real.
---token SECRET          shared secret required on every /ws connection
-                        (?token=... query param, including the web UI, which forwards
-                        its own page's own ?token=...). Strongly recommended whenever
-                        --control_port is reachable from more than localhost — which
-                        --real always is (the robot's own WiFi/LAN).
-```
-
-### Two driver scripts, one per task family — and the Family panel
-
-`rugiar_driver.py` (this section) drives the **"g1" walking family** — every
-`g1`-task policy (`stable_home_made_*`, `walk_gpu_c4*`, etc.). A separate,
-largely-duplicated sibling script, `rugiar_driver_target.py`, drives the
-**"target-aware" family** (`g1_target` and future siblings whose config sets
-`cfg.rewards.target_aware = True`) — same flags/behavior, plus a per-tick
-step that feeds the live `--scenario ball` position into the running task's obs.
-Each registered task is treated as its own **experiment**, deliberately kept
-architecturally independent rather than unified into one policy — see
-`legged_gym/scripts/rugiar_driver.py`'s module docstring for the reasoning.
-
-The control web's **Family** panel (above Policies) lets an operator switch
-which task/driver is running without a terminal: it calls
-`ControlService.switch_family(task)`, which self-relaunches the correct
-script for that task's family (picking `rugiar_driver.py` vs
-`rugiar_driver_target.py` via `_script_for_task()`) on the same port — Genesis
-can't rebuild its scene in-process (see `training.py`'s module docstring), so
-this is a ~15-20s process handoff, not an instant switch; the browser
-reconnects on its own. Only tasks with at least one local trained policy are
-offered. Switching families is for changing which *experiment* you're
-looking at, not a live in-operation mode change — see the "Family selector"
-plan for the fuller reasoning.
-
-### Quick start — sim, with the control web
-
-```bash
-export SIMULATOR=genesis
-python legged_gym/scripts/rugiar_driver.py \
-    --policy <policy_a>:policies/<policy_a>/checkpoint.pt \
-    --policy <policy_b>:policies/<policy_b>/checkpoint.pt \
-    --active <policy_a> --control_port 9013
-# open http://localhost:9013 — switch policies, pause/restart, E-STOP,
-# drive velocity commands live; :9006 is the raw 3D view (printed at startup)
-```
-
-### Connecting to a real robot
-
-```bash
-python legged_gym/scripts/rugiar_driver.py \
-    --policy <policy_a>:policies/<policy_a>/checkpoint.pt \
-    --control_port 9013 --token <a-shared-secret> \
-    --real --net_interface eth0 --robot_config deploy_real/configs/g1.yaml
-```
-Runs on the robot's own onboard computer (needs `unitree_sdk2py` installed —
-this is untested in this dev environment, no physical robot/SDK here — see
-`deploy_real/real_adapter.py`'s module docstring for exactly what's been
-verified vs. what still needs re-checking against real hardware before
-trusting it). `--token` is what stands between "anyone on the robot's WiFi"
-and "can send it commands" — always set it for `--real`. Share
-`http://<robot-ip>:9013/?token=<secret>` with whoever needs either the web
-UI or to build their own controller against the same robot — see below.
-
-### The control protocol, for building a client (home-made controller, automation, etc.)
-
-Full spec: **docs/index.html §13**. The short version: connect to
-`ws://<host>:<port>/ws` (append `?token=...` if the server has one), send
-`{"method": "set_command", "params": {"vx": 0.4, "vy": 0.0, "yaw": 0.0}, "id": 1}`
-to drive a walking velocity (clamped server-side to the active policy's
-trained envelope — send whatever, it won't ask for something unsafe), and
-either poll `status` or just listen — the server pushes a `status` message
-to every connected client at ~10Hz unprompted, with `backend` ("sim"/"real"),
-`capabilities`, `command`, and per-field-labeled `telemetry`. A complete,
-minimal reference client (connects, authenticates, streams `set_command`
-from a gamepad or a `--demo` scripted loop) is `examples/joystick_controller.py`
-— read it before writing a new client from scratch, the connect/send loop
-doesn't need to change, only where the (vx, vy, yaw) numbers come from.
-
-## rugiar_mcp — controlling the robot via MCP instead of raw WebSocket
-
-`rugiar_mcp/` (repo root) wraps a *running* `rugiar_driver.py`'s ControlServer
-as an MCP server, so an MCP client (this assistant, Hermes, any other agent)
-can call typed tools instead of hand-rolling the WebSocket protocol from
-"The control protocol" section above. It's a thin client on top of the same
-`/ws` connection `examples/joystick_controller.py` uses — **it does not
-replace `rugiar_driver.py`, it needs one already running** with
-`--control_port` reachable at the host/port this MCP server is pointed at.
-
-### Prerequisite: a `rugiar_driver.py` already running with `--control_port`
-
-```bash
-python legged_gym/scripts/rugiar_driver.py --policy ... --control_port 9017
-```
-
-`rugiar_mcp` is only a client — check `las ports audit` (or `ps aux | grep
-rugiar_driver`) for an existing instance before assuming you need to start
-one; reuse it rather than launching a second driver on a different port
-(same guidance as "Picking up policies trained outside the web" above).
-
-### Running the MCP server
-
-```bash
-cd rugiar_mcp/.. # repo root
-pip install -e ".[mcp]"        # one-time, if not already installed
-cp rugiar_mcp/.env.example rugiar_mcp/.env   # then edit CONTROL_HOST/PORT/TOKEN
-python -m rugiar_mcp.server
-```
-
-Env vars (`rugiar_mcp/.env` or exported directly) — **`CONTROL_PORT` must
-match the target driver's own `--control_port`**, not necessarily the 9013
-default:
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `CONTROL_HOST` | `localhost` | host of the running `rugiar_driver.py`'s ControlServer |
-| `CONTROL_PORT` | `9013` | its `--control_port` |
-| `CONTROL_TOKEN` | `""` | must match the driver's `--token` if it set one |
-| `MCP_TRANSPORT` | `stdio` | `stdio` (local subprocess client) or `streamable-http` (remote clients, e.g. Hermes) |
-| `MCP_PORT` | `9014` | port for `streamable-http`/`sse` — **claim it via `las ports claim` before treating it as permanent**, same port hygiene as any other server in this repo |
-| `CAMERA_CACHE_MS` | `100` | camera-frame cache TTL |
-
-For `streamable-http`, point a client at `http://<host>:<MCP_PORT>/mcp`
-(single endpoint — **not** `/sse`, that's the legacy transport).
-
-### Tools (verified working against a live driver, 2026-08-21)
-
-| Tool | Verified behavior |
-|---|---|
-| `list_policies` | Returns `active`/`pending`/`ramping`/full `policies` list/`safety_tripped`. Works. |
-| `get_status` | Full snapshot incl. `telemetry` (base height, gravity vector, ang/lin vel). Works. |
-| `get_telemetry` | Just the `telemetry` sub-object of `get_status`. Works. |
-| `get_odometry` | `{"available": true, "distance_traveled", "time_elapsed", "average_speed"}` in sim. Works. |
-| `get_command_limits` | Trained vs. effective (speed-limit-scaled) command ranges + current command. Works. |
-| `set_velocity(vx, vy, yaw, accel?)` | Immediate mode confirmed (`accel` omitted); `accel` set spawns an async ramp task that cancels any prior ramp. Works. |
-| `switch_policy(name)` | An unknown `name` comes back as a tool **error result** (not a protocol-level exception) — client code should check for that rather than assuming success. |
-| `get_camera_frame_base64` | **Was broken as shipped — fixed 2026-08-21.** `/camera.mjpg` is an unbounded MJPEG stream that never closes; the original code called `httpx.get()` waiting for a complete response body, which hung forever (confirmed: `curl` only stopped because of a client-side `-m` timeout, not server EOF — data was still flowing). Fixed in `rugiar_mcp/server.py` to stream and cut as soon as one full JPEG (`\xff\xd8`...`\xff\xd9`) is seen — now returns in well under a second. If this tool ever hangs again after a future edit, suspect a regression back to non-streaming reads on this endpoint first. |
-
-### Reviewing a specific checkpoint before trusting it
-
-`play.py` opens any single checkpoint live in the browser (not the control
-web — no policy switching, just watch one policy):
-```bash
-python legged_gym/scripts/play.py --task=g1 --load_run=<run> --ckpt=<N> \
-    --viewer=viser --viser_port=9006
-```
-See "How to know if a checkpoint actually walks" below — this is the single
-most important habit in this whole skill: a good reward curve is not
-evidence a policy walks.
-
----
-
-# rugiar — CLI for creating RobotUniversityGiar policies
+For the system-wide picture beyond this skill's CLI scope — how Training,
+Policy Operations, Control, the Web UI, the CLI, the Robot Driver, and
+Third-Party Integrations fit together — see
+**`legged_gym/control/ARCHITECTURE.md`**, not this file.
 
 `rugiar train` is a thin, argument-complete front end onto
 `legged_gym.control.training.TrainingManager` — the exact engine the control
@@ -500,13 +287,11 @@ dimension check passed.** At the SAME 4000/20/num_envs=1 settings,
 `final_bc_loss` 0.0042; `stable` (externally-sourced, unitree_rl_gym) only
 reached 0.0425 — roughly 10x worse. `check_dimensions_compatible()` only
 verifies obs/action tensor SHAPE, not the actual meaning/ordering/scale of
-each channel (see distillation.py's module docstring on observation
-alignment) — a shape match doesn't guarantee a semantic match. If a distilled
-clone's loss is stubbornly high no matter how much you raise
+each channel — a shape match doesn't guarantee a semantic match. If a
+distilled clone's loss is stubbornly high no matter how much you raise
 `--rollout_steps`/`--bc_epochs`, suspect an obs-convention mismatch with the
-teacher, not just "needs more training" — always **watch it walk** (same "How
-to know if a checkpoint actually walks" rule right below) before trusting a
-distilled clone, doubly so for an externally-sourced teacher.
+teacher, not just "needs more training" — always **watch it walk** before
+trusting a distilled clone, doubly so for an externally-sourced teacher.
 
 **Method: `behavior_cloning`** (default, only one currently implemented) —
 one-shot: the student never acts during data collection, so it never gets
@@ -536,11 +321,9 @@ look.** This has been proven wrong here more than once, in both directions:
   at that point — the metric and the real behavior can move independently.
 
 **The only reliable check is watching it directly** under a commanded
-velocity — `play.py --viewer=viser` for a single checkpoint (see
-"Reviewing a specific checkpoint" above), or load it into `rugiar_driver.py`
-and drive it with an actual velocity command. Budget for this before trusting
-any checkpoint, especially before deleting the `logs/<task>/<run>/` directory
-it came from.
+velocity — see the `rugiar-movement` skill's `play.py`/`rugiar_driver.py`
+sections. Budget for this before trusting any checkpoint, especially before
+deleting the `logs/<task>/<run>/` directory it came from.
 
 **A cheaper pre-filter, not a replacement for watching:** `legged_robot.py`
 also logs a diagnostic-only metric, `actual_lin_vel_x` — the real
@@ -828,8 +611,8 @@ following short "fix" run that boosted `--reward_scale tracking_lin_vel` recover
 the *reward number* (falls make short bursts of high per-step reward look fine in
 the log) without recovering actual stability — `Mean episode length` stayed low.
 **Reward went up while the robot was still falling constantly — always read reward
-and episode length together, never reward alone**, and watch it directly with
-`play.py --viewer=viser` before trusting a checkpoint.
+and episode length together, never reward alone**, and watch it directly before
+trusting a checkpoint.
 
 What actually works:
 
@@ -847,8 +630,8 @@ rugiar train --task g1 --name walk_crouch --from_policy <a policy that already w
   the best externally-confirmed reference on `episode_length` alone and was
   still reported not to take a single step under a full-forward command — see
   "How to know if a checkpoint actually walks" above. Confirm a base actually
-  walks by watching it (`play.py --viewer=viser`) before spending a fine-tune
-  run on top of it, not just by reading its `meta.json`.
+  walks by watching it before spending a fine-tune run on top of it, not just
+  by reading its `meta.json`.
 - **Move the target gently, not aggressively** — a few % off whatever height the
   base already trained at (check its `meta.json` command, or the task's own
   default), not a guessed round number far away from it.
@@ -894,37 +677,6 @@ avoid early-learning collapse — but for the specific push perturbation on this
 specific robot, the proven reference config is "on from the start," not a staged
 curriculum. Follow the reference config over generic theory when they disagree.
 
-## Picking up policies trained outside the web (no restart needed)
-
-A policy `rugiar` just finished training **won't appear in a running control web**
-until you either restart the server or hit its **Refresh button** (circular-arrow
-icon, top of the Policies panel) — this is expected, not a bug, and the underlying
-mechanics are worth understanding if it seems to not be working:
-
-- `rugiar_driver.py` (the process behind the control web) scans `./policies/`
-  **once, at its own startup**. A policy trained via the web's own "Create Policy"
-  panel appears live afterward because that training job runs *inside the same
-  process* (`drain_finished_training()`, polled every sim tick) — but `rugiar` is a
-  **separate OS process** with its own `TrainingManager`; it writes
-  `policies/<name>/` to disk same as always, but the running server has no way to
-  know that happened until told.
-- The Refresh button calls `ControlService.refresh_local_policies()`
-  (`legged_gym/control/service.py`), which re-runs the same disk scan
-  (`TrainingManager.discover_local_policies()`) filtered to names not already
-  loaded, loads each new one into the running sim, and registers it as a
-  Clone-from source too — same effect as a restart, without dropping the live
-  viewer/sim connection. Safe to click any time; a policy for a different task
-  than the running server (obs/action-space mismatch) is skipped, not loaded
-  broken.
-- Still needs a full restart for anything Refresh can't do: picking up **code**
-  changes (this repo's own `.py` files), or a policy whose task the server wasn't
-  launched with `--policy`/`--task` awareness of at all.
-- If a server is already running the exact process you want (same task, same
-  policies you're already comparing), **restart that one instead of starting a
-  second server on a different port** — a fresh parallel instance won't have
-  whatever was already loaded into the running one, and now there are two
-  processes to keep track of instead of one.
-
 ## Common recipes
 
 The `--max_iterations` values below (500-1200) illustrate WHICH FLAGS to combine
@@ -959,24 +711,13 @@ rugiar train --task g1 --name retrain --from_policy retrain \
 - **Before declaring ANY checkpoint good, watch it** — this is the single most
   important entry in this list, see "How to know if a checkpoint actually walks"
   above. `rugiar`/the web UI never do this for you. For a checkpoint that still
-  has its raw training run under `logs/<task>/<run>/` (not yet cleaned up):
-  ```bash
-  python legged_gym/scripts/play.py --task=g1 --load_run=<run> --ckpt=<N> \
-      --viewer=viser --viser_port=9006
-  ```
-  `<run>` is the `Aug09_...` -style directory name under `logs/g1/` (the raw
+  has its raw training run under `logs/<task>/<run>/` (not yet cleaned up), use
+  `play.py --viewer=viser` (see the `rugiar-movement` skill).
+  `<run>` is the `Aug09_...`-style directory name under `logs/g1/` (the raw
   checkpoint's source; a policy's `meta.json` doesn't store this path directly —
   it's whatever `logs/<task>/` directory has a timestamp matching when that
   policy finished, or check `job.command`/`source_log_dir` in an older meta.json
-  that still has one). `--ckpt=-1` (or omit) plays the latest/final checkpoint in
-  that run instead of a specific numbered one. This opens a live browser view —
-  actually look at it walk (or not) before trusting the reward number next to it.
-  For an already-`policies/<name>/`-registered checkpoint whose raw `logs/`
-  directory got cleaned up, there's currently no direct "view this policies/
-  folder" path in `play.py` — load it into a running control web instead
-  (`--policy <name>:policies/<name>/checkpoint.pt` on `rugiar_driver.py`, or the
-  Refresh button per "Picking up policies trained outside the web") and drive it
-  with an actual velocity command.
+  that still has one).
 - **`ValueError: Unsupported SIMULATOR type...`** → `export SIMULATOR=genesis`
   (or `isaaclab`) before anything else — see "Prerequisite" above.
 - **`give at least one of --max_iterations / --max_minutes`** → both are
@@ -1024,11 +765,9 @@ rugiar train --task g1 --name retrain --from_policy retrain \
   something more iterations at the same tiny scale will fix. Move to
   `--backend kaggle --num_envs 4096` instead of throwing more low-`num_envs`
   iterations at it.
-- **Before starting any new `rugiar_driver.py`/web server, check what's
-  already running** (e.g. `las ports audit` if this environment uses the Local
-  Agent Society port registry) and restart an existing relevant session instead
-  of launching a parallel one on a different port — see "Picking up policies
-  trained outside the web" above.
+- **A freshly trained/fused/distilled policy doesn't appear in a running control
+  web** → see the `rugiar-management` skill's "Picking up policies trained outside
+  the web" section (Refresh button vs. full restart).
 
 ## Sources
 
