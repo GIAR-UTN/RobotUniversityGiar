@@ -530,6 +530,7 @@ def main():
             return {
                 "viser_port": cli.viser_port,
                 "camera_enabled": False,
+                "depth_camera_enabled": False,
                 # No command_ranges: a tracking task has no velocity command
                 # envelope at all (see MjlabAdapter's docstring). app.js
                 # leaves its own defaults alone when this is absent/null, and

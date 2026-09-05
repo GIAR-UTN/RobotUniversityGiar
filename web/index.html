@@ -991,6 +991,20 @@
       </div>
     </section>
 
+    <section class="panel-section" data-section="depth-camera" id="depth-camera-section" hidden>
+      <div class="section-head">
+        <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>
+        <h2>Depth Camera</h2>
+        <button class="help-btn" aria-label="Help" aria-expanded="false">?</button>
+        <div class="help-popover" role="dialog" hidden>
+          <p>Robot-POV depth feed, color-mapped (near = red, far = blue) from the Warp depth camera. Separate from the RGB Camera panel and the third-person Simulator view. Hidden unless the server was started with --depth-camera.</p>
+        </div>
+      </div>
+      <div class="section-body">
+        <img id="depth-camera-feed" alt="Robot depth camera feed" style="width:100%; border-radius:6px; display:block; background:var(--bg);">
+      </div>
+    </section>
+
     <section class="panel-section" data-section="command">
       <div class="section-head">
         <span class="drag-handle" aria-label="Reorder" title="Drag to reorder">&#10088;&#8942;&#8942;&#10089;</span>

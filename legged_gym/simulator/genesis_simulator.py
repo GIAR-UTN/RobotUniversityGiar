@@ -89,13 +89,18 @@ class GenesisSimulator(Simulator):
             wp.init()
             self._create_warp_envs()
             self._create_warp_tensors()
-            self._depth_camera_sensor = WarpCam(self._warp_tensor_dict, 
-                                self._num_camera_envs, 
-                                self._cfg.sensor, 
-                                self._mesh_ids, 
+            self._depth_camera_sensor = WarpCam(self._warp_tensor_dict,
+                                self._num_camera_envs,
+                                self._cfg.sensor,
+                                self._mesh_ids,
                                 self._device)
-            pixels = self._depth_camera_sensor.update()
-            self._depth_images[:,0] = pixels[:,0] # pixels: [num_envs, num_sensors, H, W]
+            # Skip the initial update() here — the first frame will be zeros (tensor
+            # was zero-initialized in _create_warp_tensors), and calling update()
+            # during __init__ can trigger a Warp graph-capture failure on some
+            # driver/GPU combos (RTX 3060 + CUDA 12.9: "unresolved DATA_PTR relocation").
+            # The first real depth frame is rendered in post_physics_step().
+            # pixels = self._depth_camera_sensor.update()
+            # self._depth_images[:,0] = pixels[:,0] # pixels: [num_envs, num_sensors, H, W]
 
     #----- Public methods -----#
     def step(self, actions):
@@ -165,6 +170,26 @@ class GenesisSimulator(Simulator):
         self._rgb_camera.set_pose(pos=cam_pos, lookat=cam_lookat, up=(0.0, 0.0, 1.0))
         rgb_arr, _, _, _ = self._rgb_camera.render(rgb=True)
         return rgb_arr
+
+    def get_depth_frame(self):
+        """Returns a robot-POV depth frame as a color-mapped (H, W, 3) uint8 numpy
+        array, suitable for MJPEG streaming to the web UI. Only ever called for
+        env 0. Returns None if add_depth wasn't enabled, or if the depth camera
+        is configured to return a pointcloud (return_pointcloud=True) which
+        can't be visualized as a 2D image."""
+        if not self._cfg.sensor.add_depth or self._cfg.sensor.depth_camera_config.return_pointcloud:
+            return None
+        # self._depth_images is [num_envs, num_history, H, W] and normalized to [-0.5, 0.5]
+        depth = self._depth_images[0, 0, :, :]  # env 0, latest frame
+        # Denormalize back to [0, 1] range
+        norm = torch.clamp(depth + 0.5, 0.0, 1.0).cpu().numpy()
+        # Simple numpy-only heatmap: blue -> green -> red
+        t = norm.astype(np.float32)
+        h = np.zeros((t.shape[0], t.shape[1], 3), dtype=np.float32)
+        h[:, :, 0] = np.clip(3.0 * t - 1.0, 0.0, 1.0)       # R
+        h[:, :, 1] = np.clip(3.0 * t, 0.0, 1.0) * np.clip(3.0 - 3.0 * t, 0.0, 1.0)  # G
+        h[:, :, 2] = np.clip(1.0 - 3.0 * t, 0.0, 1.0)       # B
+        return (h * 255).astype(np.uint8)
 
     def reset_idx(self, env_ids):
         # domain randomization
@@ -463,10 +488,6 @@ class GenesisSimulator(Simulator):
 
         # add optional dynamic rigid-body props (balls, obstacles, ...), must be added before scene.build()
         self._create_props()
-
-        # add camera if needed
-        if self._cfg.sensor.add_depth:
-            self._setup_depth_camera()
 
         # add an RGB camera for the live control web's camera feed (see
         # get_camera_frame()) -- must be added before scene.build(), like
@@ -1098,7 +1119,10 @@ class GenesisSimulator(Simulator):
         """
         near_clip = self._cfg.sensor.depth_camera_config.near_clip
         far_clip = self._cfg.sensor.depth_camera_config.far_clip
-        pixels = self._depth_camera_sensor.update().clone()
+        # debug=True bypasses Warp graph capture, which fails on some
+        # driver/GPU combos (RTX 3060 + CUDA 12.9: "CPU graph replay failed").
+        # The per-frame cost is negligible for a ~12Hz web feed.
+        pixels = self._depth_camera_sensor.update(debug=True).clone()
         if self._depth_images.shape[1] > 1: # stack history of depth images
             self._depth_images[:, 1:] = self._depth_images[:, :-1].detach().clone()
         # store values for denoised depth images
@@ -1136,7 +1160,7 @@ class GenesisSimulator(Simulator):
       self._wp_meshes =  wp.Mesh(points=vertex_vec3_array,indices=faces_wp_int32_array)
       
       Warning("Currently, only static terrain mesh is added to Warp.")
-      self._mesh_ids = self.mesh_ids_array = wp.array([self._wp_meshes.id], dtype=wp.uint64)
+      self._mesh_ids = self.mesh_ids_array = wp.array([self._wp_meshes.id], dtype=wp.uint64, device=self._device)
     
     def _create_warp_tensors(self):
         self._warp_tensor_dict={}
@@ -1187,16 +1211,16 @@ class GenesisSimulator(Simulator):
           self._camera_euler_offset = torch.zeros(
                 self._num_camera_envs, 3, dtype=torch.float, device=self._device, requires_grad=False)
           self._camera_euler_offset[:self._num_camera_envs, 0] = torch_rand_float(
-                -self._cfg.domain_rand.camera_euler_offset_range[0],
-                self._cfg.domain_rand.camera_euler_offset_range[0],
+                -self._cfg.domain_rand.camera_euler_range[0],
+                self._cfg.domain_rand.camera_euler_range[0],
                 (self._num_camera_envs,1), device=self._device).squeeze(1)
           self._camera_euler_offset[:self._num_camera_envs, 1] = torch_rand_float(
-                -self._cfg.domain_rand.camera_euler_offset_range[1],
-                self._cfg.domain_rand.camera_euler_offset_range[1],
+                -self._cfg.domain_rand.camera_euler_range[1],
+                self._cfg.domain_rand.camera_euler_range[1],
                 (self._num_camera_envs,1), device=self._device).squeeze(1)
           self._camera_euler_offset[:self._num_camera_envs, 2] = torch_rand_float(
-                -self._cfg.domain_rand.camera_euler_offset_range[2],
-                self._cfg.domain_rand.camera_euler_offset_range[2],
+                -self._cfg.domain_rand.camera_euler_range[2],
+                self._cfg.domain_rand.camera_euler_range[2],
                 (self._num_camera_envs,1), device=self._device).squeeze(1)
           rpy_offset += self._camera_euler_offset[:self._num_camera_envs]
           
