@@ -150,6 +150,12 @@ class GenesisSimulator(Simulator):
             self._update_surrounding_heights()
             if self._cfg.terrain.obtain_terrain_info_around_feet:
                 self._calc_terrain_info_around_feet()
+        # Refresh warp sensor pose (mirrors IsaacGymSimulator.post_physics_step)
+        if self._cfg.sensor.add_depth:
+            sensor_quat = quat_mul(self._base_quat[:self._num_camera_envs], self._sensor_offset_quat)
+            sensor_pos = self._base_pos[:self._num_camera_envs] + quat_apply(self._base_quat[:self._num_camera_envs], self._sensor_offset_pos)
+            self._sensor_pos_tensor[:,:] = sensor_pos[:,:]
+            self._sensor_quat_tensor[:,:] = sensor_quat[:,:]
 
     def get_camera_frame(self):
         """Renders one RGB frame from the robot-POV camera set up in
