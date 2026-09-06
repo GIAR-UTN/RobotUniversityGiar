@@ -86,6 +86,7 @@ Point Hermes to the **streamable-http** endpoint:
 | Tool | Description |
 |------|-------------|
 | `get_camera_frame_base64` | Grab a single camera frame as a base64 JPEG, cached 100 ms to avoid hammering the stream |
+| `get_depth_camera_frame_base64` | Grab a single depth-camera frame as a base64 JPEG (color-mapped heatmap), cached 100 ms to avoid hammering the stream |
 
 ## Tool Details
 

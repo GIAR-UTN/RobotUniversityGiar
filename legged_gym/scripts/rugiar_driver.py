@@ -462,6 +462,10 @@ def main():
             # Depth camera requires a mesh terrain to render against. If the
             # task uses a plane, switch to a minimal flat trimesh so the
             # Warp depth camera has geometry to raycast into.
+            # NOTE / TODO: The resulting mesh only contains terrain geometry;
+            # scenario props (e.g. ball, race obstacles) are invisible to the
+            # depth feed. To show them, the prop meshes must be merged into the
+            # Warp mesh or the depth source must switch to Genesis native depth.
             if env_cfg.terrain.mesh_type == "plane":
                 env_cfg.terrain.mesh_type = "heightfield"
                 env_cfg.terrain.num_rows = 1

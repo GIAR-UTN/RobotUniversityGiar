@@ -119,3 +119,21 @@ services:
       - "${MCP_PORT:-9014}:${MCP_PORT:-9014}"
     networks:
       - default
+
+  opencode:
+    image: ghcr.io/anomalyco/opencode:latest
+    container_name: opencode
+    ports:
+      - "9015:4096"
+    volumes:
+      - ./rugiar_mcp/opencode/config/opencode.json:/root/.config/opencode/opencode.jsonc:ro
+      - ./rugiar_mcp/opencode/data:/home/coder/.local/share/opencode
+      - ./rugiar_mcp/opencode/state:/home/coder/.local/state/opencode
+      - ./rugiar_mcp/opencode/project:/workspace
+    environment:
+      - SHELLCHECK_EXTERNAL_SOURCES=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["web", "--hostname", "0.0.0.0", "--port", "4096"]
+
+

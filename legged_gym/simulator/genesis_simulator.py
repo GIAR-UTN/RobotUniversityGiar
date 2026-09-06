@@ -1140,6 +1140,11 @@ class GenesisSimulator(Simulator):
     
     def _create_warp_envs(self):
       # extract terrain mesh
+      # NOTE / TODO: Only the terrain mesh is fed into the Warp raycaster.
+      # Dynamic props (e.g. the 'ball' scenario's sphere) are NOT included,
+      # so they are invisible to the depth camera feed. To include them,
+      # merge prop meshes into this single wp.Mesh or switch to Genesis's
+      # native Camera.render(depth=True) which sees the whole scene.
       terrain_mesh = self._gs_terrain.geoms[0].get_trimesh()
       
       #save terrain mesh
