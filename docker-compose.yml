@@ -63,6 +63,9 @@ services:
       # or "cpu" to force CPU-only mode.  Override in .env or via shell:
       #   GENESIS_BACKEND=cuda docker compose up
       GENESIS_BACKEND: ${GENESIS_BACKEND:-cpu}
+      # Which task the robot runs.  Must be a registered task name (e.g. g1,
+      # go2_ts_depth).  Defaults to g1 if unset.
+      TASK: ${TASK:-g1}
       # Which policy starts active.  Must match a discovered .pt filename
       # (without extension).  Defaults to the first policy alphabetically.
       ACTIVE_POLICY: ${ACTIVE_POLICY:-}
@@ -72,6 +75,10 @@ services:
       VISER_PORT: ${VISER_PORT:-9006}
       # Set to 1 for a headless smoke test (no web viewer).
       HEADLESS: ${HEADLESS:-0}
+      # Set to 0 stop robot camera feed.
+      CAMERA: ${CAMERA:-1}
+      # Set to 0 stop robot depth camera feed.
+      DEPTH_CAMERA: ${DEPTH_CAMERA:-1}
       # Playback speed multiplier (1.0 = real-time 50 Hz).
       SPEED: ${SPEED:-0.35}
       # Scenario to spawn next to the robot: "ball" or "race" (see
@@ -112,3 +119,21 @@ services:
       - "${MCP_PORT:-9014}:${MCP_PORT:-9014}"
     networks:
       - default
+
+  opencode:
+    image: ghcr.io/anomalyco/opencode:latest
+    container_name: opencode
+    ports:
+      - "9015:4096"
+    volumes:
+      - ./rugiar_mcp/opencode/config/opencode.json:/root/.config/opencode/opencode.jsonc:ro
+      - ./rugiar_mcp/opencode/data:/home/coder/.local/share/opencode
+      - ./rugiar_mcp/opencode/state:/home/coder/.local/state/opencode
+      - ./rugiar_mcp/opencode/project:/workspace
+    environment:
+      - SHELLCHECK_EXTERNAL_SOURCES=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["web", "--hostname", "0.0.0.0", "--port", "4096"]
+
+

@@ -57,6 +57,33 @@ Point Hermes to the **streamable-http** endpoint:
 
 **Do not use `/sse`** — the streamable-http transport uses a single `/mcp` endpoint for both requests and responses.
 
+### OpenCode Web UI (Docker Compose)
+
+An **OpenCode** agent web UI is included in the Docker Compose stack. It is pre-configured to connect to the MCP server and provides a chat interface for any LLM.
+
+```yaml
+opencode:
+  image: ghcr.io/anomalyco/opencode:latest
+  container_name: opencode
+  ports:
+    - "9015:4096"
+  volumes:
+    - ./rugiar_mcp/opencode/config/opencode.json:/root/.config/opencode/opencode.jsonc:ro
+    - ./rugiar_mcp/opencode/data:/home/coder/.local/share/opencode
+    - ./rugiar_mcp/opencode/state:/home/coder/.local/state/opencode
+    - ./rugiar_mcp/opencode/project:/workspace
+```
+
+**Access it:** `http://localhost:9015`
+
+**Pre-configured MCP connection:** `rugiar-mcp` → `http://mcp:9014/mcp`
+
+**To customize:** Edit `rugiar_mcp/opencode/config/opencode.json` before running `docker compose up`. The config is mounted read-only into the container. Key settings:
+- `providers.local.options.baseURL` — your LLM endpoint (default: `http://host.docker.internal:9989/v1`)
+- `mcp.rugiar-mcp.url` — the MCP server URL (already set to the internal Docker network address)
+
+**Note:** The LLM provider must be reachable from the Docker network. If running the LLM locally (e.g., LM Studio, Ollama), use `host.docker.internal` as shown in the default config. If running a cloud API, replace the provider configuration entirely.
+
 ## Tools
 
 ### Policy Management
@@ -86,6 +113,7 @@ Point Hermes to the **streamable-http** endpoint:
 | Tool | Description |
 |------|-------------|
 | `get_camera_frame_base64` | Grab a single camera frame as a base64 JPEG, cached 100 ms to avoid hammering the stream |
+| `get_depth_camera_frame_base64` | Grab a single depth-camera frame as a base64 JPEG (color-mapped heatmap), cached 100 ms to avoid hammering the stream |
 
 ## Tool Details
 

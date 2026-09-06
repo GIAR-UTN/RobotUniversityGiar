@@ -252,6 +252,15 @@ class SimAdapter:
         get_frame = getattr(self.env.simulator, "get_camera_frame", None)
         return get_frame() if get_frame is not None else None
 
+    def get_depth_frame(self):
+        """Same optional, backend-specific extra pattern as get_camera_frame().
+        Returns a (H, W, 3) uint8 numpy array from the simulator's depth camera
+        (see GenesisSimulator.get_depth_frame(), gated by cfg.sensor.add_depth),
+        or None if the current backend has no depth camera support or it wasn't
+        enabled."""
+        get_frame = getattr(self.env.simulator, "get_depth_frame", None)
+        return get_frame() if get_frame is not None else None
+
     def get_target_relative_pos(self) -> Optional[torch.Tensor]:
         """Not part of RobotAdapter (same reasoning as get_camera_frame() above)
         -- an optional, backend-specific extra. Returns the 'ball' scenario's live

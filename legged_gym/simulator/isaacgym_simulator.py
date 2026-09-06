@@ -34,13 +34,16 @@ class IsaacGymSimulator(Simulator):
             wp.init()
             self._create_warp_envs()
             self._create_warp_tensors()
-            self._depth_camera_sensor = WarpCam(self._warp_tensor_dict, 
-                                self._num_camera_envs, 
-                                self._cfg.sensor, 
-                                self._mesh_ids, 
+            self._depth_camera_sensor = WarpCam(self._warp_tensor_dict,
+                                self._num_camera_envs,
+                                self._cfg.sensor,
+                                self._mesh_ids,
                                 self._device)
-            pixels = self._depth_camera_sensor.update()
-            self._depth_images[:,0] = pixels[:,0] # pixels: [num_envs, num_sensors, H, W]
+            # Skip the initial update() here — see genesis_simulator.py for the same
+            # workaround rationale (Warp graph-capture failure during __init__ on some
+            # driver/GPU combos). The first real depth frame is rendered in _update_depth_camera().
+            # pixels = self._depth_camera_sensor.update()
+            # self._depth_images[:,0] = pixels[:,0] # pixels: [num_envs, num_sensors, H, W]
 
     #----- Public methods -----#
     def step(self, actions):
@@ -767,7 +770,8 @@ class IsaacGymSimulator(Simulator):
     def _update_depth_camera(self):
         near_clip = self._cfg.sensor.depth_camera_config.near_clip
         far_clip = self._cfg.sensor.depth_camera_config.far_clip
-        pixels = self._depth_camera_sensor.update().clone()
+        # debug=True bypasses Warp graph capture — see genesis_simulator.py
+        pixels = self._depth_camera_sensor.update(debug=True).clone()
         if self._depth_images.shape[1] > 1: # stack history of depth images
             self._depth_images[:, 1:] = self._depth_images[:, :-1].detach().clone()
         # store values for denoised depth images
@@ -804,7 +808,7 @@ class IsaacGymSimulator(Simulator):
         self._wp_meshes =  wp.Mesh(points=vertex_vec3_array,indices=faces_wp_int32_array)
         
         Warning("Currently, only static terrain mesh is added to Warp.")
-        self._mesh_ids = self.mesh_ids_array = wp.array([self._wp_meshes.id], dtype=wp.uint64)
+        self._mesh_ids = self.mesh_ids_array = wp.array([self._wp_meshes.id], dtype=wp.uint64, device=self._device)
     
     def _create_warp_tensors(self):
         self._warp_tensor_dict={}
