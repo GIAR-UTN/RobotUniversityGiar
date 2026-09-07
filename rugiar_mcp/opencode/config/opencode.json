@@ -1,6 +1,6 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "providers": {
+  "provider": {
     "local": {
       "name": "Local Server",
       "npm": "@ai-sdk/openai-compatible",
