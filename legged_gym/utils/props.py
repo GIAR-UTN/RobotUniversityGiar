@@ -513,6 +513,15 @@ AGILITY_DUCK_BAR_THICKNESS = 0.12
 # Clear gap left between the end of one segment and the start of the next.
 AGILITY_SEGMENT_GAP = 1.0
 
+# Low guard rails running the full length of both sides of the lane --
+# requested directly ("faltan paredes bajas laterales, para que esté
+# encerrado"): without them the curve/dodge segments read as loose props in
+# open field rather than a single enclosed track. Low enough to stay clear
+# of the duck bar's clearance (AGILITY_DUCK_BAR_CLEARANCE) and short of the
+# curve walls' own height, so it reads as a rail, not a repeat of either.
+AGILITY_SIDE_WALL_HEIGHT = 0.3
+AGILITY_SIDE_WALL_THICKNESS = 0.08
+
 
 def default_agility_course_props(lane_width=AGILITY_LANE_WIDTH):
     """Static scenery for the 'agility_course' scenario: start line at the
@@ -572,6 +581,20 @@ def default_agility_course_props(lane_width=AGILITY_LANE_WIDTH):
 
     finish_x = cursor
     total_length = -finish_x
+
+    # Guard rails: one continuous low wall down each side of the lane, start
+    # line to finish line.
+    rail_x = finish_x / 2
+    for side, y in (("left", -lane_width / 2), ("right", lane_width / 2)):
+        props.append({
+            "name": f"agility_side_wall_{side}",
+            "shape": "box",
+            "size": [total_length, AGILITY_SIDE_WALL_THICKNESS, AGILITY_SIDE_WALL_HEIGHT],
+            "pos": [rail_x, y, AGILITY_SIDE_WALL_HEIGHT / 2],
+            "fixed": True,
+            "color": [0.55, 0.55, 0.6, 1.0],
+        })
+
     props.append(_crossing_line_prop("agility_finish_line", x=finish_x))
     props += _sign_props("agility_start_sign", x=0.0, lane_width=lane_width,
                           word="START", word_color=[0.08, 0.08, 0.08, 1.0])

@@ -27,6 +27,7 @@ from legged_gym.utils.props import (
     rough_terrain_tile_heights, rough_terrain_baseline_height,
     AGILITY_LANE_WIDTH, AGILITY_CURVE_WALL_SIDES, AGILITY_CURVE_PASSAGE_WIDTH,
     AGILITY_DODGE_OBJECT_COUNT, AGILITY_DUCK_BAR_CLEARANCE,
+    AGILITY_SIDE_WALL_HEIGHT, AGILITY_CURVE_WALL_HEIGHT,
 )
 
 
@@ -281,6 +282,21 @@ class TestAgilityCourseScenario(unittest.TestCase):
         self.assertAlmostEqual(bar["size"][1], AGILITY_LANE_WIDTH)  # spans the full lane
         bar_bottom = bar["pos"][2] - bar["size"][2] / 2
         self.assertAlmostEqual(bar_bottom, AGILITY_DUCK_BAR_CLEARANCE)
+
+    def test_has_continuous_low_side_walls_spanning_start_to_finish(self):
+        options = dict(SCENARIOS["agility_course"].default_options)
+        props = SCENARIOS["agility_course"].spawn_props(options)
+        web_opts = SCENARIOS["agility_course"].web_options(options)
+        left = next(p for p in props if p["name"] == "agility_side_wall_left")
+        right = next(p for p in props if p["name"] == "agility_side_wall_right")
+        for wall in (left, right):
+            # Low -- a guard rail, not a repeat of the curve segment's own walls.
+            self.assertLess(wall["size"][2], AGILITY_CURVE_WALL_HEIGHT)
+            self.assertAlmostEqual(wall["size"][2], AGILITY_SIDE_WALL_HEIGHT)
+            # Runs the whole track, start line to finish line.
+            self.assertAlmostEqual(wall["size"][0], web_opts["track_length"])
+        self.assertAlmostEqual(left["pos"][1], -AGILITY_LANE_WIDTH / 2)
+        self.assertAlmostEqual(right["pos"][1], AGILITY_LANE_WIDTH / 2)
 
     def test_segments_appear_in_order_curves_then_dodge_then_duck_bar(self):
         # Each segment should be strictly further down -x than the one before it --
