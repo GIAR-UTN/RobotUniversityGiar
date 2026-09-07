@@ -931,6 +931,7 @@ function applyStatus(status) {
   onRaceTelemetry();
   onRoughTerrainFall(status);
   onObstacleCourseFall(status);
+  onAgilityCourseFall(status);
 }
 
 // ---- live telemetry panel ----
@@ -1055,6 +1056,7 @@ let raceCountdownTimer = null;
 let racePartyTimer = null;
 let roughTerrainFallTimer = null; // rough_terrain only — see onRoughTerrainFall()
 let obstacleCourseFallTimer = null; // obstacle_course only — see onObstacleCourseFall()
+let agilityCourseFallTimer = null; // agility_course only — see onAgilityCourseFall()
 
 const raceReadyBtn = $('#btn-race-ready');
 const raceReadyResult = $('#race-btn-result');
@@ -1234,6 +1236,8 @@ function resetRaceRun() {
   roughTerrainFallTimer = null;
   clearTimeout(obstacleCourseFallTimer);
   obstacleCourseFallTimer = null;
+  clearTimeout(agilityCourseFallTimer);
+  agilityCourseFallTimer = null;
   raceState = 'idle';
   raceStartX = null;
   raceStartTime = null;
@@ -1425,6 +1429,29 @@ function onObstacleCourseFall(status) {
   celebrateFinish(`${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`, ROUGH_TERRAIN_FALL_HOLD_MS - 200);
   clearTimeout(obstacleCourseFallTimer);
   obstacleCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
+}
+
+// agility_course's own scoring moment, same rules as obstacle_course's
+// onObstacleCourseFall() above -- requested directly ("cuando se cae, tal como en
+// el de obstacles, lo detectemos y terminemos la partida como game over"): the run
+// ends the instant a fall is detected (curve wall, dodge object, or the duck bar),
+// not only at the finish line. Reaching the finish line still fires the generic
+// finishRace()/celebrateFinish("FINISHED!") path via onRaceTelemetry() above --
+// that part needs no scenario-specific code, raceTrackLength already covers it.
+function onAgilityCourseFall(status) {
+  if (currentScenario !== 'agility_course') return;
+  if (raceState !== 'running') return;
+  if (!roughTerrainHasFallen(status)) return;
+  const elapsed = raceStartTime != null ? (performance.now() - raceStartTime) / 1000 : 0;
+  const x = raceCurrentX();
+  const distance = (raceStartX != null && x != null) ? Math.max(0, raceStartX - x) : 0;
+  raceState = 'fallen';
+  raceFooterStatus.textContent = 'Fell';
+  raceReadyResult.textContent = `(${distance.toFixed(2)}m, ${elapsed.toFixed(2)}s)`;
+  celebrateFinish(`Game Over — ${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`,
+    ROUGH_TERRAIN_FALL_HOLD_MS - 200);
+  clearTimeout(agilityCourseFallTimer);
+  agilityCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
 }
 
 // ---- HUD rendering ----
