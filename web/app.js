@@ -2172,6 +2172,7 @@ const SCENARIO_DEFAULT_ORDERS = {
   race: ['camera', 'depth-camera', 'command', 'policies', 'family'],
   rough_terrain: ['camera', 'depth-camera', 'command', 'policies', 'family'],
   obstacle_course: ['camera', 'depth-camera', 'command', 'policies', 'family'],
+  agility_course: ['camera', 'depth-camera', 'command', 'policies', 'family'],
   ball: ['camera', 'depth-camera', 'command'],
   // World Humanoid Robot Games task-arena scenarios -- navigation/manipulation
   // practice, not races, so the same panel emphasis as 'default'.

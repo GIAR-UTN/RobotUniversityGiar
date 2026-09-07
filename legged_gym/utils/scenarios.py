@@ -18,6 +18,7 @@ from legged_gym.utils.props import (
     default_rough_terrain_props, ROUGH_TERRAIN_TRACK_LENGTH, ROUGH_TERRAIN_START_GAP,
     ROUGH_TERRAIN_MAX_STEP, ROUGH_TERRAIN_STEP_CURVE_K, ROUGH_TERRAIN_BASE_HEIGHT,
     ROUGH_TERRAIN_SPAWN_SETBACK,
+    default_agility_course_props,
 )
 from legged_gym.utils.competition_props import (
     default_factory_handling_props, default_factory_sorting_props,
@@ -66,6 +67,10 @@ class Scenario:
 # (no seed/randomization, unlike default_rough_terrain_props()), so there's nothing to
 # recompute on every 'obstacle_course' spawn_props()/web_options() call.
 _OBSTACLE_COURSE_PROPS, _OBSTACLE_COURSE_LENGTH = default_obstacle_course_props()
+
+# Same reasoning as _OBSTACLE_COURSE_PROPS above -- default_agility_course_props() is
+# deterministic too.
+_AGILITY_COURSE_PROPS, _AGILITY_COURSE_LENGTH = default_agility_course_props()
 
 
 SCENARIOS: dict = {
@@ -192,6 +197,21 @@ SCENARIOS: dict = {
         ready_button_visible=True,
         ready_button_armed_by_default=True,
     ),
+    # A 3-segment agility track (not from a WHRG rulebook, unlike the scenarios
+    # above) -- see legged_gym/utils/props.py::default_agility_course_props().
+    # The only scenario with any turning at all: 'race'/'rough_terrain'/
+    # 'obstacle_course' are all straight -x corridors, so no spawn setback is
+    # needed here -- the first wall already sits AGILITY_CURVE_WALL_GAP clear
+    # of the start line, unlike obstacle_course's first obstacle at x=0.
+    "agility_course": Scenario(
+        name="agility_course",
+        spawn_props=lambda opts: _AGILITY_COURSE_PROPS,
+        init_state_rot=RACE_SPAWN_ROT,
+        fail_to_terminal_time_s=RACE_FAIL_HOLD_S,
+        web_options=lambda opts: {"track_length": _AGILITY_COURSE_LENGTH},
+        ready_button_visible=True,
+        ready_button_armed_by_default=True,
+    ),
 }
 
 
@@ -225,6 +245,12 @@ def add_scenario_args(parser: argparse.ArgumentParser) -> None:
                               "the same start/finish corridor -- see "
                               "legged_gym/utils/competition_props.py::"
                               "default_obstacle_course_props(). "
+                              "'agility_course': a generic 3-segment track -- a wall "
+                              "chicane to turn through, freestanding objects to dodge "
+                              "around, then a low overhead bar to duck under -- the only "
+                              "scenario with any turning, unlike the straight corridors "
+                              "above -- see "
+                              "legged_gym/utils/props.py::default_agility_course_props(). "
                               "See legged_gym/utils/scenarios.py::SCENARIOS.")
     parser.add_argument('--scenario-option', action='append', default=[], metavar='KEY=VALUE',
                          dest='scenario_option',
