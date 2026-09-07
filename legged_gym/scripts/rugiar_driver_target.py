@@ -616,6 +616,27 @@ def main():
         # to the viewer and stays; --show_command_sliders=False also drops
         # viser's built-in (and, in this script, never-wired) velocity
         # sliders, which duplicated the unified web's Stimuli panel.
+        #
+        # Seed the scene/camera with the env's ACTUAL post-reset pose now,
+        # not on whatever tick first returns a non-None action -- until
+        # then, ViserViewer._last_base_pos sits at its np.zeros(3) __init__
+        # default, so a client that connects during that window (a browser
+        # loading the page right as this driver starts, or a scenario like
+        # obstacle_course that spawns off-origin) gets its camera placed
+        # near world origin instead of near the robot — "camera and robot
+        # aren't centered on first load" alongside the already-fixed
+        # after-restart case (see the restart_requested handling below).
+        #
+        # adapter.reset() FIRST is load-bearing, not cosmetic: env.simulator.
+        # base_pos only becomes world-frame (env_origins included) once
+        # GenesisSimulator.reset_root_states() has run for this env -- and
+        # task_registry.make_env() never calls env.reset() itself. Without
+        # this, base_pos still sits at its raw, un-offset construction-time
+        # value (e.g. near local (0,0) even though the scenario's props
+        # already render 50+ units away at env_origins), which is what
+        # actually produced "camera and robot centered on nothing" here.
+        adapter.reset()
+        viser_viewer.update_from_simulator(env, 0)
 
     if not cli.headless and control_server is not None:
         # Mount the unified control web (Docs/Simulator tabs + controls
@@ -735,6 +756,13 @@ def main():
             # "camera not centered, have to toggle Track robot" bug reported
             # after a restart.
             if viser_viewer is not None:
+                # Push the post-reset mesh/prop transforms (and _last_base_pos)
+                # into viser BEFORE resyncing tracking -- otherwise the scene
+                # still shows the pre-reset pose for however many ticks it
+                # takes service.tick() to return a non-None action, and the
+                # camera snaps to a still-stale _last_base_pos, showing up as
+                # wrong positions + a flicker/zoom jump right after restart.
+                viser_viewer.update_from_simulator(env, 0)
                 viser_viewer.resync_camera_tracking()
 
         if service.family_switch_requested is not None:
