@@ -506,8 +506,12 @@ AGILITY_DODGE_OBJECT_COUNT = 4
 # a robot that lowers its torso clears it. g1_config.py's default spawn pos
 # is z=0.4739 at the pelvis with the torso/head well above that at full
 # standing height -- this clearance sits comfortably under a standing head
-# but above a crouched one.
-AGILITY_DUCK_BAR_CLEARANCE = 0.95  # bottom-of-bar height off the ground
+# but above a crouched one. Raised from the original 0.95 -- reported live as
+# clipping the head even while actively ducking ("la tenemos que subir un
+# poco más, para que pegue la cabeza, haciendo más facil alcanzar el
+# objetivo de agacharse"), i.e. still a real duck, just not one so tight it
+# was unreachable in practice.
+AGILITY_DUCK_BAR_CLEARANCE = 1.10  # bottom-of-bar height off the ground
 AGILITY_DUCK_BAR_THICKNESS = 0.12
 
 # Clear gap left between the end of one segment and the start of the next.
