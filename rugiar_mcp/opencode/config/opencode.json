@@ -4,8 +4,12 @@
     "local": {
       "name": "Local Server",
       "npm": "@ai-sdk/openai-compatible",
-      "options": { "baseURL": "http://host.docker.internal:9989/v1" },
-      "models": { "local_model": { "name": "Local Model" } }
+      "options": { "baseURL": "http://host.docker.internal:9932/v1" },
+      "models": { "local_model": { "name": "Local Model" } },
+      "attachment": true,
+      "modalities": {
+            "input": ["text", "image"]
+          }
     }
   },
   "mcp": {
