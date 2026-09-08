@@ -2033,6 +2033,31 @@ function bindKeycapActions() {
 const DROP_SETTLE_MS = 500;
 let dragState = null;
 
+// Freezes `item` at its current on-screen spot and pulls it out of layout
+// flow (position:fixed) so the placeholder is the only thing occupying its
+// slot in the list — without this, the dimmed "real item" and the reflowing
+// placeholder both take up space at once, which is what read as the panel
+// list breaking/duplicating during a drag.
+function freezeItemOutOfFlow(item, rect) {
+  item.style.position = 'fixed';
+  item.style.left = `${rect.left}px`;
+  item.style.top = `${rect.top}px`;
+  item.style.width = `${rect.width}px`;
+  item.style.margin = '0';
+  item.style.zIndex = '5';
+  item.style.pointerEvents = 'none';
+}
+
+function unfreezeItem(item) {
+  item.style.position = '';
+  item.style.left = '';
+  item.style.top = '';
+  item.style.width = '';
+  item.style.margin = '';
+  item.style.zIndex = '';
+  item.style.pointerEvents = '';
+}
+
 function onDragHandleDown(e) {
   const handle = e.currentTarget;
   const { container, itemSelector, item, onReorder } = handle._sortableCtx;
@@ -2045,6 +2070,7 @@ function onDragHandleDown(e) {
     item._dropSettleTimer = null;
     item._dropPlaceholder?.remove();
     item._dropPlaceholder = null;
+    unfreezeItem(item);
   }
 
   const rect = item.getBoundingClientRect();
@@ -2057,6 +2083,7 @@ function onDragHandleDown(e) {
   placeholder.style.borderRadius = cs.borderRadius;
   item.after(placeholder);
   item.classList.add('dragging');
+  freezeItemOutOfFlow(item, rect);
 
   dragState = { container, itemSelector, item, placeholder, onReorder, pointerId: e.pointerId };
   document.addEventListener('pointermove', onDragHandleMove);
@@ -2090,7 +2117,11 @@ function onDragHandleUp() {
   item._dropSettleTimer = setTimeout(() => {
     item._dropSettleTimer = null;
     item._dropPlaceholder = null;
+    // item is frozen at its pre-drag rect (position:fixed) — that's still
+    // its "from" for the FLIP animation below, getBoundingClientRect just
+    // confirms it hasn't moved on screen since freezeItemOutOfFlow().
     const from = item.getBoundingClientRect();
+    unfreezeItem(item);
     placeholder.replaceWith(item);
     item.classList.remove('dragging');
     animateMove(item, from);

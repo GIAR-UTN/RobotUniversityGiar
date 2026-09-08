@@ -563,6 +563,38 @@ class ViserViewer:
             client.camera.fov = np.radians(60.0)
             self._camera_track_last_base_pos = None
 
+        # The immediate override above can still lose a race: this callback
+        # runs on viser's websocket thread concurrently with the main sim
+        # loop's own per-tick _apply_camera_tracking() call (both write the
+        # same client's camera.position/look_at, each under
+        # _camera_track_lock individually, but the LOCK only stops them from
+        # writing at the same instant -- it does nothing to fix the ORDER
+        # they land in). Reported live: "parpadeo y luego apareció lejos"
+        # (flicker, then it settled far away) -- i.e. our snap landed first
+        # and a stale/in-flight tracking tick's write landed after and won.
+        # Re-asserting a few more times over a couple seconds -- instead of
+        # once at a single guessed delay -- makes our value the one that
+        # lands last regardless of how long the client/network/scheduler
+        # takes to settle (this machine's load average has been observed as
+        # high as 300, so a single fixed short delay is not reliable here).
+        def _reassert_while_settling() -> None:
+            import time as _time
+            # Gaps between reasserts, not absolute delays: 0.3s, then +0.5s,
+            # +0.7s, +1.5s -- total coverage out to 3s after connect.
+            for gap_s in (0.3, 0.5, 0.7, 1.5):
+                _time.sleep(gap_s)
+                try:
+                    with self._camera_track_lock:
+                        base_pos = self._last_base_pos
+                        client.camera.position = base_pos + self._camera_offset
+                        client.camera.look_at = base_pos + self._camera_look_at_offset
+                        client.camera.up_direction = (0.0, 0.0, 1.0)
+                        self._camera_track_last_base_pos = base_pos.copy()
+                except Exception:
+                    return  # client disconnected -- nothing left to fix
+
+        threading.Thread(target=_reassert_while_settling, daemon=True).start()
+
     def _apply_camera_tracking(self, base_pos: np.ndarray) -> None:
         """Follow the robot without fighting the user's own camera control.
 
@@ -765,6 +797,17 @@ class ViserViewer:
         self.server.flush()
 
     def update_from_simulator(self, env, robot_index: int = 0) -> None:
+        # env.simulator.base_pos IS world-frame (env_origins included) --
+        # but only once GenesisSimulator.reset_root_states() has actually run
+        # for this env (that's where `base_pos += env_origins` happens, see
+        # genesis_simulator.py). task_registry.make_env() never calls
+        # env.reset() itself, so right after construction (before any
+        # reset()) base_pos still sits at its raw un-offset spawn position --
+        # NOT this method's problem to correct (don't add env_origins here,
+        # that double-counts once a real reset has run). See
+        # rugiar_driver.py/rugiar_driver_target.py's startup seeding, which
+        # now calls adapter.reset() before ever reading base_pos for exactly
+        # this reason.
         base_pos = env.simulator.base_pos[robot_index].cpu().numpy()
         base_quat_xyzw = env.simulator.base_quat[robot_index].cpu().numpy()
         base_quat_wxyz = _xyzw_to_wxyz(base_quat_xyzw)
