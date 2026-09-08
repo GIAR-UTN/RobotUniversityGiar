@@ -109,6 +109,10 @@ class ControlServer:
         self._camera_lock = threading.Lock()
         self._latest_frame_jpeg: Optional[bytes] = None
 
+        # Same slot-and-lock pattern for the optional depth camera feed.
+        self._depth_camera_lock = threading.Lock()
+        self._latest_depth_frame_jpeg: Optional[bytes] = None
+
         self._clients = set()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
@@ -125,6 +129,7 @@ class ControlServer:
         # server serves. See publish_camera_frame()/get_camera_frame() (
         # adapter.py) for where the actual frames come from.
         self.app.add_api_route("/camera.mjpg", self._camera_stream_endpoint, methods=["GET"])
+        self.app.add_api_route("/depth.mjpg", self._depth_camera_stream_endpoint, methods=["GET"])
 
         # StaticFiles (mounted by rugiar_driver.py for web/ and docs/)
         # sends no Cache-Control header by default, so browsers fall back to
@@ -160,6 +165,12 @@ class ControlServer:
         call this on ticks with no frame (get_camera_frame() returned None)."""
         with self._camera_lock:
             self._latest_frame_jpeg = jpeg_bytes
+
+    def publish_depth_frame(self, jpeg_bytes: bytes) -> None:
+        """Same handoff pattern as publish_camera_frame(), for the depth
+        camera feed on /depth.mjpg."""
+        with self._depth_camera_lock:
+            self._latest_depth_frame_jpeg = jpeg_bytes
 
     def drain_commands(self) -> None:
         """Execute every command queued since the last tick, on THIS
@@ -249,6 +260,29 @@ class ControlServer:
             await asyncio.sleep(0.08)  # ~12Hz — plenty for a live preview
             with self._camera_lock:
                 frame = self._latest_frame_jpeg
+            if frame is None or frame is last_sent:
+                continue
+            last_sent = frame
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                + frame + b"\r\n"
+            )
+
+    async def _depth_camera_stream_endpoint(self) -> StreamingResponse:
+        return StreamingResponse(
+            self._mjpeg_depth_stream(), media_type="multipart/x-mixed-replace; boundary=frame",
+        )
+
+    async def _mjpeg_depth_stream(self):
+        """Same multipart/x-mixed-replace pattern as _mjpeg_stream(), for
+        the depth camera feed on /depth.mjpg."""
+        last_sent = None
+        while True:
+            await asyncio.sleep(0.08)  # ~12Hz
+            with self._depth_camera_lock:
+                frame = self._latest_depth_frame_jpeg
             if frame is None or frame is last_sent:
                 continue
             last_sent = frame

@@ -268,6 +268,16 @@ function applyRuntimeConfig(config) {
     cameraFeed.removeAttribute('src');
   }
 
+  const depthCameraSection = $('#depth-camera-section');
+  const depthCameraFeed = $('#depth-camera-feed');
+  if (config.depth_camera_enabled) {
+    depthCameraFeed.src = `/depth.mjpg?t=${Date.now()}`;
+    depthCameraSection.hidden = false;
+  } else {
+    depthCameraSection.hidden = true;
+    depthCameraFeed.removeAttribute('src');
+  }
+
   initRaceMode(config);
 }
 
@@ -2127,20 +2137,20 @@ function makeSortable(container, itemSelector, handleSelector, onReorder) {
 // only moves the sections actually named here and leaves everything else in
 // its current DOM position.
 const SCENARIO_DEFAULT_ORDERS = {
-  default: ['camera', 'command', 'policies', 'telemetry'],
-  race: ['camera', 'command', 'policies', 'family'],
-  rough_terrain: ['camera', 'command', 'policies', 'family'],
-  obstacle_course: ['camera', 'command', 'policies', 'family'],
-  ball: ['camera', 'command'],
+  default: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  race: ['camera', 'depth-camera', 'command', 'policies', 'family'],
+  rough_terrain: ['camera', 'depth-camera', 'command', 'policies', 'family'],
+  obstacle_course: ['camera', 'depth-camera', 'command', 'policies', 'family'],
+  ball: ['camera', 'depth-camera', 'command'],
   // World Humanoid Robot Games task-arena scenarios -- navigation/manipulation
   // practice, not races, so the same panel emphasis as 'default'.
-  factory_handling: ['camera', 'command', 'policies', 'telemetry'],
-  factory_sorting: ['camera', 'command', 'policies', 'telemetry'],
-  hospital_pharmacy: ['camera', 'command', 'policies', 'telemetry'],
-  hospital_dispensing: ['camera', 'command', 'policies', 'telemetry'],
-  hotel_reception: ['camera', 'command', 'policies', 'telemetry'],
-  hotel_cleaning: ['camera', 'command', 'policies', 'telemetry'],
-  warehouse_sorting: ['camera', 'command', 'policies', 'telemetry'],
+  factory_handling: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  factory_sorting: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  hospital_pharmacy: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  hospital_dispensing: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  hotel_reception: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  hotel_cleaning: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
+  warehouse_sorting: ['camera', 'depth-camera', 'command', 'policies', 'telemetry'],
 };
 
 function panelOrderKey() {

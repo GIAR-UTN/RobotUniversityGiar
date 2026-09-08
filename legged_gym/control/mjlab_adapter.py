@@ -139,6 +139,11 @@ class MjlabAdapter:
         None means "nothing to stream this tick", not an error."""
         return None
 
+    def get_depth_frame(self):
+        """No robot-POV depth camera is built for the mjlab tracking task — same
+        contract as get_camera_frame() above."""
+        return None
+
     def _action_scale(self) -> float:
         """mjlab's G1 action scale is PER-JOINT-GROUP (a dict in
         JointPositionActionCfg.scale, ~0.075 to 0.548 — see

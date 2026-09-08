@@ -38,6 +38,13 @@ export GENESIS_BACKEND=${GENESIS_BACKEND:-cpu}
 ARGS=()
 
 # ---------------------------------------------------------------------------
+# Task
+# ---------------------------------------------------------------------------
+if [ -n "$TASK" ]; then
+    ARGS+=("--task" "$TASK")
+fi
+
+# ---------------------------------------------------------------------------
 # Active policy
 # ---------------------------------------------------------------------------
 if [ -n "$ACTIVE_POLICY" ]; then
@@ -63,6 +70,14 @@ if [ "$HEADLESS" = "1" ] || [ "$HEADLESS" = "true" ]; then
     ARGS+=("--headless")
 fi
 
+if [ "$CAMERA" = "1" ] || [ "$CAMERA" = "true" ]; then
+    ARGS+=("--camera")
+fi
+
+if [ "$DEPTH_CAMERA" = "1" ] || [ "$DEPTH_CAMERA" = "true" ]; then
+    ARGS+=("--depth-camera")
+fi
+
 if [ -n "$SPEED" ]; then
     ARGS+=("--speed" "$SPEED")
 fi
@@ -70,6 +85,8 @@ fi
 if [ -n "$SCENARIO" ]; then
     ARGS+=("--scenario" "$SCENARIO")
 fi
+
+echo "${ARGS[@]}"
 
 cd /workspace/RobotUniversityGiar
 exec python legged_gym/scripts/rugiar_driver.py "${ARGS[@]}"

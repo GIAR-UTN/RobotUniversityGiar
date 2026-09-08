@@ -533,6 +533,11 @@ class RealAdapter:
         imported here — see this module's docstring)."""
         return None
 
+    def get_depth_frame(self):
+        """Mirrors SimAdapter.get_depth_frame()'s optional extra — no real
+        depth camera is wired up yet. Returns None until that's added."""
+        return None
+
     def estop(self) -> None:
         """True emergency stop — cuts to zero torque immediately. Deliberately
         NOT routed through PolicySupervisor/SafetyGovernor's damping-policy

@@ -31,13 +31,16 @@ class IsaacLabSimulator(Simulator):
             wp.init()
             self._create_warp_envs()
             self._create_warp_tensors()
-            self._depth_camera_sensor = WarpCam(self._warp_tensor_dict, 
-                                self._num_camera_envs, 
-                                self._cfg.sensor, 
-                                self._mesh_ids, 
+            self._depth_camera_sensor = WarpCam(self._warp_tensor_dict,
+                                self._num_camera_envs,
+                                self._cfg.sensor,
+                                self._mesh_ids,
                                 self._device)
-            pixels = self._depth_camera_sensor.update()
-            self._depth_images[:,0] = pixels[:,0] # pixels: [num_envs, num_sensors, H, W]
+            # Skip the initial update() here — see genesis_simulator.py for the same
+            # workaround rationale (Warp graph-capture failure during __init__ on some
+            # driver/GPU combos). The first real depth frame is rendered in _update_depth_camera().
+            # pixels = self._depth_camera_sensor.update()
+            # self._depth_images[:,0] = pixels[:,0] # pixels: [num_envs, num_sensors, H, W]
 
     
     #----- Public methods -----#
@@ -85,6 +88,12 @@ class IsaacLabSimulator(Simulator):
             self._update_surrounding_heights()
             if self._cfg.terrain.obtain_terrain_info_around_feet:
                 self._calc_terrain_info_around_feet()
+        # Refresh warp sensor pose (mirrors IsaacGymSimulator.post_physics_step)
+        if self._cfg.sensor.add_depth:
+            sensor_quat = quat_mul(self._base_quat[:self._num_camera_envs], self._sensor_offset_quat)
+            sensor_pos = self._base_pos[:self._num_camera_envs] + quat_apply(self._base_quat[:self._num_camera_envs], self._sensor_offset_pos)
+            self._sensor_pos_tensor[:,:] = sensor_pos[:,:]
+            self._sensor_quat_tensor[:,:] = sensor_quat[:,:]
     
     def reset_idx(self, env_ids):
         if self._cfg.domain_rand.randomize_joint_armature:
@@ -980,7 +989,8 @@ class IsaacLabSimulator(Simulator):
         """
         near_clip = self._cfg.sensor.depth_camera_config.near_clip
         far_clip = self._cfg.sensor.depth_camera_config.far_clip
-        pixels = self._depth_camera_sensor.update().clone()
+        # debug=True bypasses Warp graph capture — see genesis_simulator.py
+        pixels = self._depth_camera_sensor.update(debug=True).clone()
         if self._depth_images.shape[1] > 1: # stack history of depth images
             self._depth_images[:, 1:] = self._depth_images[:, :-1].detach().clone()
         # store values for denoised depth images
@@ -1018,7 +1028,7 @@ class IsaacLabSimulator(Simulator):
       self._wp_meshes =  wp.Mesh(points=vertex_vec3_array,indices=faces_wp_int32_array)
       
       Warning("Currently, only static terrain mesh is added to Warp.")
-      self._mesh_ids = self.mesh_ids_array = wp.array([self._wp_meshes.id], dtype=wp.uint64)
+      self._mesh_ids = self.mesh_ids_array = wp.array([self._wp_meshes.id], dtype=wp.uint64, device=self._device)
     
     def _create_warp_tensors(self):
         self._warp_tensor_dict={}
@@ -1069,16 +1079,16 @@ class IsaacLabSimulator(Simulator):
           self._camera_euler_offset = torch.zeros(
                 self._num_camera_envs, 3, dtype=torch.float, device=self._device, requires_grad=False)
           self._camera_euler_offset[:self._num_camera_envs, 0] = torch_rand_float(
-                -self._cfg.domain_rand.camera_euler_offset_range[0],
-                self._cfg.domain_rand.camera_euler_offset_range[0],
+                -self._cfg.domain_rand.camera_euler_range[0],
+                self._cfg.domain_rand.camera_euler_range[0],
                 (self._num_camera_envs,1), device=self._device).squeeze(1)
           self._camera_euler_offset[:self._num_camera_envs, 1] = torch_rand_float(
-                -self._cfg.domain_rand.camera_euler_offset_range[1],
-                self._cfg.domain_rand.camera_euler_offset_range[1],
+                -self._cfg.domain_rand.camera_euler_range[1],
+                self._cfg.domain_rand.camera_euler_range[1],
                 (self._num_camera_envs,1), device=self._device).squeeze(1)
           self._camera_euler_offset[:self._num_camera_envs, 2] = torch_rand_float(
-                -self._cfg.domain_rand.camera_euler_offset_range[2],
-                self._cfg.domain_rand.camera_euler_offset_range[2],
+                -self._cfg.domain_rand.camera_euler_range[2],
+                self._cfg.domain_rand.camera_euler_range[2],
                 (self._num_camera_envs,1), device=self._device).squeeze(1)
           rpy_offset += self._camera_euler_offset[:self._num_camera_envs]
           

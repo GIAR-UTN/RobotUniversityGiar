@@ -8,7 +8,8 @@ Tools:
 - get_telemetry
 - get_odometry
 - get_command_limits
-- get_camera_frame_base64
+ - get_camera_frame_base64
+ - get_depth_camera_frame_base64
 """
 from __future__ import annotations
 
@@ -33,9 +34,10 @@ from .control_client import ControlClient, _is_closed
 mcp = MCPServer("rugiar-control")
 client = ControlClient()
 
-# Camera cache
+# Camera caches (separate so RGB and depth fetches don't evict each other)
 _CAMERA_CACHE_TTL_MS = 100
 _camera_cache: dict = {"ts": 0.0, "data": None}
+_depth_camera_cache: dict = {"ts": 0.0, "data": None}
 
 # Ramp tasks
 _ramp_tasks: dict = {}
@@ -220,6 +222,38 @@ async def get_camera_frame_base64() -> dict:
         b64 = base64.b64encode(jpeg).decode("ascii")
         _camera_cache["data"] = b64
         _camera_cache["ts"] = now
+        return {"base64": b64, "cached": False, "size": len(jpeg)}
+
+@mcp.tool()
+async def get_depth_camera_frame_base64() -> dict:
+    """Grab a single depth-camera frame as a base64 JPEG, cached 100 ms to avoid hammering the stream."""
+    logging.info("[MCP] get_depth_camera_frame_base64 called")
+    global _depth_camera_cache
+    now = time.monotonic()*1000
+    if _depth_camera_cache["data"] and now - _depth_camera_cache["ts"] < _CAMERA_CACHE_TTL_MS:
+        return {"base64": _depth_camera_cache["data"], "cached": True}
+    host = os.getenv("CONTROL_HOST", "localhost")
+    port = os.getenv("CONTROL_PORT", "9013")
+    url = f"http://{host}:{port}/depth.mjpg"
+    # /depth.mjpg is an unbounded MJPEG stream — same fetch pattern as /camera.mjpg.
+    async with httpx.AsyncClient(timeout=5.0) as http:
+        buf = b""
+        async with http.stream("GET", url) as r:
+            r.raise_for_status()
+            async for chunk in r.aiter_bytes():
+                buf += chunk
+                start = buf.find(b"\xff\xd8")
+                end = buf.find(b"\xff\xd9", start) if start != -1 else -1
+                if start != -1 and end != -1:
+                    jpeg = buf[start:end + 2]
+                    break
+                if len(buf) > 5_000_000:
+                    raise RuntimeError("No JPEG found in first 5MB of depth camera stream")
+            else:
+                raise RuntimeError("Depth camera stream ended before a full JPEG frame arrived")
+        b64 = base64.b64encode(jpeg).decode("ascii")
+        _depth_camera_cache["data"] = b64
+        _depth_camera_cache["ts"] = now
         return {"base64": b64, "cached": False, "size": len(jpeg)}
 
 if __name__ == "__main__":

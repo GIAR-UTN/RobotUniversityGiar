@@ -352,6 +352,11 @@ def main():
                               "sim only, for now — see GenesisSimulator.get_camera_frame() and "
                               "legged_robot_config.py's sensor.rgb_camera_config). Incompatible with "
                               "--headless (no camera is built in that mode, and there's no web UI to stream to).")
+    parser.add_argument('--depth-camera', action='store_true', default=False,
+                         help="stream a robot-POV depth camera feed to the control web at /depth.mjpg (Genesis "
+                              "sim only, for now — see GenesisSimulator.get_depth_frame() and "
+                              "legged_robot_config.py's sensor.depth_camera_config). Incompatible with "
+                              "--headless and --real (no depth camera wired up on real hardware yet).")
     parser.add_argument('--real', action='store_true', default=False,
                          help="drive an actual robot over DDS (deploy_real/real_adapter.py::RealAdapter) "
                               "instead of the Genesis simulator. No Genesis env, no viser — see "
@@ -379,6 +384,12 @@ def main():
                           "mode (see GenesisSimulator._create_envs()) and there's no web UI to stream to.")
     if cli.camera and cli.real:
         raise ValueError("--camera isn't wired up for --real yet — RealAdapter.get_camera_frame() always "
+                          "returns None (see deploy_real/real_adapter.py).")
+    if cli.depth_camera and cli.headless:
+        raise ValueError("--depth-camera and --headless are mutually exclusive — no depth camera is built in "
+                          "headless mode and there's no web UI to stream to.")
+    if cli.depth_camera and cli.real:
+        raise ValueError("--depth-camera isn't wired up for --real yet — RealAdapter.get_depth_frame() always "
                           "returns None (see deploy_real/real_adapter.py).")
     if cli.real and not cli.net_interface:
         raise ValueError("--real requires --net_interface (the DDS network interface, e.g. 'eth0')")
@@ -444,6 +455,45 @@ def main():
         apply_scenario_to_env_cfg(env_cfg, scenario, scenario_options)
         if cli.camera:
             env_cfg.sensor.add_rgb_camera = True
+        if cli.depth_camera:
+            env_cfg.sensor.add_depth = True
+            env_cfg.env.num_envs = 1
+            env_cfg.env.num_camera_envs = 1
+            # Depth camera requires a mesh terrain to render against. If the
+            # task uses a plane, switch to a minimal flat trimesh so the
+            # Warp depth camera has geometry to raycast into.
+            # NOTE / TODO: The resulting mesh only contains terrain geometry;
+            # scenario props (e.g. ball, race obstacles) are invisible to the
+            # depth feed. To show them, the prop meshes must be merged into the
+            # Warp mesh or the depth source must switch to Genesis native depth.
+            if env_cfg.terrain.mesh_type == "plane":
+                env_cfg.terrain.mesh_type = "heightfield"
+                env_cfg.terrain.num_rows = 1
+                env_cfg.terrain.num_cols = 1
+                env_cfg.terrain.border_size = 2.0
+                env_cfg.terrain.curriculum = False
+                env_cfg.terrain.selected = True
+                env_cfg.env.debug_draw_terrain_height_points = False
+                env_cfg.domain_rand.push_robots = False
+                env_cfg.terrain.terrain_kwargs = {
+                    "type": "terrain_utils.pyramid_stairs_terrain",
+                    "step_width": 0.4, "step_height": -0.1, "platform_size": 3.0,
+                }
+
+        # Inference-mode overrides (mirroring play.py's setup for depth/terrain)
+        if env_cfg.terrain.mesh_type in ["heightfield", "trimesh"]:
+            env_cfg.terrain.num_rows = 1
+            env_cfg.terrain.num_cols = 1
+            env_cfg.terrain.border_size = 2.0
+            env_cfg.terrain.curriculum = False
+            env_cfg.terrain.selected = True
+            env_cfg.env.debug_draw_terrain_height_points = False
+            env_cfg.domain_rand.push_robots = False
+            # selected_terrain() requires a non-None terrain_kwargs dict — mirror play.py
+            env_cfg.terrain.terrain_kwargs = {
+                "type": "terrain_utils.pyramid_stairs_terrain",
+                "step_width": 0.4, "step_height": -0.1, "platform_size": 3.0,
+            }
 
         env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
         adapter = SimAdapter(env, operator_speed_limit=cli.cruise_limit)
@@ -608,6 +658,9 @@ def main():
                 # whether anything will ever be published there (see
                 # ControlServer._mjpeg_stream / --camera above).
                 "camera_enabled": cli.camera,
+                # Lets the web panel show/hide its Depth Camera section — same
+                # pattern as camera_enabled above.
+                "depth_camera_enabled": cli.depth_camera,
                 "command_ranges": {
                     "vx": list(ranges.lin_vel_x),
                     "vy": list(ranges.lin_vel_y),
@@ -699,6 +752,8 @@ def main():
     obs = adapter.get_observations()
     camera_tick = 0
     camera_decimation = env_cfg.sensor.rgb_camera_config.decimation if cli.camera else None
+    depth_camera_tick = 0
+    depth_camera_decimation = env_cfg.sensor.depth_camera_config.decimation if cli.depth_camera else None
     while True:
         t_start = time.perf_counter()
 
@@ -751,6 +806,14 @@ def main():
                     frame = adapter.get_camera_frame()
                     if frame is not None:
                         control_server.publish_camera_frame(_encode_camera_frame_jpeg(frame))
+
+            # Same pattern for the depth camera feed.
+            if depth_camera_decimation is not None:
+                depth_camera_tick += 1
+                if depth_camera_tick % depth_camera_decimation == 0:
+                    depth_frame = adapter.get_depth_frame()
+                    if depth_frame is not None:
+                        control_server.publish_depth_frame(_encode_camera_frame_jpeg(depth_frame))
 
         elapsed = time.perf_counter() - t_start
         remaining = frame_dt - elapsed
