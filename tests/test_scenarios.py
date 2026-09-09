@@ -25,6 +25,9 @@ from legged_gym.utils.props import (
     ROUGH_TERRAIN_BASE_HEIGHT, ROUGH_TERRAIN_TILE_SIZE, ROUGH_TERRAIN_START_GAP,
     ROUGH_TERRAIN_HEIGHT_JITTER, ROUGH_TERRAIN_SPAWN_SETBACK,
     rough_terrain_tile_heights, rough_terrain_baseline_height,
+    AGILITY_LANE_WIDTH, AGILITY_CURVE_WALL_SIDES, AGILITY_CURVE_PASSAGE_WIDTH,
+    AGILITY_DODGE_OBJECT_COUNT, AGILITY_DUCK_BAR_CLEARANCE,
+    AGILITY_SIDE_WALL_HEIGHT, AGILITY_CURVE_WALL_HEIGHT,
 )
 
 
@@ -42,7 +45,7 @@ class TestScenarioRegistry(unittest.TestCase):
             # legged_gym/utils/competition_props.py.
             "factory_handling", "factory_sorting", "hospital_pharmacy",
             "hospital_dispensing", "hotel_reception", "hotel_cleaning",
-            "warehouse_sorting", "obstacle_course",
+            "warehouse_sorting", "obstacle_course", "agility_course",
         })
 
     def test_default_spawns_no_props(self):
@@ -225,6 +228,86 @@ class TestObstacleCourseScenario(unittest.TestCase):
         offset = SCENARIOS["obstacle_course"].init_state_pos_offset
         self.assertIsNotNone(offset)
         self.assertGreater(offset[0], 0.0)
+
+
+class TestAgilityCourseScenario(unittest.TestCase):
+    """The 3-segment agility track -- curves, dodge objects, then a duck bar --
+    the only scenario with any turning at all (see scenarios.py's own comment
+    on the entry)."""
+
+    def test_spawns_start_and_finish_lines_matching_its_own_track_length(self):
+        options = dict(SCENARIOS["agility_course"].default_options)
+        props = SCENARIOS["agility_course"].spawn_props(options)
+        web_opts = SCENARIOS["agility_course"].web_options(options)
+        start = next(p for p in props if p["name"] == "agility_start_line")
+        finish = next(p for p in props if p["name"] == "agility_finish_line")
+        self.assertEqual(start["pos"][0], 0.0)
+        self.assertAlmostEqual(finish["pos"][0], -web_opts["track_length"])
+
+    def test_has_no_duplicate_prop_names(self):
+        props = SCENARIOS["agility_course"].spawn_props({})
+        names = [p["name"] for p in props]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_reuses_race_spawn_rotation_and_fail_hold(self):
+        self.assertEqual(SCENARIOS["agility_course"].init_state_rot, RACE_SPAWN_ROT)
+        self.assertEqual(SCENARIOS["agility_course"].fail_to_terminal_time_s, RACE_FAIL_HOLD_S)
+        self.assertTrue(SCENARIOS["agility_course"].ready_button_visible)
+        self.assertTrue(SCENARIOS["agility_course"].ready_button_armed_by_default)
+
+    def test_curve_segment_has_a_wall_per_configured_side_each_leaving_a_passage(self):
+        props = SCENARIOS["agility_course"].spawn_props({})
+        walls = [p for p in props if p["name"].startswith("agility_curve_wall_")]
+        self.assertEqual(len(walls), len(AGILITY_CURVE_WALL_SIDES))
+        for wall in walls:
+            # A wall covers the lane minus the passage gap -- never the full width
+            # (that would make the segment impassable) and never so little it fails
+            # to force a turn.
+            self.assertLess(wall["size"][1], AGILITY_LANE_WIDTH)
+            self.assertAlmostEqual(wall["size"][1], AGILITY_LANE_WIDTH - AGILITY_CURVE_PASSAGE_WIDTH)
+
+    def test_dodge_segment_has_freestanding_objects_off_the_centerline(self):
+        props = SCENARIOS["agility_course"].spawn_props({})
+        objects = [p for p in props if p["name"].startswith("agility_dodge_object_")]
+        self.assertEqual(len(objects), AGILITY_DODGE_OBJECT_COUNT)
+        for obj in objects:
+            # Off-center (not spanning the lane like a curve wall) so there's always
+            # open lane on at least one side to sidestep through.
+            self.assertNotEqual(obj["pos"][1], 0.0)
+            self.assertLess(obj["size"][1], AGILITY_LANE_WIDTH)
+
+    def test_duck_bar_spans_the_lane_at_a_crouch_only_clearance(self):
+        props = SCENARIOS["agility_course"].spawn_props({})
+        bar = next(p for p in props if p["name"] == "agility_duck_bar")
+        self.assertAlmostEqual(bar["size"][1], AGILITY_LANE_WIDTH)  # spans the full lane
+        bar_bottom = bar["pos"][2] - bar["size"][2] / 2
+        self.assertAlmostEqual(bar_bottom, AGILITY_DUCK_BAR_CLEARANCE)
+
+    def test_has_continuous_low_side_walls_spanning_start_to_finish(self):
+        options = dict(SCENARIOS["agility_course"].default_options)
+        props = SCENARIOS["agility_course"].spawn_props(options)
+        web_opts = SCENARIOS["agility_course"].web_options(options)
+        left = next(p for p in props if p["name"] == "agility_side_wall_left")
+        right = next(p for p in props if p["name"] == "agility_side_wall_right")
+        for wall in (left, right):
+            # Low -- a guard rail, not a repeat of the curve segment's own walls.
+            self.assertLess(wall["size"][2], AGILITY_CURVE_WALL_HEIGHT)
+            self.assertAlmostEqual(wall["size"][2], AGILITY_SIDE_WALL_HEIGHT)
+            # Runs the whole track, start line to finish line.
+            self.assertAlmostEqual(wall["size"][0], web_opts["track_length"])
+        self.assertAlmostEqual(left["pos"][1], -AGILITY_LANE_WIDTH / 2)
+        self.assertAlmostEqual(right["pos"][1], AGILITY_LANE_WIDTH / 2)
+
+    def test_segments_appear_in_order_curves_then_dodge_then_duck_bar(self):
+        # Each segment should be strictly further down -x than the one before it --
+        # this is what makes it a 3-segment SEQUENCE, not an unordered prop bag.
+        props = SCENARIOS["agility_course"].spawn_props({})
+        curve_x = min(p["pos"][0] for p in props if p["name"].startswith("agility_curve_wall_"))
+        dodge_x = min(p["pos"][0] for p in props if p["name"].startswith("agility_dodge_object_"))
+        bar_x = next(p for p in props if p["name"] == "agility_duck_bar")["pos"][0]
+        self.assertGreater(0.0, curve_x)
+        self.assertGreater(curve_x, dodge_x)
+        self.assertGreater(dodge_x, bar_x)
 
 
 class TestRoughTerrainTileHeights(unittest.TestCase):

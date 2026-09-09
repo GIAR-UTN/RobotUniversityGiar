@@ -472,3 +472,135 @@ def default_race_props(track_length=RACE_TRACK_LENGTH):
         "color": [0.1, 0.3, 0.9, 1.0],
     })
     return props
+
+
+# ---------------------------------------------------------------------------
+# 'agility_course' scenario -- a generic (not WHRG-rulebook-sourced, unlike
+# competition_props.py's scenarios) 3-segment track: walls forcing turns,
+# then freestanding objects to dodge around, then a low overhead bar the
+# robot must duck under. The first scenario with any lateral turning at all
+# -- every other track scenario (race/rough_terrain/obstacle_course) is a
+# straight -x corridor.
+# ---------------------------------------------------------------------------
+
+AGILITY_LANE_WIDTH = RACE_CROSSING_LINE_WIDTH
+
+# Segment 1 -- curves: a short chicane of walls, each blocking all but a
+# passage_width-wide gap on one side of the lane, alternating sides so the
+# robot has to actually turn its heading to thread each gap in turn.
+AGILITY_CURVE_WALL_HEIGHT = 1.0
+AGILITY_CURVE_WALL_THICKNESS = 0.1
+AGILITY_CURVE_PASSAGE_WIDTH = 1.0
+AGILITY_CURVE_WALL_GAP = 1.8  # x-spacing between consecutive walls
+AGILITY_CURVE_WALL_SIDES = ("left", "right", "left")  # blocked side per wall -- 2 bends
+
+# Segment 2 -- dodge: freestanding boxes (not spanning the lane, unlike the
+# curve walls above) placed off-center, alternating side, leaving an open
+# lane past each one to sidestep through.
+AGILITY_DODGE_OBJECT_SIZE = [0.4, 0.4, 0.6]
+AGILITY_DODGE_OBJECT_GAP = 1.2  # x-spacing between consecutive objects
+AGILITY_DODGE_Y_OFFSET = 0.9
+AGILITY_DODGE_OBJECT_COUNT = 4
+
+# Segment 3 -- height: one bar spanning the full lane, low enough that only
+# a robot that lowers its torso clears it. g1_config.py's default spawn pos
+# is z=0.4739 at the pelvis with the torso/head well above that at full
+# standing height -- this clearance sits comfortably under a standing head
+# but above a crouched one. Raised twice from the original 0.95: first to
+# 1.10 (was clipping the head even while actively ducking), then to 1.20
+# here (1.10 was still catching shoulder height, reported live -- "un poco
+# más alto va a ser mejor").
+AGILITY_DUCK_BAR_CLEARANCE = 1.20  # bottom-of-bar height off the ground
+AGILITY_DUCK_BAR_THICKNESS = 0.12
+
+# Clear gap left between the end of one segment and the start of the next.
+AGILITY_SEGMENT_GAP = 1.0
+
+# Low guard rails running the full length of both sides of the lane --
+# requested directly ("faltan paredes bajas laterales, para que esté
+# encerrado"): without them the curve/dodge segments read as loose props in
+# open field rather than a single enclosed track. Low enough to stay clear
+# of the duck bar's clearance (AGILITY_DUCK_BAR_CLEARANCE) and short of the
+# curve walls' own height, so it reads as a rail, not a repeat of either.
+AGILITY_SIDE_WALL_HEIGHT = 0.3
+AGILITY_SIDE_WALL_THICKNESS = 0.08
+
+
+def default_agility_course_props(lane_width=AGILITY_LANE_WIDTH):
+    """Static scenery for the 'agility_course' scenario: start line at the
+    robot's spawn (x=0), then 3 segments back-to-back down -x -- a wall
+    chicane to turn through, a row of freestanding objects to dodge around,
+    and a single overhead bar to duck under -- then the finish line.
+
+    Returns (props, total_length), same convention as
+    competition_props.py::default_obstacle_course_props() -- total_length is
+    the exact start-to-finish distance, for the finish crossing-line and the
+    web UI's distance readout (see scenarios.py's 'agility_course' entry).
+    """
+    props = [_crossing_line_prop("agility_start_line", x=0.0)]
+    cursor = 0.0  # x reached so far; the next segment starts here
+
+    # Segment 1: curves.
+    wall_length = lane_width - AGILITY_CURVE_PASSAGE_WIDTH
+    for i, side in enumerate(AGILITY_CURVE_WALL_SIDES):
+        wall_x = cursor - (i + 1) * AGILITY_CURVE_WALL_GAP
+        y_center = (-lane_width / 2 + wall_length / 2 if side == "left"
+                    else lane_width / 2 - wall_length / 2)
+        props.append({
+            "name": f"agility_curve_wall_{i}",
+            "shape": "box",
+            "size": [AGILITY_CURVE_WALL_THICKNESS, wall_length, AGILITY_CURVE_WALL_HEIGHT],
+            "pos": [wall_x, y_center, AGILITY_CURVE_WALL_HEIGHT / 2],
+            "fixed": True,
+            "color": [0.55, 0.55, 0.6, 1.0],
+        })
+    cursor -= len(AGILITY_CURVE_WALL_SIDES) * AGILITY_CURVE_WALL_GAP + AGILITY_SEGMENT_GAP
+
+    # Segment 2: dodge objects.
+    for i in range(AGILITY_DODGE_OBJECT_COUNT):
+        obj_x = cursor - (i + 1) * AGILITY_DODGE_OBJECT_GAP
+        obj_y = AGILITY_DODGE_Y_OFFSET if i % 2 == 0 else -AGILITY_DODGE_Y_OFFSET
+        props.append({
+            "name": f"agility_dodge_object_{i}",
+            "shape": "box",
+            "size": list(AGILITY_DODGE_OBJECT_SIZE),
+            "pos": [obj_x, obj_y, AGILITY_DODGE_OBJECT_SIZE[2] / 2],
+            "fixed": True,
+            "color": [0.85, 0.35, 0.1, 1.0],
+        })
+    cursor -= AGILITY_DODGE_OBJECT_COUNT * AGILITY_DODGE_OBJECT_GAP + AGILITY_SEGMENT_GAP
+
+    # Segment 3: duck bar.
+    bar_x = cursor - AGILITY_SEGMENT_GAP
+    props.append({
+        "name": "agility_duck_bar",
+        "shape": "box",
+        "size": [AGILITY_DUCK_BAR_THICKNESS, lane_width, AGILITY_DUCK_BAR_THICKNESS],
+        "pos": [bar_x, 0.0, AGILITY_DUCK_BAR_CLEARANCE + AGILITY_DUCK_BAR_THICKNESS / 2],
+        "fixed": True,
+        "color": [0.95, 0.75, 0.1, 1.0],
+    })
+    cursor = bar_x - AGILITY_SEGMENT_GAP
+
+    finish_x = cursor
+    total_length = -finish_x
+
+    # Guard rails: one continuous low wall down each side of the lane, start
+    # line to finish line.
+    rail_x = finish_x / 2
+    for side, y in (("left", -lane_width / 2), ("right", lane_width / 2)):
+        props.append({
+            "name": f"agility_side_wall_{side}",
+            "shape": "box",
+            "size": [total_length, AGILITY_SIDE_WALL_THICKNESS, AGILITY_SIDE_WALL_HEIGHT],
+            "pos": [rail_x, y, AGILITY_SIDE_WALL_HEIGHT / 2],
+            "fixed": True,
+            "color": [0.55, 0.55, 0.6, 1.0],
+        })
+
+    props.append(_crossing_line_prop("agility_finish_line", x=finish_x))
+    props += _sign_props("agility_start_sign", x=0.0, lane_width=lane_width,
+                          word="START", word_color=[0.08, 0.08, 0.08, 1.0])
+    props += _sign_props("agility_finish_sign", x=finish_x, lane_width=lane_width,
+                          word="FINISH", word_color=[1.0, 0.55, 0.0, 1.0])
+    return props, total_length
