@@ -1041,6 +1041,13 @@ function renderTelemetry(telemetry) {
 // readout stop.
 
 let currentScenario = null; // 'default' | 'ball' | 'race' | 'rough_terrain' | null, from /config's "scenario"
+
+// Mirrors legged_gym/control/run_recorder.py's RECORDED_SCENARIOS — the three
+// scenarios INNOVATON actually grades. Gates the start_run/end_run RPC calls below
+// so a dev/demo scenario never opens a run directory; the server independently
+// no-ops on the same set (see RunRecorder.start()), this is just to skip the
+// pointless round-trip, not the actual enforcement.
+const RECORDED_SCENARIOS = new Set(['race', 'obstacle_course', 'agility_course']);
 // Whether the "321 Ready!" button shows at all -- per-scenario, from /config's
 // "ready_button.visible" (see Scenario.ready_button_visible in legged_gym/utils/scenarios.py).
 // The countdown/timer/lock mechanism itself isn't race-specific (finish-line detection
@@ -1238,6 +1245,15 @@ function resetRaceRun() {
   obstacleCourseFallTimer = null;
   clearTimeout(agilityCourseFallTimer);
   agilityCourseFallTimer = null;
+  // A restart landing mid-run (raceState 'countdown'/'running') means someone
+  // interrupted this attempt before it finished or fell — close the open
+  // recording as 'aborted' rather than leaving manifest.json's ended_at null
+  // forever (finishRace()/onObstacleCourseFall()/onAgilityCourseFall() already
+  // closed it themselves for the finish/fall cases, so this only fires on a
+  // genuine interruption). No-op server-side if nothing's actually open.
+  if (RECORDED_SCENARIOS.has(currentScenario) && (raceState === 'countdown' || raceState === 'running')) {
+    send('end_run', { outcome: 'aborted' });
+  }
   raceState = 'idle';
   raceStartX = null;
   raceStartTime = null;
@@ -1288,6 +1304,10 @@ function beginRace() {
   raceFooter.hidden = false;
   applyRaceControlsLockVisual();
   updateRaceFooter(0, 0);
+  // The "GO!" moment — every countdown that reaches here for a graded scenario
+  // opens a run recording (see legged_gym/control/run_recorder.py). team_id comes
+  // from the VM's own RUGIAR_TEAM_ID env var server-side, not from this client.
+  if (RECORDED_SCENARIOS.has(currentScenario)) send('start_run', { scenario: currentScenario });
 }
 
 function raceCurrentX() {
@@ -1324,6 +1344,9 @@ function finishRace(elapsed) {
     ? `${raceTrackLength.toFixed(1)} / ${raceTrackLength.toFixed(1)} m` : '';
   raceReadyResult.textContent = `(${elapsed.toFixed(2)}s)`;
   celebrateFinish();
+  if (RECORDED_SCENARIOS.has(currentScenario)) {
+    send('end_run', { outcome: 'finished', metrics: { elapsed_s: elapsed, distance_m: raceTrackLength } });
+  }
 }
 
 const CONFETTI_COLORS = ['#ff3cac', '#784ba0', '#2b86c5', '#00e5a0', '#ffd93d', '#ff5e5e', '#4fd1c1'];
@@ -1427,6 +1450,7 @@ function onObstacleCourseFall(status) {
   raceFooterStatus.textContent = 'Fell';
   raceReadyResult.textContent = `(${distance.toFixed(2)}m, ${elapsed.toFixed(2)}s)`;
   celebrateFinish(`${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`, ROUGH_TERRAIN_FALL_HOLD_MS - 200);
+  send('end_run', { outcome: 'fell', metrics: { elapsed_s: elapsed, distance_m: distance } });
   clearTimeout(obstacleCourseFallTimer);
   obstacleCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
 }
@@ -1450,6 +1474,7 @@ function onAgilityCourseFall(status) {
   raceReadyResult.textContent = `(${distance.toFixed(2)}m, ${elapsed.toFixed(2)}s)`;
   celebrateFinish(`Game Over — ${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`,
     ROUGH_TERRAIN_FALL_HOLD_MS - 200);
+  send('end_run', { outcome: 'fell', metrics: { elapsed_s: elapsed, distance_m: distance } });
   clearTimeout(agilityCourseFallTimer);
   agilityCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
 }

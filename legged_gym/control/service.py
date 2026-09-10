@@ -16,6 +16,7 @@ write-up in the README.
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from pathlib import Path
@@ -25,6 +26,8 @@ import torch
 
 from .adapter import RobotAdapter, Lifecycle
 from .policy import weight_fingerprint
+from .run_recorder import RunRecorder
+from .scoring import score_run
 from .safety import SafetyGovernor
 from .selector import Selector
 from .supervisor import PolicySupervisor
@@ -143,6 +146,12 @@ class ControlService:
         self._last_odometry_pos: Optional[torch.Tensor] = None
         self._odometry_distance: float = 0.0
         self._odometry_start_time: Optional[float] = None
+
+        # Competition run recording (runs/<scenario>/<team_id>/<run_id>/) —
+        # see run_recorder.py. Idle (no-op record_tick calls) until
+        # start_run() is called; simulator-only, see that module's docstring.
+        self.run_recorder = RunRecorder()
+        self._run_clock_start: Optional[float] = None
 
     # ---- the "human or autonomous, same call" surface ----
 
@@ -600,6 +609,57 @@ class ControlService:
         actual reset happens in the sim loop, not here."""
         self.restart_requested = True
 
+    def start_run(self, scenario: str, team_id: Optional[str] = None,
+                   code_fingerprint: Optional[str] = None) -> dict:
+        """Opens a new competition-run recording — see run_recorder.py.
+        Caller (web/app.js's beginRace(), for the three scenarios
+        INNOVATON grades) decides WHEN a run starts by calling this over
+        the 'start_run' RPC (see transport.py's METHODS); this class has
+        no opinion on scenario state, same as restart() above. No-ops for
+        any scenario not in run_recorder.RECORDED_SCENARIOS (race,
+        obstacle_course, agility_course) — see RunRecorder.start().
+
+        `team_id` deliberately isn't taken from the client by default —
+        each competition VM is provisioned for one team, so RUGIAR_TEAM_ID
+        (set once in that VM's environment, not editable from the web UI
+        or the forked repo's tracked files) is what actually identifies
+        whose attempt this is. A caller can still override it (e.g. tests)
+        by passing team_id explicitly.
+
+        `code_fingerprint` is whatever the caller wants to attach (git
+        commit hash, diff hash) identifying the control code producing
+        this run — optional, None if the caller doesn't have one handy."""
+        self._run_clock_start = time.time()
+        return self.run_recorder.start(
+            scenario=scenario,
+            team_id=team_id or os.getenv("RUGIAR_TEAM_ID", "unknown"),
+            policy_name=self.supervisor.active_name,
+            policies_dir=REPO_ROOT / "policies",
+            code_fingerprint=code_fingerprint,
+        )
+
+    def end_run(self, outcome: str, score: Optional[float] = None,
+                metrics: Optional[dict] = None) -> Optional[dict]:
+        """Closes the current run recording, if any. `outcome` is whatever
+        the caller determined happened ('finished' / 'fell' / 'timeout' /
+        'aborted') — see run_recorder.stop()'s docstring for why that call
+        is the caller's, not this class's or RunRecorder's.
+
+        `score` is normally left for THIS method to compute (via
+        scoring.score_run(), see that module for the formula) from
+        `metrics`'s distance_m/elapsed_s and the run's own scenario —
+        callers (web/app.js) only ever pass metrics, never a score
+        directly. An explicit `score` from the caller still wins, e.g. for
+        a test that wants to bypass the formula."""
+        self._run_clock_start = None
+        if score is None and metrics is not None:
+            score = score_run(
+                self.run_recorder.scenario,
+                metrics.get("distance_m"),
+                metrics.get("elapsed_s"),
+            )
+        return self.run_recorder.stop(outcome=outcome, score=score, metrics=metrics)
+
     @staticmethod
     def _registered_task_names() -> list:
         """Genesis/Isaac task names from legged_gym's own task_registry —
@@ -852,4 +912,22 @@ class ControlService:
 
         action = self.supervisor.step(obs)
         self.adapter.record(obs, action, state)
+
+        if self.run_recorder.active and self._run_clock_start is not None:
+            def _vec(t):
+                # Same env-0-only, tensor-to-plain-list shape as
+                # status()'s _telemetry() helper above — this is the exact
+                # same data, just written to trajectory.jsonl instead of
+                # returned to the web panel.
+                return [float(x) for x in t[0]] if t is not None else None
+            self.run_recorder.record_tick(
+                t=time.time() - self._run_clock_start,
+                pos=_vec(state.base_pos_xy),
+                gravity=_vec(state.projected_gravity),
+                lin_vel=_vec(state.base_lin_vel),
+                ang_vel=_vec(state.base_ang_vel),
+                command=_vec(state.commands),
+                active_policy=self.supervisor.active_name,
+            )
+
         return action
