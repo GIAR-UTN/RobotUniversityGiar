@@ -1055,6 +1055,7 @@ const RECORDED_SCENARIOS = new Set(['race', 'obstacle_course', 'agility_course']
 // every gate below keys off THIS, not off currentScenario === 'race' directly.
 let readyButtonVisible = false;
 let raceTrackLength = null; // meters, from /config's scenario_options.track_length; null for any scenario that doesn't set one
+let raceScenarioProps = []; // from /config's scenario_props -- box obstacles the Replay overlay draws top-down, see initReplay() in playReplay()
 let raceArmed = false; // the "321 Ready!" toggle: does Restart re-arm a countdown?
 let raceState = 'idle'; // 'idle' | 'countdown' | 'running' | 'finished' | 'fallen' — THIS run
 let raceStartX = null;
@@ -1136,9 +1137,13 @@ function initRaceMode(config) {
   // line just essentially never gets reached, by design (the game there is "how far
   // did you get", not "did you finish").
   raceTrackLength = config.scenario_options?.track_length ?? null;
+  raceScenarioProps = config.scenario_props ?? [];
   roughTerrainCurve = (currentScenario === 'rough_terrain' && config.scenario_options)
     ? config.scenario_options : null;
   raceReadyBtn.hidden = !readyButtonVisible;
+  // Independent of readyButtonVisible -- rough_terrain/factory_*/etc also show
+  // "321 Ready!" but aren't in RECORDED_SCENARIOS, so they get no Replay button.
+  raceReplayBtn.hidden = !RECORDED_SCENARIOS.has(currentScenario);
   if (!readyButtonVisible) { disarmRace(); return; }
   // Property assignment (not addEventListener) so re-running this after a
   // family-switch reconnect can't stack a second handler.
@@ -1253,6 +1258,7 @@ function resetRaceRun() {
   // genuine interruption). No-op server-side if nothing's actually open.
   if (RECORDED_SCENARIOS.has(currentScenario) && (raceState === 'countdown' || raceState === 'running')) {
     send('end_run', { outcome: 'aborted' });
+    markReplayPending();
   }
   raceState = 'idle';
   raceStartX = null;
@@ -1346,6 +1352,7 @@ function finishRace(elapsed) {
   celebrateFinish();
   if (RECORDED_SCENARIOS.has(currentScenario)) {
     send('end_run', { outcome: 'finished', metrics: { elapsed_s: elapsed, distance_m: raceTrackLength } });
+    markReplayPending();
   }
 }
 
@@ -1451,6 +1458,7 @@ function onObstacleCourseFall(status) {
   raceReadyResult.textContent = `(${distance.toFixed(2)}m, ${elapsed.toFixed(2)}s)`;
   celebrateFinish(`${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`, ROUGH_TERRAIN_FALL_HOLD_MS - 200);
   send('end_run', { outcome: 'fell', metrics: { elapsed_s: elapsed, distance_m: distance } });
+  markReplayPending();
   clearTimeout(obstacleCourseFallTimer);
   obstacleCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
 }
@@ -1475,8 +1483,330 @@ function onAgilityCourseFall(status) {
   celebrateFinish(`Game Over — ${distance.toFixed(2)}m in ${elapsed.toFixed(2)}s`,
     ROUGH_TERRAIN_FALL_HOLD_MS - 200);
   send('end_run', { outcome: 'fell', metrics: { elapsed_s: elapsed, distance_m: distance } });
+  markReplayPending();
   clearTimeout(agilityCourseFallTimer);
   agilityCourseFallTimer = setTimeout(() => { send('restart'); }, ROUGH_TERRAIN_FALL_HOLD_MS);
+}
+
+// ---- run replay: top-down replay of one recorded attempt ----
+//
+// Not a re-drive of the sim or the real robot -- purely client-side, from
+// legged_gym/control/run_recorder.py's trajectory.jsonl (pos/gravity/t),
+// fetched fresh on every click via the driver's /runs and /run-files routes
+// (see rugiar_driver.py). Only offered for RECORDED_SCENARIOS -- same three
+// scenarios INNOVATON grades, see run_recorder.py's own RECORDED_SCENARIOS.
+//
+// Deliberately a 2D dot-on-track animation, not a 3D replay of the robot
+// itself: trajectory.jsonl only has base_pos_xy/projected_gravity, not
+// joint angles or full orientation, so there's nothing to drive a humanoid
+// mesh with yet. Reconstructing the actual walk would mean recording
+// dof_pos/base_quat too and adding a driver-side "replay into viser" mode --
+// a real follow-up, not something this overlay fakes.
+const raceReplayBtn = $('#btn-race-replay');
+const raceReplayBtnMeta = $('#race-replay-btn-meta');
+const raceReplay = $('#race-replay');
+const raceReplayCanvas = $('#race-replay-canvas');
+const raceReplayCtx = raceReplayCanvas.getContext('2d');
+const raceReplayClose = $('#race-replay-close');
+const raceReplayStatus = $('#race-replay-status');
+const raceReplayDist = $('#race-replay-dist');
+const raceReplayTime = $('#race-replay-time');
+const raceReplaySeek = $('#race-replay-seek');
+const raceReplayRewind = $('#race-replay-rewind');
+const raceReplayPlayPause = $('#race-replay-playpause');
+const raceReplayForward = $('#race-replay-forward');
+const raceReplaySpeedSel = $('#race-replay-speed');
+const replayCameraButtons = document.querySelectorAll('#replay-camera-toggle button');
+let replayRafId = null;
+
+// Movie-style playback state -- a single "playhead" (replayT, seconds into
+// the recorded run) that the rAF loop advances by real-time*speed while
+// playing, and that rewind/forward/seek/speed all just reassign directly.
+// RV (set fresh by playReplay() per run) holds everything derived ONCE from
+// that run's rows/manifest (colors, track transform) so the loop itself
+// only ever touches replayT -- requested directly: "camara rapida y para
+// poder ir para atras o para adelante... como si fuera una pelicula".
+let RV = null;
+let replayT = 0;
+let replaySpeed = 1;
+let replayPlaying = false;
+let replayLastFrameTime = null;
+// 'full' (whole track, x/y independently scaled to fit — a cartogram, not
+// a true top-down zoom) or 'follow' (fixed real-world scale, camera pans
+// to keep the robot centered in both axes) -- requested directly: "otra
+// camara que sea centrada en el punto que se mueve... el mapa se desplace
+// o scrollee en 2D con el centro en la cabeza del robot".
+let replayCamera = 'full';
+
+raceReplayBtn.onclick = onReplayClick;
+raceReplayClose.onclick = closeReplay;
+raceReplayPlayPause.onclick = () => setReplayPlaying(!replayPlaying);
+raceReplayRewind.onclick = () => seekReplayTo(replayT - 2);
+raceReplayForward.onclick = () => seekReplayTo(replayT + 2);
+raceReplaySpeedSel.onchange = () => { replaySpeed = parseFloat(raceReplaySpeedSel.value) || 1; };
+raceReplaySeek.oninput = () => seekReplayTo(parseFloat(raceReplaySeek.value) || 0);
+replayCameraButtons.forEach((btn) => {
+  btn.onclick = () => {
+    replayCamera = btn.dataset.cam;
+    replayCameraButtons.forEach((b) => b.classList.toggle('active', b === btn));
+    renderReplayFrame();
+  };
+});
+
+function setReplayPlaying(playing) {
+  replayPlaying = playing;
+  raceReplayPlayPause.innerHTML = playing ? '&#10074;&#10074;' : '&#9654;';
+  if (playing) replayLastFrameTime = performance.now();
+}
+
+function seekReplayTo(t) {
+  if (!RV) return;
+  replayT = Math.max(0, Math.min(RV.duration, t));
+  renderReplayFrame();
+}
+
+// "93" -> "1:33", for the control bar's YouTube-style "0:13 / 1:45" readout.
+function fmtClock(s) {
+  s = Math.max(0, s);
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+// Called right after every send('end_run', ...) for a recorded scenario --
+// "titile" cue requested directly: a just-finished attempt should visibly
+// invite a look, not sit there looking identical to "nothing new". Cleared
+// the moment Replay is actually opened (onReplayClick), not on a timer --
+// it's "have you looked at this yet", not a decoration.
+function markReplayPending() {
+  raceReplayBtn.classList.add('pending');
+}
+
+async function onReplayClick() {
+  if (!RECORDED_SCENARIOS.has(currentScenario)) return;
+  raceReplayBtn.classList.remove('pending');
+  raceReplayBtnMeta.textContent = '…';
+  let runs;
+  try {
+    runs = await (await fetch(`/runs/${currentScenario}`)).json();
+  } catch {
+    raceReplayBtnMeta.textContent = '';
+    return;
+  }
+  raceReplayBtnMeta.textContent = '';
+  if (!runs.length) {
+    RV = null;
+    raceReplayStatus.textContent = 'No recorded attempts yet';
+    raceReplayTime.textContent = '';
+    raceReplayDist.textContent = '';
+    raceReplayCtx.clearRect(0, 0, raceReplayCanvas.width, raceReplayCanvas.height);
+    raceReplay.hidden = false;
+    return;
+  }
+  const manifest = runs[0]; // /runs/<scenario> is already sorted newest-first
+  const path = `${manifest.scenario}/${manifest.team_id}/${manifest.run_id}`;
+  let rows;
+  try {
+    const text = await (await fetch(`/run-files/${path}/trajectory.jsonl`)).text();
+    rows = text.split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    return;
+  }
+  playReplay(manifest, rows);
+}
+
+function closeReplay() {
+  if (replayRafId != null) cancelAnimationFrame(replayRafId);
+  replayRafId = null;
+  RV = null;
+  raceReplay.hidden = true;
+}
+
+// Fixed real-world zoom for 'follow' camera (px per meter, BOTH axes --
+// unlike 'full' map, this is a true undistorted top-down zoom, not a
+// cartogram). 60 px/m puts a couple of meters on either side of the robot
+// in view on a 960px-wide frame, enough to see the next obstacle coming.
+const FOLLOW_PX_PER_M = 60;
+const REPLAY_MARGIN = 24;
+
+// Binary search: the last row whose t <= target (rows are chronological by
+// construction -- RunRecorder writes them in tick order). Needed because
+// seeking can jump backward, unlike the old always-forward trail loop.
+function rowIndexAt(rows, t) {
+  let lo = 0, hi = rows.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (rows[mid].t <= t) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+// A projector maps (distance-from-start, lateral-offset) meters to canvas
+// pixels, plus meters->pixels scale helpers for drawing prop rectangles at
+// the right size. 'full' fits the WHOLE track into the frame (x scaled by
+// trackLength, y by a flat px/m -- independently, so it's a cartogram, not
+// a true zoom) and never moves. 'follow' is a true fixed zoom centered on
+// wherever the robot currently is, in BOTH axes -- built fresh every frame
+// since its center moves with replayT, unlike 'full' which is frame-
+// invariant. Requested directly: "el mapa se desplace o scrollee en 2D con
+// el centro en la cabeza del robot".
+function makeProjector(mode, w, h, trackLength, centerDist, centerLat) {
+  if (mode === 'follow') {
+    return {
+      project: (dist, lat) => [
+        w / 2 + (dist - centerDist) * FOLLOW_PX_PER_M,
+        h / 2 - (lat - centerLat) * FOLLOW_PX_PER_M,
+      ],
+      scaleX: (m) => m * FOLLOW_PX_PER_M,
+      scaleY: (m) => m * FOLLOW_PX_PER_M,
+    };
+  }
+  const usableW = w - REPLAY_MARGIN * 2;
+  const pxPerMY = Math.min(48, (h - REPLAY_MARGIN * 2) / 4);
+  return {
+    project: (dist, lat) => [
+      REPLAY_MARGIN + Math.max(0, Math.min(1, trackLength ? dist / trackLength : 0)) * usableW,
+      h / 2 - lat * pxPerMY,
+    ],
+    scaleX: (m) => (trackLength ? (m / trackLength) * usableW : 0),
+    scaleY: (m) => m * pxPerMY,
+  };
+}
+
+// row.pos/prop.pos -> (distance-from-start, lateral-offset) meters, the one
+// frame every projector above works in. Robot rows are world-frame
+// (subtract the run's own start position); prop positions are already
+// track-relative (see rugiar_driver.py's /config scenario_props). Distance
+// grows down -x, matching every scenario's start/finish convention.
+function rowDistLat(row, startX, startY) {
+  return [startX - (row.pos?.[0] ?? startX), (row.pos?.[1] ?? startY) - startY];
+}
+function propDistLat(prop) {
+  return [-(prop.pos?.[0] ?? 0), prop.pos?.[1] ?? 0];
+}
+
+function propColor(prop) {
+  const c = prop.color;
+  if (!Array.isArray(c)) return 'rgba(150,150,150,.8)';
+  const [r, g, b, a] = c;
+  return `rgba(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)},${a ?? 1})`;
+}
+
+function playReplay(manifest, rows) {
+  raceReplay.hidden = false;
+  // Canvas fillStyle/strokeStyle need a resolved color, not a literal
+  // "var(--x)" string (unlike a CSS property, the 2D context never
+  // evaluates custom properties) -- read the current theme's values once.
+  const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const trailColor = cssVar('--accent2') || '#2b86c5';
+  const dotColor = cssVar('--accent') || '#ff3cac';
+  const trackLength = raceTrackLength || 1;
+  const startX = rows[0]?.pos?.[0] ?? 0;
+  const startY = rows[0]?.pos?.[1] ?? 0;
+
+  RV = {
+    manifest, rows, trailColor, dotColor, startX, startY, trackLength,
+    duration: rows[rows.length - 1]?.t ?? 0,
+  };
+  raceReplaySeek.max = String(RV.duration || 1);
+  replayT = 0;
+  raceReplaySpeedSel.value = '1';
+  replaySpeed = 1;
+  replayCamera = 'full';
+  replayCameraButtons.forEach((b) => b.classList.toggle('active', b.dataset.cam === 'full'));
+  // The outcome is already known from the manifest fetch -- no need to wait
+  // for playback to reach the end before showing the "video title", same
+  // as a real broadcast VAR replay opens already knowing what it's about
+  // to show. Styled to read that way -- see #race-replay-status's CSS.
+  const outcomeLabel = {
+    finished: '\u{1F3C1} FINISHED', fell: 'FELL', timeout: 'TIMED OUT', aborted: 'ABORTED',
+  }[manifest.outcome] || manifest.outcome?.toUpperCase();
+  raceReplayStatus.textContent = `${outcomeLabel}${manifest.score != null ? ` — SCORE ${manifest.score.toFixed(1)}` : ''}`;
+  setReplayPlaying(true);
+  renderReplayFrame();
+  if (replayRafId == null) replayRafId = requestAnimationFrame(replayLoop);
+}
+
+// Renders the CURRENT replayT against RV -- called every rAF tick (whether
+// playing or paused, so a seek/rewind/forward/camera-switch while paused
+// still redraws) and directly by seekReplayTo(). No animation state lives
+// in here; it only ever reads replayT/replayCamera and RV, all mutated
+// elsewhere (the loop, the controls).
+function renderReplayFrame() {
+  if (!RV) return;
+  const { rows, startX, startY, trackLength, trailColor, dotColor, duration } = RV;
+  const idx = rowIndexAt(rows, replayT);
+  const row = rows[idx];
+  const [rowDist, rowLat] = rowDistLat(row, startX, startY);
+  const w = raceReplayCanvas.width, h = raceReplayCanvas.height;
+  const proj = makeProjector(replayCamera, w, h, trackLength, rowDist, rowLat);
+
+  raceReplayCtx.clearRect(0, 0, w, h);
+
+  // Lane centerline + start/finish ticks -- three points in the SAME
+  // (dist, lat) frame as everything else, so they scroll/zoom identically
+  // under 'follow' instead of needing separate camera-aware math.
+  const [sx, sy] = proj.project(0, 0);
+  const [fx, fy] = proj.project(trackLength, 0);
+  raceReplayCtx.strokeStyle = 'rgba(255,255,255,.25)';
+  raceReplayCtx.lineWidth = 2;
+  raceReplayCtx.beginPath();
+  raceReplayCtx.moveTo(sx, sy);
+  raceReplayCtx.lineTo(fx, fy);
+  raceReplayCtx.stroke();
+  raceReplayCtx.fillStyle = 'rgba(255,255,255,.4)';
+  raceReplayCtx.fillRect(sx - 1, sy - 14, 2, 28);
+  raceReplayCtx.fillRect(fx - 1, fy - 14, 2, 28);
+
+  raceScenarioProps.forEach((prop) => {
+    const [pd, pl] = propDistLat(prop);
+    const [cx, cy] = proj.project(pd, pl);
+    const pw = Math.abs(proj.scaleX(prop.size?.[0] ?? 0.3));
+    const ph = Math.abs(proj.scaleY(prop.size?.[1] ?? 0.3));
+    raceReplayCtx.fillStyle = propColor(prop);
+    raceReplayCtx.fillRect(cx - pw / 2, cy - ph / 2, Math.max(2, pw), Math.max(2, ph));
+  });
+
+  raceReplayCtx.strokeStyle = trailColor;
+  raceReplayCtx.lineWidth = 2;
+  raceReplayCtx.beginPath();
+  for (let i = 0; i <= idx; i++) {
+    const [d, l] = rowDistLat(rows[i], startX, startY);
+    const [x, y] = proj.project(d, l);
+    i === 0 ? raceReplayCtx.moveTo(x, y) : raceReplayCtx.lineTo(x, y);
+  }
+  raceReplayCtx.stroke();
+
+  const [cx, cy] = proj.project(rowDist, rowLat);
+  const g = row.gravity;
+  const fallen = g ? Math.hypot(g[0], g[1]) >= ROUGH_TERRAIN_FALL_TILT_THRESHOLD : false;
+  raceReplayCtx.fillStyle = fallen ? '#ff5e5e' : dotColor;
+  raceReplayCtx.beginPath();
+  raceReplayCtx.arc(cx, cy, 7, 0, Math.PI * 2);
+  raceReplayCtx.fill();
+
+  raceReplayTime.textContent = `${fmtClock(replayT)} / ${fmtClock(duration)}`;
+  raceReplayDist.textContent = raceTrackLength != null
+    ? `${Math.max(0, rowDist).toFixed(1)} / ${raceTrackLength.toFixed(1)} m` : '';
+  raceReplaySeek.value = String(replayT);
+
+  if (replayT >= duration) setReplayPlaying(false);
+}
+
+// Runs continuously while the overlay is open (not just while playing) so
+// rewind/forward/seek/speed-change stay responsive even mid-pause -- only
+// replayT's advancement is gated on replayPlaying, the render call isn't.
+function replayLoop(now) {
+  if (RV) {
+    if (replayPlaying) {
+      const dt = (now - (replayLastFrameTime ?? now)) / 1000;
+      replayT = Math.min(RV.duration, replayT + dt * replaySpeed);
+      renderReplayFrame();
+    }
+    replayLastFrameTime = now;
+    replayRafId = requestAnimationFrame(replayLoop);
+  } else {
+    replayRafId = null;
+  }
 }
 
 // ---- HUD rendering ----
