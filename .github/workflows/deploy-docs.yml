@@ -1,0 +1,33 @@
+name: Deploy docs to gh-pages
+
+# Keeps the public gh-pages site (https://giar-utn.github.io/RobotUniversityGiar/)
+# in sync with docs/index.html -- the exact same file the control web's own "Docs"
+# tab serves. Before this workflow existed, gh-pages was a manual copy-paste that
+# drifted 23 commits behind docs/index.html on main (last synced 2026-07-27).
+#
+# workflow_dispatch is here so gh-pages can be backfilled on demand (e.g. right
+# after this workflow itself merges, since that push won't touch docs/index.html).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/index.html"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Publish docs/index.html to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs
+          publish_branch: gh-pages
+          keep_files: false
