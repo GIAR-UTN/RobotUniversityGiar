@@ -705,7 +705,65 @@ def main():
                     "visible": web_scenario.ready_button_visible if web_scenario else False,
                     "armed_by_default": web_scenario.ready_button_armed_by_default if web_scenario else False,
                 },
+                # Lets the Replay overlay (web/app.js) draw the actual track
+                # obstacles under the replayed dot, not just a bare line --
+                # requested directly: "tomando los elementos de los scenarios
+                # y proyectándolos vistos desde arriba". Only "box" props
+                # (every prop this repo's scenarios spawn, see props.py/
+                # competition_props.py) with a name/size/pos/color; skips
+                # start/finish crossing-line bars (name contains "_line",
+                # see props.py's _crossing_line_prop() callers) and start/
+                # finish signage (name contains "_sign_" -- poles, boards,
+                # and the dozens of individual letter-glyph boxes that spell
+                # out each sign's text, see props.py's sign-building helpers)
+                # -- both are redundant with the start/finish markers the
+                # top-down view already draws itself, and the signage in
+                # particular is 50+ tiny boxes that would swamp the real
+                # obstacles. Guard rails/side walls ARE included -- real
+                # lane boundaries, not decoration. Genesis-only, same as
+                # scenario/scenario_options above -- an empty list under
+                # --real or no --scenario is correct, not a bug
+                # (RECORDED_SCENARIOS are Genesis-only anyway).
+                "scenario_props": [
+                    {"name": p["name"], "size": p["size"][:2], "pos": p["pos"][:2], "color": p.get("color")}
+                    for p in (web_scenario.spawn_props(web_scenario_options) if web_scenario else [])
+                    if p.get("shape") == "box" and "_line" not in p["name"] and "_sign_" not in p["name"]
+                ],
             }
+
+        # Competition-run replay — see legged_gym/control/run_recorder.py and
+        # web/app.js's Replay button (RECORDED_SCENARIOS-gated, same three
+        # scenarios INNOVATON grades). /runs/<scenario> is a small JSON API
+        # (not a static mount — it needs to filter by this process's own
+        # RUGIAR_TEAM_ID and sort newest-first, which a directory listing
+        # can't do), while /run-files is the actual trajectory.jsonl/
+        # manifest.json bytes, served plain since there's nothing to compute
+        # there. check_dir=False so a fresh checkout with no runs/ yet
+        # doesn't crash the mount -- StaticFiles 404s cleanly on a missing
+        # subpath either way.
+        from legged_gym.control.run_recorder import RUNS_ROOT, RECORDED_SCENARIOS
+
+        @control_server.app.get("/runs/{scenario}")
+        def _list_runs(scenario: str):
+            if scenario not in RECORDED_SCENARIOS:
+                return []
+            team_id = os.getenv("RUGIAR_TEAM_ID", "unknown")
+            team_dir = RUNS_ROOT / scenario / team_id
+            if not team_dir.is_dir():
+                return []
+            manifests = []
+            for run_dir in sorted(team_dir.iterdir(), reverse=True):
+                manifest_path = run_dir / "manifest.json"
+                if manifest_path.is_file():
+                    try:
+                        manifests.append(json.loads(manifest_path.read_text()))
+                    except (json.JSONDecodeError, OSError):
+                        continue  # a run still mid-write (manifest not flushed yet) -- skip, not crash
+            return manifests
+
+        control_server.app.mount(
+            "/run-files", StaticFiles(directory=str(RUNS_ROOT), check_dir=False), name="run-files",
+        )
 
         control_server.app.mount(
             "/docs", StaticFiles(directory=str(repo_root / "docs"), html=True), name="docs",

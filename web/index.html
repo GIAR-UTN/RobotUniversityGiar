@@ -222,6 +222,98 @@
 
   .race-btn{border-color:var(--accent); color:var(--accent);}
   .race-btn:hover:not(:disabled){background:var(--accent); color:var(--accent-ink);}
+
+  /* ---- Replay button "new attempt ready" cue -- see refreshReplayPending()
+     in app.js. Only runs while .pending is present (added right after an
+     attempt closes, removed the moment Replay is actually opened), so an
+     already-replayed button sits still. */
+  #btn-race-replay.pending{animation:race-replay-blink 1.1s ease-in-out infinite;}
+  @keyframes race-replay-blink{
+    0%,100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent2) 55%, transparent);}
+    50%{box-shadow:0 0 0 7px color-mix(in srgb, var(--accent2) 0%, transparent);}
+  }
+
+  /* ---- run replay overlay -- see #race-replay in the markup above and
+     playReplay()/renderReplayFrame() in app.js. Styled to read as a video
+     player (dark 16:9 frame, YouTube-style control row, a broadcast-style
+     "VAR REPLAY" corner badge, a bold title line below the frame) rather
+     than a glass HUD panel -- requested directly: "que se parezca un
+     poquito a un video de youtube" / "un lindo titulo que recuerde a un
+     VAR de futbol". */
+  #race-replay{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(92vw, 780px);
+  }
+  #replay-frame{
+    position:relative; width:100%; aspect-ratio:16/9; background:#0a0e12;
+    border-radius:12px 12px 0 0; overflow:hidden;
+    box-shadow:0 20px 56px var(--cap-shadow);
+  }
+  #race-replay-canvas{width:100%; height:100%; display:block;}
+  #replay-badge{
+    position:absolute; top:.6rem; left:.6rem; display:flex; align-items:center; gap:.4rem;
+    padding:.25rem .55rem; border-radius:4px; background:rgba(20,4,4,.72);
+    color:#fff; font:800 .68rem/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    letter-spacing:.06em; text-transform:uppercase;
+  }
+  #replay-badge-dot{
+    width:.5rem; height:.5rem; border-radius:50%; background:#ff3b3b;
+    animation:replay-badge-pulse 1.3s ease-in-out infinite;
+  }
+  @keyframes replay-badge-pulse{ 0%,100%{opacity:1;} 50%{opacity:.25;} }
+  #race-replay-close{
+    position:absolute; top:.5rem; right:.5rem; width:1.9rem; height:1.9rem;
+    border:none; border-radius:50%; background:rgba(10,14,18,.55); color:#fff;
+    font-size:1.2rem; line-height:1; cursor:pointer;
+  }
+  #race-replay-close:hover{background:rgba(10,14,18,.85);}
+
+  /* Scrubber -- thin, flush with the frame's bottom edge, like a video
+     player's progress bar (not a generic labeled slider). */
+  #race-replay-seek{
+    width:100%; margin:0; display:block; appearance:none; height:4px;
+    background:rgba(255,255,255,.18); cursor:pointer;
+  }
+  #race-replay-seek::-webkit-slider-thumb{
+    appearance:none; width:12px; height:12px; border-radius:50%;
+    background:var(--accent); margin-top:-4px;
+  }
+  #race-replay-seek::-moz-range-thumb{
+    width:12px; height:12px; border-radius:50%; background:var(--accent); border:none;
+  }
+  #race-replay-seek::-webkit-slider-runnable-track{ height:4px; background:transparent; }
+
+  #race-replay-controls{
+    display:flex; align-items:center; gap:.5rem; padding:.5rem .6rem;
+    background:#12171c; border-radius:0 0 12px 12px; color:#e8edf1;
+  }
+  #race-replay-controls button{
+    border:none; background:transparent; color:#e8edf1;
+    border-radius:6px; padding:.3rem .5rem; font-size:.9rem; cursor:pointer; line-height:1;
+  }
+  #race-replay-controls button:hover{background:rgba(255,255,255,.12);}
+  #race-replay-playpause{min-width:2.2rem;}
+  #race-replay-time{font:600 .8rem/1 ui-monospace,monospace; color:#c2ccd4; white-space:nowrap;}
+  .replay-spacer{flex:1 1 auto;}
+  #replay-camera-toggle{display:flex; gap:.2rem; background:rgba(255,255,255,.08); border-radius:6px; padding:2px;}
+  #replay-camera-toggle button{
+    font-size:.72rem; padding:.25rem .5rem; border-radius:5px; color:#c2ccd4;
+  }
+  #replay-camera-toggle button.active{background:var(--accent2); color:#fff;}
+  #race-replay-speed{
+    border:none; background:rgba(255,255,255,.08); color:#e8edf1;
+    border-radius:6px; padding:.3rem .45rem; font-size:.78rem;
+  }
+
+  /* Title block below the frame -- YouTube puts the video title under the
+     player, not inside it; same idea here, with the outcome as the
+     "headline" and distance/time as the muted secondary line. */
+  #race-replay-titlebar{padding:.6rem .1rem 0;}
+  #race-replay-status{
+    font:800 1.15rem/1.2 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    color:var(--ink);
+  }
+  #race-replay-dist{font-size:.8rem; color:var(--muted); margin-top:.15rem;}
   .race-btn:disabled{opacity:.55; cursor:default;}
   /* Toggle, not a one-shot action — "321 Ready!" stays visibly pressed
      while race mode is armed (see armRace()/disarmRace() in app.js); R then
@@ -822,6 +914,43 @@
         <span id="race-footer-clock">0.00s</span>
         <span id="race-footer-dist"></span>
       </div>
+
+      <!-- Replay overlay -- a from-scratch top-down replay of one recorded run
+           (see run_recorder.py/scoring.py), NOT a re-drive of the live sim: the
+           canvas below just animates trajectory.jsonl's pos/gravity/t against
+           the current wall clock, scaled to the scenario's own track length.
+           pointer-events re-enabled here (unlike the rest of #race-hud, which is
+           click-through) since this has its own Close control. -->
+      <div id="race-replay" hidden style="pointer-events:auto;">
+        <div id="replay-frame">
+          <div id="replay-badge"><span id="replay-badge-dot"></span>VAR REPLAY</div>
+          <button id="race-replay-close" aria-label="Close replay">&times;</button>
+          <canvas id="race-replay-canvas" width="960" height="540"></canvas>
+        </div>
+        <input type="range" id="race-replay-seek" min="0" max="1" step="0.01" value="0">
+        <div id="race-replay-controls">
+          <button id="race-replay-rewind" title="Back 2s">&#9664;&#9664;</button>
+          <button id="race-replay-playpause" title="Play/Pause">&#9654;</button>
+          <button id="race-replay-forward" title="Forward 2s">&#9654;&#9654;</button>
+          <span id="race-replay-time">0:00 / 0:00</span>
+          <span class="replay-spacer"></span>
+          <div id="replay-camera-toggle" role="group" aria-label="Camera">
+            <button type="button" data-cam="full" class="active" title="Full map">&#9635; Full map</button>
+            <button type="button" data-cam="follow" title="Follow robot">&#9678; Follow</button>
+          </div>
+          <select id="race-replay-speed" title="Playback speed">
+            <option value="0.25">0.25&times;</option>
+            <option value="0.5">0.5&times;</option>
+            <option value="1" selected>1&times;</option>
+            <option value="2">2&times;</option>
+            <option value="4">4&times;</option>
+          </select>
+        </div>
+        <div id="race-replay-titlebar">
+          <div id="race-replay-status">Replaying&hellip;</div>
+          <div id="race-replay-dist"></div>
+        </div>
+      </div>
     </div>
 
     <aside class="drawer" id="drawer-hardware">
@@ -959,6 +1088,15 @@
              a fresh 3-2-1-GO countdown on its own — see onRestartTriggered(). -->
         <button class="action-btn race-btn" id="btn-race-ready" hidden aria-pressed="false">
           321 Ready! <span id="race-btn-result"></span>
+        </button>
+        <!-- Only shown for RECORDED_SCENARIOS (race/obstacle_course/agility_course,
+             see app.js) once at least one recorded attempt exists -- see
+             refreshReplayButton(). Replays the most recent recorded run as a
+             top-down dot-on-track animation (see #race-replay below); it does NOT
+             re-drive the sim or touch the live robot -- fully client-side, from
+             trajectory.jsonl. -->
+        <button class="action-btn race-btn" id="btn-race-replay" hidden>
+          &#128250; VAR Replay <span id="race-replay-btn-meta"></span>
         </button>
       </div>
     </section>

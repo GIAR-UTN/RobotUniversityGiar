@@ -63,7 +63,7 @@ from fastapi.responses import StreamingResponse
 # every other method in METHODS already is.
 METHODS = {
     "request_switch", "status", "pause", "resume", "estop",
-    "restart", "set_command", "set_random_events", "set_episode_timeout",
+    "restart", "start_run", "end_run", "set_command", "set_random_events", "set_episode_timeout",
     "set_operator_speed_limit", "get_odometry",
     "training_catalog", "start_training", "start_distillation", "system_info",
     "estimate_training_time",
