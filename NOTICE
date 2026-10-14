@@ -1,0 +1,31 @@
+RobotUniversityGiar (RUgiar)
+Copyright (c) 2026 GIAR - Grupo de Inteligencia Artificial y Robótica, Universidad Tecnológica Nacional, Facultad Regional Buenos Aires (UTN.BA)
+
+This product is distributed under the BSD 3-Clause License (see LICENSE).
+Redistributions of this code, in whole or in part, must retain the copyright
+notices in LICENSE — including the GIAR line — and should keep this NOTICE
+file alongside them.
+
+Lineage — this repository builds on, in order:
+
+  legged_gym     ETH Zurich, Robotic Systems Lab        BSD 3-Clause
+                 https://github.com/leggedrobotics/legged_gym
+  rsl_rl         ETH Zurich, Robotic Systems Lab        BSD 3-Clause
+                 https://github.com/leggedrobotics/rsl_rl
+  unitree_rl_gym Unitree Robotics                       BSD 3-Clause
+                 https://github.com/unitreerobotics/unitree_rl_gym
+  LeggedGym-Ex   lupinjia                               BSD 3-Clause
+                 https://github.com/lupinjia/LeggedGym-Ex
+
+GIAR additions include, among others: the unified control layer
+(legged_gym/control/, web/), the rugiar CLI and drivers, the rugiar_mcp MCP
+server, the mjlab motion-tracking tasks (mjlab_tasks/), the WHRG competition
+arenas, the Docker setup, and the course documentation in docs/.
+
+Documentation and course material in docs/ is licensed separately under
+Creative Commons Attribution 4.0 International (CC BY 4.0) — see docs/LICENSE.
+
+See UPSTREAM_README.md for the full acknowledgements list inherited from upstream.
+If you use this work in research or teaching, please cite it (see CITATION.cff).
+
+GIAR: https://giar.ai/ — https://github.com/GIAR-UTN

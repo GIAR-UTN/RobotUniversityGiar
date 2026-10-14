@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use RobotUniversityGiar in research or teaching, please cite it as below."
+title: "RobotUniversityGiar (RUgiar): humanoid RL training and live robot control"
+type: software
+authors:
+  - name: "GIAR - Grupo de Inteligencia Artificial y Robótica"
+    alias: "GIAR"
+    address: "Universidad Tecnológica Nacional, Facultad Regional Buenos Aires (UTN.BA)"
+    country: AR
+    website: "https://giar.ai/"
+repository-code: "https://github.com/GIAR-UTN/RobotUniversityGiar"
+url: "https://giar.ai/"
+license: BSD-3-Clause
+version: "0.4.0"
+keywords:
+  - reinforcement learning
+  - legged robots
+  - humanoid
+  - Unitree G1
+  - robotics education
+references:
+  - type: software
+    title: "LeggedGym-Ex"
+    authors:
+      - alias: "lupinjia"
+    repository-code: "https://github.com/lupinjia/LeggedGym-Ex"
+    license: BSD-3-Clause
+  - type: software
+    title: "legged_gym"
+    authors:
+      - name: "Robotic Systems Lab, ETH Zurich"
+    repository-code: "https://github.com/leggedrobotics/legged_gym"
+    license: BSD-3-Clause
