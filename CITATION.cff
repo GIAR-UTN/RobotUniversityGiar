@@ -3,15 +3,13 @@ message: "If you use RobotUniversityGiar in research or teaching, please cite it
 title: "RobotUniversityGiar (RUgiar): humanoid RL training and live robot control"
 type: software
 authors:
-  - name: "GIAR-UTN"
-    website: "https://github.com/GIAR-UTN"
-  - family-names: "Tabuyo"
-    given-names: "José"
-  - family-names: "Rodriguez Colmeiro"
-    given-names: "Ramiro"
-  - family-names: "Villalba"
-    given-names: "Javier"
+  - name: "GIAR - Grupo de Inteligencia Artificial y Robótica"
+    alias: "GIAR"
+    address: "Universidad Tecnológica Nacional, Facultad Regional Buenos Aires (UTN.BA)"
+    country: AR
+    website: "https://giar.ai/"
 repository-code: "https://github.com/GIAR-UTN/RobotUniversityGiar"
+url: "https://giar.ai/"
 license: BSD-3-Clause
 version: "0.4.0"
 keywords:
@@ -24,8 +22,7 @@ references:
   - type: software
     title: "LeggedGym-Ex"
     authors:
-      - family-names: "Jia"
-        given-names: "Yasen"
+      - alias: "lupinjia"
     repository-code: "https://github.com/lupinjia/LeggedGym-Ex"
     license: BSD-3-Clause
   - type: software
