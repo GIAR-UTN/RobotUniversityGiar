@@ -20,7 +20,7 @@ LeggedGym-Ex (lupinjia)
    │  ports the same training framework to run on Genesis (a physics engine that,
    │  unlike Isaac Gym, doesn't require Linux + an NVIDIA GPU — it runs on Apple Silicon)
    ▼
-RobotUniversityGiar — this fork (josetabuyo/GIAR)
+RobotUniversityGiar — this fork (GIAR, UTN.BA)
       adds legged_gym/control/: a backend-agnostic layer for switching between
       trained policies, supervised from a web UI or decided autonomously,
       designed to work identically in sim and (eventually) on the real robot
@@ -399,4 +399,3 @@ For the from-zero explanation of everything this README assumes you already know
 
 This fork sits on top of (in order): [legged_gym](https://github.com/leggedrobotics/legged_gym) (ETH Zürich Robotic Systems Lab), [unitree_rl_gym](https://github.com/unitreerobotics/unitree_rl_gym) (Unitree Robotics), and [LeggedGym-Ex](https://github.com/lupinjia/LeggedGym-Ex) (lupinjia) — see [UPSTREAM_README.md](UPSTREAM_README.md) for the full acknowledgements list this fork inherits. Code is licensed under the same terms as upstream, **BSD 3-Clause** — see [LICENSE](LICENSE), which carries both the upstream copyright line and GIAR's (Grupo de Inteligencia Artificial y Robótica, UTN.BA); anyone redistributing this code must keep both. Documentation and course material in `docs/` is **CC BY 4.0** — see [docs/LICENSE](docs/LICENSE). [NOTICE](NOTICE) summarizes the lineage, and [CITATION.cff](CITATION.cff) is how to cite this work (GitHub's "Cite this repository" button).
 
-Within this fork, the Docker Compose setup (§2) — `Dockerfile`, `docker-compose.yml`, `docker-entrypoint.sh`'s policy auto-discovery, and working CUDA passthrough — was contributed by [Ramiro R. C. (RawthiL)](https://github.com/RawthiL), not the original author: the first real external contribution to this repo, and the reason a Linux/Windows teammate doesn't need a native Python+Genesis setup at all.
