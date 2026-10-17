@@ -440,6 +440,60 @@ def run_stop(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     return 0
 
 
+def _build_hub_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    p = subparsers.add_parser(
+        "hub",
+        formatter_class=_HelpFormatter,
+        help="Back up / share policies on the Hugging Face Hub",
+        description=(
+            "Mirrors ./policies/<name>/ folders into one Hugging Face model repo (one sub-folder "
+            "per policy), so a trained policy survives the machine or container that trained it "
+            "and can be pulled onto any other one. The repo comes from --repo or "
+            "RUGIAR_HF_REPO; credentials are huggingface_hub's own (HF_TOKEN or `hf auth "
+            "login`). With RUGIAR_HF_REPO set, every policy that finishes training or fusing "
+            "is also uploaded automatically. Needs `pip install -e .[hub]`."
+        ),
+        epilog=(
+            "examples:\n"
+            "  export RUGIAR_HF_REPO=GIAR-UTN/rugiar-policies\n\n"
+            "  # upload one local policy\n"
+            "  rugiar hub push walk_gpu_c4\n\n"
+            "  # see what's on the Hub, then download one\n"
+            "  rugiar hub list\n"
+            "  rugiar hub pull walk_gpu_c4\n"
+        ),
+    )
+    p.add_argument("action", choices=["push", "pull", "list"], help="what to do")
+    p.add_argument("names", nargs="*", metavar="NAME", help="policy name(s) for push/pull")
+    p.add_argument("--repo", type=str, default=None,
+                    help="Hugging Face repo id, e.g. GIAR-UTN/rugiar-policies (default: $RUGIAR_HF_REPO)")
+    p.add_argument("--overwrite", action="store_true",
+                    help="pull only — replace an existing local ./policies/<name>/")
+    p.add_argument("--private", action="store_true",
+                    help="push only — create the repo as private if it doesn't exist yet")
+    return p
+
+
+def run_hub(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    from legged_gym.control import hub
+
+    if args.action != "list" and not args.names:
+        parser.error(f"'hub {args.action}' needs at least one policy NAME")
+    try:
+        if args.action == "list":
+            _print_lines(f"policies in {hub._require_repo(args.repo)}:", hub.list_remote_policies(args.repo))
+        elif args.action == "push":
+            for name in args.names:
+                print(f"[rugiar] {name} -> {hub.push_policy(name, args.repo, private=args.private)}")
+        else:
+            for name in args.names:
+                print(f"[rugiar] {name} -> {hub.pull_policy(name, args.repo, overwrite=args.overwrite)}")
+    except hub.HubError as e:
+        print(f"[rugiar] {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _build_order_parser(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subparsers.add_parser(
         "order",
@@ -757,7 +811,8 @@ def build_parser():
     distill_parser = _build_distill_parser(subparsers)
     drive_parser = _build_drive_parser(subparsers)
     stop_parser = _build_stop_parser(subparsers)
-    return parser, {"train": train_parser, "order": order_parser, "fuse": fuse_parser,
+    hub_parser = _build_hub_parser(subparsers)
+    return parser, {"hub": hub_parser, "train": train_parser, "order": order_parser, "fuse": fuse_parser,
                      "distill": distill_parser, "drive": drive_parser, "stop": stop_parser}
 
 
@@ -975,6 +1030,8 @@ def main(argv: Optional[list] = None) -> None:
         sys.exit(run_drive(args, subparsers["drive"]))
     elif args.command == "stop":
         sys.exit(run_stop(args, subparsers["stop"]))
+    elif args.command == "hub":
+        sys.exit(run_hub(args, subparsers["hub"]))
     else:  # pragma: no cover - argparse's required=True already prevents this
         parser.print_help()
         sys.exit(1)

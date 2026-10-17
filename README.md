@@ -155,6 +155,22 @@ Training (see the project-areas table above) can launch RL jobs on a Kaggle kern
 
 Kaggle jobs always run on Isaac Gym, not Genesis — the free tier's Pascal (P100, sm_60) GPU can't run Genesis's GPU backend, whose JIT needs Volta+ (sm_70+); Isaac Gym's PhysX GPU pipeline has no such requirement. Doesn't affect local runs: `--backend local` still uses whatever `SIMULATOR` you have exported. Also note the kernel **clones this repo from GitHub** — it trains the remote branch's HEAD, not your working tree. Full picture of every backend: [`docs/compute_backends.md`](docs/compute_backends.md). Walkthrough and troubleshooting: the `rugiar` skill's "Setting up Kaggle for cloud training".
 
+### Backing up policies on the Hugging Face Hub
+
+A policy that only lives in `./policies/<name>/` is lost with the machine or container that trained it. `rugiar hub` mirrors those folders into one Hugging Face model repo, one sub-folder per policy:
+
+```bash
+pip install -e .[hub]
+export RUGIAR_HF_REPO=GIAR-UTN/rugiar-policies   # any model repo you can write to
+hf auth login                                    # or export HF_TOKEN=<write token>
+
+rugiar hub push walk_gpu_c4    # upload one local policy
+rugiar hub list                # what's on the Hub
+rugiar hub pull walk_gpu_c4    # download it on another machine (--overwrite to replace a local copy)
+```
+
+With `RUGIAR_HF_REPO` set, every policy that finishes training or fusing (CLI or control web) is uploaded automatically; a failed upload only prints a warning, the policy stays on disk. In Docker Compose, set `RUGIAR_HF_REPO` and `HF_TOKEN` in `.env`. Code: `legged_gym/control/hub.py`.
+
 ### Train a policy
 
 > **Where does this actually run?** Three real backends today — `local-genesis` (Genesis on your machine), `local-mjlab` (mjlab on your machine, `.venv-mjlab`), `kaggle` (remote kernel, Isaac Gym, P100) — plus reserved slots for a dedicated local NVIDIA GPU and NVIDIA cloud. One table with all of it, including how to add a new one: [`docs/compute_backends.md`](docs/compute_backends.md).
