@@ -89,6 +89,10 @@ services:
       SCENARIO: ${SCENARIO:-}
       # Team name stamped on every recorded competition run (run_recorder.py).
       RUGIAR_TEAM_ID: ${RUGIAR_TEAM_ID:-unknown}
+      # Hugging Face repo every trained/fused policy is backed up to (see
+      # legged_gym/control/hub.py). Unset = no upload. HF_TOKEN = write token.
+      RUGIAR_HF_REPO: ${RUGIAR_HF_REPO:-}
+      HF_TOKEN: ${HF_TOKEN:-}
       # GPU selection — restricts which host GPU(s) the container sees.
       # Only effective when the GPU overlay is applied (docker-compose.gpu.yml).
       NVIDIA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
