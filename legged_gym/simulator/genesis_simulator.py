@@ -13,6 +13,16 @@ from legged_gym.warp.warp_cam import WarpCam
 if SIMULATOR == "genesis":
     import genesis as gs
 
+    # Genesis >= 1.4 replaced set_mass_shift()/set_COM_shift() with
+    # set_links_mass()/set_links_COM() (absolute values, and per-env writes
+    # require batched link info). Keep both paths so the pinned 1.0.0 release
+    # keeps working too.
+    try:
+        from genesis.engine.entities.rigid_entity.rigid_entity import RigidEntity as _GenesisRigidEntity
+        _GENESIS_HAS_LINK_MASS_API = hasattr(_GenesisRigidEntity, "set_links_mass")
+    except Exception:
+        _GENESIS_HAS_LINK_MASS_API = False
+
     #----- Runtime monkey-patch for Genesis GPU device bug -----
     # Genesis's `sanitize_index` (genesis/utils/misc.py) force-converts
     # every input tensor to `gs.device` (CPU). When the simulation runs
@@ -385,9 +395,17 @@ class GenesisSimulator(Simulator):
     def _parse_cfg(self):
         self._debug = self._cfg.env.debug
         self._control_dt = self._cfg.sim.dt * self._cfg.control.decimation
-        self._batch_dofs_links_info = self._cfg.domain_rand.randomize_joint_armature or \
+        self._batch_dofs_info = self._cfg.domain_rand.randomize_joint_armature or \
                 self._cfg.domain_rand.randomize_joint_friction or \
                 self._cfg.domain_rand.randomize_joint_damping
+        # Genesis >= 1.4 no longer supports mass/COM *shifts*; per-env mass and
+        # COM writes go through set_links_mass()/set_links_COM(), which require
+        # batched link info. Older releases write per-env shifts without it, so
+        # only turn batching on when the new API is actually present.
+        self._batch_links_info = self._batch_dofs_info or (
+                _GENESIS_HAS_LINK_MASS_API and (
+                    self._cfg.domain_rand.randomize_base_mass or
+                    self._cfg.domain_rand.randomize_com_displacement))
         if self._cfg.sensor.add_depth:
             self._num_camera_envs = self._cfg.env.num_camera_envs
             # update counter for depth images
@@ -424,15 +442,19 @@ class GenesisSimulator(Simulator):
                 shadow=False,
                 ),
             rigid_options=gs.options.RigidOptions(
-                dt=self._sim_params["dt"],
+                # NOTE: do not set a solver-level `dt` here. Genesis >= 1.4
+                # derives the rigid solver's substep count from it and rejects
+                # it when it conflicts with SimOptions.substeps (e.g. dt=0.005
+                # with substeps=4). The rate is fully specified by
+                # SimOptions.dt/substeps above.
                 constraint_solver=gs.constraint_solver.Newton,
                 enable_collision=True,
                 enable_joint_limit=True,
                 enable_self_collision=not self._cfg.asset.self_collisions,
                 max_collision_pairs=self._cfg.sim.max_collision_pairs,
                 IK_max_targets=self._cfg.sim.IK_max_targets,
-                batch_dofs_info=self._batch_dofs_links_info,
-                batch_links_info=self._batch_dofs_links_info,
+                batch_dofs_info=self._batch_dofs_info,
+                batch_links_info=self._batch_links_info,
             ),
             show_viewer=not self._headless,
         )
@@ -454,7 +476,18 @@ class GenesisSimulator(Simulator):
             self._create_trimesh()
         else:
             raise ValueError(f"Unsupported terrain mesh type: {mesh_type}")
-        self._gs_terrain.set_friction(self._cfg.terrain.static_friction)
+        # Genesis >= 1.4 requires the scene to be built before geoms can be
+        # touched (RigidGeom.set_friction() is decorated with @assert_built),
+        # while older releases need it set before build so the solver picks it
+        # up. Try the pre-build path and defer to just after scene.build() if
+        # the backend rejects it.
+        self._terrain_friction_pending = False
+        try:
+            self._gs_terrain.set_friction(self._cfg.terrain.static_friction)
+        except gs.GenesisException as exc:
+            if "not built" not in str(exc):
+                raise
+            self._terrain_friction_pending = True
         # specify the boundary of the heightfield
         self._terrain_x_range = torch.zeros(2, device=self._device)
         self._terrain_y_range = torch.zeros(2, device=self._device)
@@ -535,6 +568,10 @@ class GenesisSimulator(Simulator):
             self._scene.build = patched_build
         # Build the scene
         self._scene.build(n_envs=self._num_envs)
+
+        # Geoms only exist once the scene is built on Genesis >= 1.4.
+        if self._terrain_friction_pending:
+            self._gs_terrain.set_friction(self._cfg.terrain.static_friction)
 
         self._get_env_origins()
         self._finalize_props()
@@ -842,7 +879,7 @@ class GenesisSimulator(Simulator):
                     self._d_gains.append(damping[key])
         self._p_gains = torch.tensor(self._p_gains, device=self._device)
         self._d_gains = torch.tensor(self._d_gains, device=self._device)
-        if self._batch_dofs_links_info:   
+        if self._batch_dofs_info:
             self._p_gains = self._p_gains[None, :].repeat(self._num_envs, 1)
             self._d_gains = self._d_gains[None, :].repeat(self._num_envs, 1)
         self._robot.set_dofs_kp(self._p_gains, self._dof_indices)
@@ -1054,10 +1091,15 @@ class GenesisSimulator(Simulator):
         ''' Randomize base mass'''
         env_ids = torch.as_tensor(env_ids, device=self._device)
         min_mass, max_mass = self._cfg.domain_rand.added_mass_range
-        added_mass = gs.rand((len(env_ids), 1), dtype=float) * \
+        added_mass = gs.rand((len(env_ids), 1), dtype=float).to(self._device) * \
             (max_mass - min_mass) + min_mass
         self._added_base_mass[env_ids] = added_mass[:].detach().clone()
-        self._robot.set_mass_shift(added_mass, self._base_link_index, env_ids)
+        if _GENESIS_HAS_LINK_MASS_API:
+            # Genesis >= 1.4: set the absolute base-link mass (current + delta).
+            base_mass = self._robot.get_links_mass([self._base_link_index], env_ids).to(self._device)
+            self._robot.set_links_mass(base_mass + added_mass, [self._base_link_index], env_ids)
+        else:
+            self._robot.set_mass_shift(added_mass, self._base_link_index, env_ids)
 
     def _randomize_com_displacement(self, env_ids):
         ''' Randomize center of mass displacement of the robot'''
@@ -1076,8 +1118,14 @@ class GenesisSimulator(Simulator):
         self._base_com_bias[env_ids] = com_displacement[:,
                                                         0, :].detach().clone()
 
-        self._robot.set_COM_shift(
-            com_displacement, self._base_link_index, env_ids)
+        if _GENESIS_HAS_LINK_MASS_API:
+            # Genesis >= 1.4: set the absolute base-link COM (current + displacement).
+            base_com = self._robot.get_links_COM([self._base_link_index], env_ids).to(self._device)
+            self._robot.set_links_COM(
+                base_com + com_displacement, [self._base_link_index], env_ids)
+        else:
+            self._robot.set_COM_shift(
+                com_displacement, self._base_link_index, env_ids)
 
     def _randomize_joint_armature(self, env_ids):
         env_ids = torch.as_tensor(env_ids, device=self._device)
