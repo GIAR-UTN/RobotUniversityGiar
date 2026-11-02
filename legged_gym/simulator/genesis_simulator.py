@@ -1075,7 +1075,7 @@ class GenesisSimulator(Simulator):
         env_ids = torch.as_tensor(env_ids, device=self._device)
         min_friction, max_friction = self._cfg.domain_rand.friction_range
 
-        ratios = gs.rand((len(env_ids), 1), dtype=float).repeat(1, self._robot.n_links) \
+        ratios = torch.rand((len(env_ids), 1), device=self._device).repeat(1, self._robot.n_links) \
             * (max_friction - min_friction) + min_friction
         self._friction_values[env_ids] = ratios[:,
                                                 0].unsqueeze(1).detach().clone()
@@ -1091,7 +1091,7 @@ class GenesisSimulator(Simulator):
         ''' Randomize base mass'''
         env_ids = torch.as_tensor(env_ids, device=self._device)
         min_mass, max_mass = self._cfg.domain_rand.added_mass_range
-        added_mass = gs.rand((len(env_ids), 1), dtype=float).to(self._device) * \
+        added_mass = torch.rand((len(env_ids), 1), device=self._device) * \
             (max_mass - min_mass) + min_mass
         self._added_base_mass[env_ids] = added_mass[:].detach().clone()
         if _GENESIS_HAS_LINK_MASS_API:
@@ -1109,11 +1109,11 @@ class GenesisSimulator(Simulator):
         min_displacement_z, max_displacement_z = self._cfg.domain_rand.com_pos_z_range
         com_displacement = torch.zeros((len(env_ids), 1, 3), dtype=torch.float, device=self._device)
 
-        com_displacement[:, 0, 0] = gs.rand((len(env_ids), 1), dtype=float).squeeze(1) \
+        com_displacement[:, 0, 0] = torch.rand((len(env_ids), 1), device=self._device).squeeze(1) \
             * (max_displacement_x - min_displacement_x) + min_displacement_x
-        com_displacement[:, 0, 1] = gs.rand((len(env_ids), 1), dtype=float).squeeze(1) \
+        com_displacement[:, 0, 1] = torch.rand((len(env_ids), 1), device=self._device).squeeze(1) \
             * (max_displacement_y - min_displacement_y) + min_displacement_y
-        com_displacement[:, 0, 2] = gs.rand((len(env_ids), 1), dtype=float).squeeze(1) \
+        com_displacement[:, 0, 2] = torch.rand((len(env_ids), 1), device=self._device).squeeze(1) \
             * (max_displacement_z - min_displacement_z) + min_displacement_z
         self._base_com_bias[env_ids] = com_displacement[:,
                                                         0, :].detach().clone()
