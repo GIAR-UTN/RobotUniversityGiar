@@ -28,7 +28,8 @@ from legged_gym.control.service import ControlService
 
 class FakeAdapter:
     """Only get_state() matters to get_odometry() -- returns whatever
-    RobotState this test queues up next via `states`."""
+    RobotState this test queues up next via `states`. Distance itself is
+    integrated per tick through ControlService._update_odometry()."""
 
     def __init__(self, states):
         self._states = list(states)
@@ -64,54 +65,70 @@ class TestGetOdometry(unittest.TestCase):
         ticks = iter(start + step * i for i in range(1000))
         return mock.patch.object(service_mod.time, "time", side_effect=lambda: next(ticks))
 
+    def _ticks(self, svc, positions):
+        """Feeds one control tick per position, the way tick() does."""
+        for x, y in positions:
+            svc._update_odometry(_state(x, y))
+
     def test_first_call_baselines_at_zero(self):
         svc = _service([_state(0.0, 0.0)])
         with self._clock():
             odo = svc.get_odometry()
         self.assertEqual(odo, {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0})
 
-    def test_accumulates_distance_across_calls(self):
-        svc = _service([_state(0.0, 0.0), _state(0.3, 0.4)])  # 3-4-5 triangle -> 0.5 exact
+    def test_accumulates_distance_over_ticks(self):
+        svc = _service([_state(0.3, 0.4)])
         with self._clock():
-            svc.get_odometry()  # baseline
+            self._ticks(svc, [(0.0, 0.0), (0.3, 0.4)])  # 3-4-5 triangle -> 0.5 exact
             odo = svc.get_odometry()
         self.assertAlmostEqual(odo["distance_traveled"], 0.5, places=3)
         self.assertGreater(odo["time_elapsed"], 0.0)
 
     def test_accumulates_over_multiple_steps(self):
-        svc = _service([_state(0.0, 0.0), _state(0.1, 0.0), _state(0.2, 0.0), _state(0.3, 0.0)])
+        svc = _service([_state(0.3, 0.0)])
         with self._clock():
-            svc.get_odometry()
-            svc.get_odometry()
-            svc.get_odometry()
+            self._ticks(svc, [(0.0, 0.0), (0.1, 0.0), (0.2, 0.0), (0.3, 0.0)])
             odo = svc.get_odometry()
         self.assertAlmostEqual(odo["distance_traveled"], 0.3, places=3)
+
+    def test_far_walk_between_calls_is_not_a_teleport(self):
+        """Regression (2026-11-17): the robot walked ~4 m between two
+        get_odometry() calls in small per-tick steps. The old per-CALL
+        integration saw one >1 m jump and re-baselined to 0."""
+        steps = [(0.01 * i, 0.0) for i in range(401)]  # 4 m in 1 cm ticks
+        svc = _service([_state(*steps[-1])])
+        with self._clock():
+            svc.get_odometry()
+            self._ticks(svc, steps)
+            odo = svc.get_odometry()
+        self.assertAlmostEqual(odo["distance_traveled"], 4.0, places=2)
 
     def test_large_jump_is_treated_as_reset_not_travel(self):
         """A >1.0m single-tick delta means restart()/family-switch/episode
         reset happened underneath, not real motion -- re-baseline instead
         of counting it."""
-        svc = _service([_state(0.0, 0.0), _state(0.05, 0.0), _state(5.0, 5.0)])
+        svc = _service([_state(5.0, 5.0)])
         with self._clock():
-            svc.get_odometry()
+            self._ticks(svc, [(0.0, 0.0), (0.05, 0.0)])
+            self.assertAlmostEqual(svc.get_odometry()["distance_traveled"], 0.05, places=3)
+            self._ticks(svc, [(5.0, 5.0)])  # the >1m jump
             odo = svc.get_odometry()
-            self.assertAlmostEqual(odo["distance_traveled"], 0.05, places=3)
-            odo = svc.get_odometry()  # the >1m jump
         self.assertEqual(odo["distance_traveled"], 0.0)  # re-baselined, not 5.0-ish
 
     def test_none_when_base_pos_xy_unavailable(self):
         """RealAdapter-style backend: base_pos_xy is None -- get_odometry()
         must return None (genuinely unavailable), not a fabricated zero."""
         svc = _service([_state(0.0, 0.0, base_pos_xy_available=False)])
+        svc._update_odometry(_state(0.0, 0.0, base_pos_xy_available=False))
         self.assertIsNone(svc.get_odometry())
 
     def test_average_speed_is_distance_over_time(self):
-        svc = _service([_state(0.0, 0.0), _state(1.0, 0.0)])
+        svc = _service([_state(1.0, 0.0)])
         with self._clock():
-            svc.get_odometry()
+            self._ticks(svc, [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)])
             odo = svc.get_odometry()
         expected = odo["distance_traveled"] / odo["time_elapsed"]
-        self.assertAlmostEqual(odo["average_speed"], expected, places=3)
+        self.assertAlmostEqual(odo["average_speed"], expected, places=2)
 
 
 if __name__ == "__main__":

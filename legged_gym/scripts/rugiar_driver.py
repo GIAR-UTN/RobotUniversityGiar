@@ -253,15 +253,18 @@ def _relaunch_for_family(cli: argparse.Namespace, new_task: str, adapter=None) -
                   f"(see docs/mjlab_migration.md phase 0) -- staying on the current family.")
             return
         env["SIMULATOR"] = "mjlab"
-        # No --cruise_limit/--scenario/--camera/--real: a tracking task has no
-        # velocity command to cap (see MjlabAdapter's docstring), and the
-        # mjlab driver has no Genesis props/camera/DDS path at all.
+        # No --cruise_limit/--camera/--real: the mjlab driver has no
+        # Genesis camera/DDS path. --scenario IS forwarded: the mjlab driver
+        # builds the same arenas (legged_gym/control/mjlab_scenarios.py).
         argv = [interpreter, script, "--task", new_task,
                 "--viser_port", str(cli.viser_port), "--ramp_ticks", str(cli.ramp_ticks)]
         if cli.control_port is not None:
             argv += ["--control_port", str(cli.control_port)]
         if cli.token:
             argv += ["--token", cli.token]
+        argv += ["--scenario", cli.scenario]
+        for opt in cli.scenario_option:
+            argv += ["--scenario-option", opt]
     else:
         cruise_limit = getattr(adapter, "operator_speed_limit", cli.cruise_limit)
         argv = [sys.executable, script, "--task", new_task,

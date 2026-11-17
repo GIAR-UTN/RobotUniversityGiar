@@ -1,0 +1,8 @@
+{
+ "task": "Rugiar-G1Edu-Velocity-UnitreeObs",
+ "created_at": 1794925568.4344141,
+ "trained_via": "external-import",
+ "simulator": "mjlab",
+ "category": "g1edu-mjlab-velocity",
+ "note": "Unitree's own G1 29-DOF velocity policy, unitree_rl_mjlab deploy/robots/g1/config/policy/velocity/v0/exported/policy.onnx (Apache-2.0), with its params/deploy.yaml alongside it. Obs contract = 98 (ang_vel, gravity, cmd, gait phase 0.6 s, joint pos/vel, last action), which is why it runs on Rugiar-G1Edu-Velocity-UnitreeObs and not Rugiar-G1Edu-Velocity. Headless check 2026-11-17 (CPU, play cfg): 0 falls at (0,0,0), (0.5,0,0), (1.0,0,0), (0,0.4,0) and (0,0,0.8) over 15-20 s each, with base height always at least 0.77 m. Known: heading drifts at speed (no closed-loop yaw) and the Revo 2 hand mass is not modeled. Target robot: GIAR's G1-EDU-U8."
+}
