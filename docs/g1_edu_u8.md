@@ -18,6 +18,31 @@ Source: Big Dipper product 7921, code `G1-EDU-U8`. The spec was read from Big Di
 
 Developer docs: <https://support.unitree.com/home/en/G1_developer/about_G1>
 
+### From the donor's shared folder ("Humanoide", GIAR Drive, 2026-11-17)
+
+The folder holds 3 Unitree PDFs (Remote Control, Battery and Charger, Waist Fastener) and a
+links doc, which confirms:
+- Camera: **Intel RealSense D435i**
+  ([librealsense](https://github.com/realsenseai/librealsense),
+  [realsense-ros](https://github.com/realsenseai/realsense-ros)).
+- Lidar: **Livox MID-360** ([Livox-SDK2](https://github.com/Livox-SDK/Livox-SDK2),
+  [livox_ros2_driver](https://github.com/Livox-SDK/livox_ros2_driver)).
+- SDKs: [unitree_sdk2](https://github.com/unitreerobotics/unitree_sdk2) (C++),
+  [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python) (what
+  `RealAdapter` targets), [unitree_ros2](https://github.com/unitreerobotics/unitree_ros2), and
+  [unitree_mujoco](https://github.com/unitreerobotics/unitree_mujoco) for sim2sim.
+
+**Waist fastener.** The G1-EDU ships a waist-fixing kit: two brackets and M5 screws that
+lock the waist's roll and pitch. It is enabled in the Unitree Explorer app under
+"waist locking". **Which mode the robot runs in decides the sim model:**
+- Unlocked: 3-DOF waist. This is what `Rugiar-G1Edu-Velocity*` and Unitree's `velocity/v0`
+  policy assume.
+- Fastened: roll and pitch are fixed, which matches
+  `g1_description/g1_29dof_lock_waist*`. Neither of our tasks covers this mode yet. It would
+  need its own task, and a policy trained for it.
+
+Check how the GIAR robot is configured before running any policy on it.
+
 ## Sim model
 
 The body is the **29-DOF G1 with the waist unlocked**. That is exactly mjlab's own
