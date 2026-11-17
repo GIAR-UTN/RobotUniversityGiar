@@ -81,9 +81,10 @@ from legged_gym.control import (  # noqa: E402
     PolicySupervisor, SafetyGovernor, ControlService,
     load_policy, damping_policy, TrainingManager,
 )
-from legged_gym.control.mjlab_adapter import MjlabAdapter  # noqa: E402
+from legged_gym.control.mjlab_adapter import MjlabAdapter, MjlabVelocityAdapter, adapter_for_env  # noqa: E402
 from legged_gym.control.transport import ControlServer  # noqa: E402
 from legged_gym.control.cuda_utils import cuda_is_usable  # noqa: E402
+from legged_gym.control.mjlab_scenarios import apply_scenario_to_mjlab_cfg, load_scenarios  # noqa: E402
 
 DEFAULT_TASK = "Rugiar-G1-Mimic"
 DEFAULT_MOTION = "resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz"
@@ -177,6 +178,13 @@ def _base_relaunch_argv(cli: argparse.Namespace, script: str, interpreter: str, 
         argv += ["--control_port", str(cli.control_port)]
     if cli.token:
         argv += ["--token", cli.token]
+    # Every driver (Genesis and mjlab) takes the same --scenario flags
+    # (legged_gym/utils/scenarios.py), so the arena survives any relaunch.
+    scenario = getattr(cli, "scenario", None)
+    if scenario:
+        argv += ["--scenario", scenario]
+        for opt in getattr(cli, "scenario_option", None) or []:
+            argv += ["--scenario-option", opt]
     return argv
 
 
@@ -216,9 +224,8 @@ def _argv_for_family_switch(cli: argparse.Namespace, new_task: str) -> Optional[
         argv += ["--motion_file", cli.motion_file]
     if new_task == "g1" and script_name != "rugiar_driver_mjlab.py":
         # g1's own default: forced --camera (same default rugiar_driver.py's own
-        # _relaunch_for_family() applies for g1 -- see there). No --scenario override --
-        # add_scenario_args's own 'default' default already lands it in the full-admin
-        # scenario on its own; mjlab's own cli has no --scenario at all to forward here.
+        # _relaunch_for_family() applies for g1 -- see there). --scenario is already
+        # forwarded by _base_relaunch_argv().
         argv += ["--camera"]
     return argv, env
 
@@ -409,7 +416,17 @@ def _resolve_device(requested: Optional[str]) -> str:
     return "cpu"
 
 
-def build_env(task: str, motion_file: Optional[str], device: str, debug_vis: bool):
+def _command_ranges(adapter) -> Optional[dict]:
+    """The trained velocity-command envelope for the web panel's sliders,
+    or None for a task without a velocity command (tracking)."""
+    if not isinstance(adapter, MjlabVelocityAdapter):
+        return None
+    r = adapter._term().cfg.ranges
+    return {"vx": list(r.lin_vel_x), "vy": list(r.lin_vel_y), "yaw": list(r.ang_vel_z)}
+
+
+def build_env(task: str, motion_file: Optional[str], device: str, debug_vis: bool,
+              scenario: Optional[str] = None, scenario_options: Optional[list] = None):
     """One mjlab env, num_envs=1, built from the registered task's PLAY cfg
     (same construction tests/test_javier_checkpoints_track.py validated the
     checkpoints against in phase 4). `debug_vis` is mjlab's own native
@@ -421,6 +438,9 @@ def build_env(task: str, motion_file: Optional[str], device: str, debug_vis: boo
         if motion_file is not None:
             cfg.commands["motion"].motion_file = motion_file
         cfg.commands["motion"].debug_vis = debug_vis
+    # Same arenas as the Genesis drivers (legged_gym/utils/scenarios.py),
+    # built into the MjSpec — see legged_gym/control/mjlab_scenarios.py.
+    apply_scenario_to_mjlab_cfg(cfg, scenario, scenario_options)
     return ManagerBasedRlEnv(cfg=cfg, device=device)
 
 
@@ -454,6 +474,9 @@ def main():
                              "session: switching dances means switching policies (R8). "
                              "Default: the ACTIVE policy's own meta.json motion_file when it has "
                              "one, else " + DEFAULT_MOTION + ".")
+    # --scenario / --scenario-option: the same registry and flags as
+    # rugiar_driver.py (legged_gym/utils/scenarios.py).
+    load_scenarios().add_scenario_args(parser)
     parser.add_argument('--device', type=str, default=None,
                         help="torch/mujoco-warp device ('cpu', 'cuda:0'). Default: auto-detect "
                              "-- 'cuda:0' when a CUDA context is actually usable, else 'cpu'. "
@@ -482,8 +505,9 @@ def main():
         cli.motion_file = _motion_file_for_active_policy(cli, policy_paths, discovered) \
             or DEFAULT_MOTION
 
-    env = build_env(cli.task, cli.motion_file, device, debug_vis=not cli.headless)
-    adapter = MjlabAdapter(env)
+    env = build_env(cli.task, cli.motion_file, device, debug_vis=not cli.headless,
+                    scenario=cli.scenario, scenario_options=cli.scenario_option)
+    adapter = adapter_for_env(env)
     num_obs = adapter.get_observations().shape[-1]
     num_actions = env.action_manager.total_action_dim
     print(f"[rugiar_driver_mjlab] task={cli.task!r} obs={num_obs} actions={num_actions} "
@@ -524,6 +548,7 @@ def main():
 
     if not cli.headless and control_server is not None:
         repo_root = Path(REPO_ROOT)
+        web_scenario, web_scenario_options = load_scenarios().resolve_scenario(cli)
 
         @control_server.app.get("/config")
         def _web_config():
@@ -531,12 +556,22 @@ def main():
                 "viser_port": cli.viser_port,
                 "camera_enabled": False,
                 "depth_camera_enabled": False,
-                # No command_ranges: a tracking task has no velocity command
-                # envelope at all (see MjlabAdapter's docstring). app.js
-                # leaves its own defaults alone when this is absent/null, and
-                # hides the Command panel outright off status()'s missing
-                # `command` key — see applyStatus().
-                "command_ranges": None,
+                # A tracking task has no velocity command envelope at all
+                # (see MjlabAdapter's docstring): None makes app.js leave its
+                # own defaults alone and hide the Command panel outright off
+                # status()'s missing `command` key — see applyStatus(). A
+                # velocity task (MjlabVelocityAdapter) publishes its trained
+                # envelope, same shape as rugiar_driver.py's.
+                "command_ranges": _command_ranges(adapter),
+                # Same keys/semantics as rugiar_driver.py's /config, so
+                # web/app.js's scenario UI (banner, race HUD, Ready button)
+                # works unchanged on mjlab.
+                "scenario": web_scenario.name if web_scenario else None,
+                "scenario_options": web_scenario.web_options(web_scenario_options) if web_scenario else {},
+                "ready_button": {
+                    "visible": web_scenario.ready_button_visible if web_scenario else False,
+                    "armed_by_default": web_scenario.ready_button_armed_by_default if web_scenario else False,
+                },
             }
 
         control_server.app.mount(
@@ -633,6 +668,10 @@ def main():
         drain_finished_training(training, supervisor, _load_trained_policy)
 
         action = service.tick(obs[MjlabAdapter.OBS_GROUP])
+        # The viewer calls env.step() itself, right after this returns, so
+        # this is the adapter's last chance to pin per-step state (a
+        # velocity task's manual command — see MjlabVelocityAdapter).
+        adapter.before_step()
         if control_server is not None:
             control_server.publish_status(service.status())
         # tick() returns None while paused — a zero action is exactly the

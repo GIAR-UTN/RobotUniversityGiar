@@ -160,6 +160,13 @@ class MjlabAdapter:
             return float(scale.mean())
         return float(scale)
 
+    def before_step(self) -> None:
+        """Hook for a caller that steps the env ITSELF instead of going
+        through send_action() (e.g. rugiar_driver_mjlab.py's
+        ViserPlayViewer, which owns env.step()). It must be called once per
+        tick, before that step. A no-op here; MjlabVelocityAdapter pins its
+        manual command in it."""
+
     def fault(self) -> None:
         self._lifecycle = Lifecycle.FAULT
 
@@ -168,3 +175,115 @@ class MjlabAdapter:
         in simulation, so the meaningful action is flagging FAULT and
         letting SafetyGovernor force the damping skill."""
         self.fault()
+
+
+class MjlabVelocityAdapter(MjlabAdapter):
+    """MjlabAdapter for an mjlab VELOCITY task (e.g. Rugiar-G1Edu-Velocity):
+    the same env plumbing, plus the manual velocity command that a tracking
+    task doesn't have.
+
+    This is a separate class, not a flag on MjlabAdapter, because
+    ControlService detects command support with hasattr(adapter, "command")
+    (see ControlService.status()). A property that exists but raises would
+    still pass that check, and the web UI would show a Command panel that
+    can't work.
+
+    How the manual command works: mjlab's UniformVelocityCommand resamples
+    `vel_command_b` whenever its `time_left` runs out. It also rewrites the
+    command for heading, standing and world-frame envs in
+    _update_command(). Before every step this adapter pins the command:
+    time_left is pushed far into the future, those three per-env flags are
+    cleared, and vel_command_b is written. Only then does env.step() run.
+    The observation that step returns therefore already carries the
+    operator's command, with no one-tick lag and no random resample in
+    between.
+
+    Clamping follows SimAdapter.set_command: the trained `ranges` times
+    operator_speed_limit (OPERATOR_SPEED_LIMIT_MAX bounds it).
+    """
+
+    capabilities = {"restart": True}
+    COMMAND_TERM = "twist"
+
+    def __init__(self, env, robot_name: str = "robot", operator_speed_limit: float = 1.0):
+        super().__init__(env, robot_name)
+        self._manual_command = (0.0, 0.0, 0.0)
+        self._operator_speed_limit = 1.0
+        self.set_operator_speed_limit(operator_speed_limit)
+        self._pin_command()
+
+    def _term(self):
+        return self.env.command_manager.get_term(self.COMMAND_TERM)
+
+    def _pin_command(self) -> None:
+        term = self._term()
+        term.time_left[:] = 1.0e9
+        for flag in ("is_heading_env", "is_standing_env", "is_world_env", "is_forward_env"):
+            buf = getattr(term, flag, None)
+            if buf is not None:
+                buf[:] = False
+        vx, vy, yaw = self._manual_command
+        term.vel_command_b[:, 0] = vx
+        term.vel_command_b[:, 1] = vy
+        term.vel_command_b[:, 2] = yaw
+
+    def _clamp_command(self, vx: float, vy: float, yaw: float) -> tuple:
+        ranges = self._term().cfg.ranges
+        limit = self._operator_speed_limit
+        vx = max(min(vx, ranges.lin_vel_x[1] * limit), ranges.lin_vel_x[0] * limit)
+        vy = max(min(vy, ranges.lin_vel_y[1] * limit), ranges.lin_vel_y[0] * limit)
+        yaw = max(min(yaw, ranges.ang_vel_z[1] * limit), ranges.ang_vel_z[0] * limit)
+        return (float(vx), float(vy), float(yaw))
+
+    # ---- command surface (same names/semantics as SimAdapter) ----
+
+    def set_command(self, vx: float, vy: float, yaw: float) -> None:
+        self._manual_command = self._clamp_command(vx, vy, yaw)
+        self._pin_command()
+
+    def set_operator_speed_limit(self, fraction: float) -> None:
+        from .adapter import OPERATOR_SPEED_LIMIT_MAX
+        if not (0.0 < fraction <= OPERATOR_SPEED_LIMIT_MAX):
+            raise ValueError(f"operator_speed_limit must be in (0, {OPERATOR_SPEED_LIMIT_MAX}], got {fraction}")
+        self._operator_speed_limit = float(fraction)
+        self._manual_command = self._clamp_command(*self._manual_command)
+
+    @property
+    def operator_speed_limit(self) -> float:
+        return self._operator_speed_limit
+
+    @property
+    def command(self) -> tuple:
+        return self._manual_command
+
+    # ---- RobotAdapter overrides: keep the command pinned ----
+
+    def reset(self):
+        state = super().reset()
+        self._pin_command()
+        return state
+
+    def before_step(self) -> None:
+        self._pin_command()
+
+    def send_action(self, action: torch.Tensor):
+        self._pin_command()
+        return super().send_action(action)
+
+    def get_state(self):
+        state = super().get_state()
+        vx, vy, yaw = self._manual_command
+        state.commands[:, 0] = vx
+        state.commands[:, 1] = vy
+        state.commands[:, 2] = yaw
+        return state
+
+
+def adapter_for_env(env, robot_name: str = "robot") -> MjlabAdapter:
+    """Picks the adapter class from the env's own command terms: a `twist`
+    command means a velocity task (MjlabVelocityAdapter), anything else
+    (e.g. the tracking task's `motion`) gets the plain MjlabAdapter."""
+    terms = getattr(env.command_manager, "active_terms", None) or []
+    if MjlabVelocityAdapter.COMMAND_TERM in terms:
+        return MjlabVelocityAdapter(env, robot_name)
+    return MjlabAdapter(env, robot_name)

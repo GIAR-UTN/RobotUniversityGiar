@@ -62,8 +62,19 @@ def mjlab_validate_params(params: Dict[str, object]) -> None:
             f"{', '.join(inapplicable)} don't apply to mjlab task '{params['task']}' "
             f"(motion-tracking task: no velocity command, no stability targets, "
             f"no pushes)")
-    if not params.get("motion_file"):
+    if not is_velocity_task(str(params["task"])) and not params.get("motion_file"):
         raise ValueError(f"task '{params['task']}' needs a --motion_file (reference-motion clip)")
+
+
+def is_velocity_task(task: str) -> bool:
+    """True for an mjlab VELOCITY task (e.g. Rugiar-G1Edu-Velocity,
+    Mjlab-Velocity-Flat-Unitree-G1), which needs no reference clip. This
+    process runs in the main .venv, where mjlab can't be imported to check
+    the registered cfg's command terms (docs/mjlab_migration.md R1), so the
+    task id is the contract: every mjlab velocity task, ours and mjlab's
+    own, has "-Velocity" in its id. mjlab_train.py itself decides from the
+    real cfg ("motion" in env_cfg.commands)."""
+    return "-Velocity" in task
 
 
 BACKEND = TrainingBackend(
