@@ -47,8 +47,8 @@ class _FakeBackend:
     exactly which policies stepped, how many times, and verify the blend
     math against known constants."""
 
-    def __init__(self, action_value: float):
-        self.action = torch.full((1, 3), action_value)
+    def __init__(self, action_value: float, device: str = "cpu"):
+        self.action = torch.full((1, 3), action_value, device=device)
         self.step_calls = 0
         self.reset_calls = 0
 
@@ -61,9 +61,9 @@ class _FakeBackend:
 
 
 class _FakePolicy:
-    def __init__(self, name, action_value=0.0, num_obs=0):
+    def __init__(self, name, action_value=0.0, num_obs=0, device="cpu"):
         self.name = name
-        self.backend = _FakeBackend(action_value)
+        self.backend = _FakeBackend(action_value, device=device)
         self.obs_spec = _FakeObsSpec(num_obs)
 
 
@@ -181,6 +181,24 @@ class TestStepRamping(unittest.TestCase):
         self.assertAlmostEqual(actions[-1], 10.0, places=5)  # last in-ramp step already 100% new
         final_action = sup.step(torch.zeros(1, 3))
         self.assertEqual(final_action[0, 0].item(), 10.0)  # same value, no snap
+
+    def test_blend_handles_backends_on_different_devices(self):
+        # Real bug: OnnxHistoryObsPolicy returns actions on obs.device (CUDA
+        # in an mjlab session) while a stateless ONNX / damping backend
+        # returns CPU tensors, so the cross-fade raised "Expected all tensors
+        # to be on the same device". Use CUDA when present, else meta (CPU ->
+        # meta copies are allowed) so the alignment path is exercised even on
+        # a GPU-less test host.
+        obs_device = "cuda" if torch.cuda.is_available() else "meta"
+        old = _FakePolicy("stable", action_value=0.0, device="cpu")
+        new = _FakePolicy("croucher", action_value=10.0, device=obs_device)
+        sup = _supervisor({"stable": old, "croucher": new}, active="stable", ramp_ticks=4)
+        sup.request_switch("croucher")
+        sup.confirm_pending_switch()
+        action = sup.step(torch.zeros(1, 3, device=obs_device))
+        self.assertEqual(action.device.type, torch.device(obs_device).type)
+        if obs_device != "meta":  # meta tensors carry no values to compare
+            self.assertAlmostEqual(action[0, 0].item(), 0.0, places=5)
 
     def test_obs_spec_mismatch_warns_for_both_outgoing_and_incoming_policy(self):
         old = _FakePolicy("stable", action_value=0.0, num_obs=5)
