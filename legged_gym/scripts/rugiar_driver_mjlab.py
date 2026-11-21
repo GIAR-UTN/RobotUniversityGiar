@@ -84,7 +84,11 @@ from legged_gym.control import (  # noqa: E402
 from legged_gym.control.mjlab_adapter import MjlabAdapter, MjlabVelocityAdapter, adapter_for_env  # noqa: E402
 from legged_gym.control.transport import ControlServer  # noqa: E402
 from legged_gym.control.cuda_utils import cuda_is_usable  # noqa: E402
-from legged_gym.control.mjlab_scenarios import apply_scenario_to_mjlab_cfg, load_scenarios  # noqa: E402
+from legged_gym.control.mjlab_scenarios import (  # noqa: E402
+    apply_scenario_to_mjlab_cfg,
+    default_scenario_for_task,
+    load_scenarios,
+)
 
 DEFAULT_TASK = "Rugiar-G1-Mimic"
 DEFAULT_MOTION = "resources/reference_motion/unitree_g1/mjlab_run/dance1_subject2.npz"
@@ -308,7 +312,7 @@ def _relaunch_for_motion(cli: argparse.Namespace, new_motion_file: str) -> None:
 
 
 def _load_policies(cli: argparse.Namespace, adapter, num_obs: int, num_actions: int,
-                    policy_paths: dict) -> tuple:
+                    policy_paths: dict, device: str = "cpu") -> tuple:
     """Loads every --policy spec / auto-discovered local policy (each
     pinned by name -> checkpoint path) plus, always, the damping fallback
     -- and picks the starting active policy. Zero policies for cli.task is
@@ -332,9 +336,9 @@ def _load_policies(cli: argparse.Namespace, adapter, num_obs: int, num_actions: 
         # signature wants one; 0 keeps it honest rather than pretending
         # there's an LSTM here.
         policies[name] = load_policy(name, path, num_obs=num_obs, hidden_size=0,
-                                     num_envs=adapter.num_envs)
+                                     num_envs=adapter.num_envs, device=device)
         print(f"  '{name}' <- {path}")
-    policies["damping"] = damping_policy(adapter.num_envs, num_actions)
+    policies["damping"] = damping_policy(adapter.num_envs, num_actions, device=device)
     if not policy_paths:
         print(f"  no local policies for task {cli.task!r} yet -- starting damping-only "
               f"(neutral pose hold; preview the reference-motion ghost, train a policy "
@@ -485,6 +489,10 @@ def main():
                         help="shared secret required on every /ws connection (?token=...), same as "
                              "rugiar_driver.py's.")
     cli = parser.parse_args()
+    # A task may carry its own default arena (e.g. DWAQ -> obstacle_course)
+    # when the operator didn't explicitly choose a non-'default' scenario.
+    # Do this before build_env()/the /config route/any relaunch argv.
+    cli.scenario = default_scenario_for_task(cli.task, cli.scenario)
 
     device = _resolve_device(cli.device)
 
@@ -513,7 +521,8 @@ def main():
     print(f"[rugiar_driver_mjlab] task={cli.task!r} obs={num_obs} actions={num_actions} "
           f"motion={cli.motion_file}")
 
-    policies, active_name = _load_policies(cli, adapter, num_obs, num_actions, policy_paths)
+    policies, active_name = _load_policies(cli, adapter, num_obs, num_actions, policy_paths,
+                                            device=device)
 
     supervisor = PolicySupervisor(policies, active=active_name, ramp_ticks=cli.ramp_ticks)
     safety = SafetyGovernor(supervisor, damping_policy_name="damping")
@@ -529,13 +538,13 @@ def main():
         if task != cli.task:
             raise ValueError(f"'{name}' is task '{task}', this server is running '{cli.task}'")
         return load_policy(name, path, num_obs=num_obs, hidden_size=0, num_envs=adapter.num_envs,
-                           description="Rediscovered from disk (refresh)")
+                           description="Rediscovered from disk (refresh)", device=device)
 
     def _load_trained_policy(job, checkpoint_path):
         """A just-finished job's export, loaded against THIS session's
         obs/action space — see drain_finished_training() above."""
         return load_policy(job.policy_name, checkpoint_path, num_obs=num_obs, hidden_size=0,
-                           num_envs=adapter.num_envs,
+                           num_envs=adapter.num_envs, device=device,
                            description=f"Trained via the control web ({job.command})")
 
     service = ControlService(adapter, supervisor, safety, selector=None, training=training,

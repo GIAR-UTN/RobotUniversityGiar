@@ -142,6 +142,14 @@ class PolicySupervisor:
         # this to be safe.
         self._check_obs_spec(self._ramp_from, obs)
         old_action = self._ramp_from.backend.step(obs)
+        # Backends don't all produce actions on the same device: an ONNX
+        # session runs on CPU while a jit policy (and the env's obs) may be on
+        # CUDA, and the damping fallback is built on whichever device its
+        # caller chose. Blend on the observation's device so a cross-fade
+        # between any two of them can't hit "Expected all tensors to be on the
+        # same device" mid-switch.
+        new_action = new_action.to(obs.device)
+        old_action = old_action.to(obs.device)
         # 0 -> 1 inclusive across the ramp: the first blended step is pure old
         # (steps_done == 0) and the last is pure new (steps_done == ramp_ticks - 1),
         # so the cross-fade actually reaches alpha=1.0 before this branch stops

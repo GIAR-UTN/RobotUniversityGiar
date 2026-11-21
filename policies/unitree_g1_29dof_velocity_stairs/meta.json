@@ -1,0 +1,8 @@
+{
+ "task": "Rugiar-G1Edu-Velocity-DWAQ",
+ "created_at": 1794925568.4344141,
+ "trained_via": "external-import",
+ "simulator": "mjlab",
+ "category": "g1edu-mjlab-velocity",
+ "note": "DWAQ blind stair policy from GIAR's deploy_mujoco2026 (config/g1_29dof/config/policy/velocity/dwaq), with its deploy.yaml alongside. Obs contract = 100 current values (ang_vel, gravity, cmd, joint pos/vel, last action, 4-dim gait phase at 0.8 s) PLUS a second ONNX input with 5 term-major frames (500) for the VAE encoder; the policy was trained in Isaac Lab joint order, so deploy.yaml's joint_ids_map is applied by legged_gym/control/policy.py's OnnxHistoryObsPolicy. That is why it needs Rugiar-G1Edu-Velocity-DWAQ and not Rugiar-G1Edu-Velocity-UnitreeObs (98 obs, 2-dim phase, SDK joint order). Command vx must stay <= 1.0 m/s; the policy only climbs while a forward velocity is commanded."
+}

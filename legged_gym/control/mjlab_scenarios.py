@@ -161,6 +161,26 @@ def held_termination(env, inner, hold_steps: int, key: str, **params):
     return fire
 
 
+# Tasks whose PLAY session should open on a scenario other than 'default'
+# when the operator didn't pass --scenario. The DWAQ task is the blind
+# obstacle/stairs policy, so the project's obstacle course (flat lane plus
+# its 10 props) is its default arena; mjlab's random terrain generator is
+# not what the policy was trained against.
+TASK_DEFAULT_SCENARIOS = {
+    "Rugiar-G1Edu-Velocity-DWAQ": "obstacle_course",
+}
+
+
+def default_scenario_for_task(task: str, requested: Optional[str]) -> Optional[str]:
+    """The scenario a driver should actually use: an explicit non-'default'
+    --scenario always wins; otherwise a task in TASK_DEFAULT_SCENARIOS gets
+    its own default. Tasks not in the map keep the parser's 'default'
+    (no props), so this is a no-op for every existing task."""
+    if requested and requested != "default":
+        return requested
+    return TASK_DEFAULT_SCENARIOS.get(task, requested)
+
+
 def apply_scenario_to_mjlab_cfg(cfg, scenario_name: Optional[str], option_overrides: Optional[list] = None):
     """Wires a scenario into an mjlab ManagerBasedRlEnvCfg (a PLAY cfg,
     num_envs=1). Returns (scenario, options), or (None, {}) when there is no
@@ -178,6 +198,14 @@ def apply_scenario_to_mjlab_cfg(cfg, scenario_name: Optional[str], option_overri
     ns = types.SimpleNamespace(scenario=scenario_name, scenario_option=list(option_overrides or []))
     scenario, options = sc.resolve_scenario(ns)
     props = scenario.spawn_props(options)
+
+    # Every prop is another collider in this single-world PLAY scene. The flat
+    # G1 task leaves cfg.sim.nconmax at None, whose heuristic allocates ~48
+    # contacts -- not enough once the course props touch the robot ("broadphase
+    # overflow - please increase nconmax to 49..."). Scale it with the prop
+    # count, never lowering a value the task set explicitly.
+    if props:
+        cfg.sim.nconmax = max(cfg.sim.nconmax or 0, 64 + 8 * len(props))
 
     prev_fn = cfg.scene.spec_fn
 
