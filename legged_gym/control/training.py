@@ -34,6 +34,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from legged_gym.control.hub import push_after_save
+
 # The training-backend registry lives in its own package — one module per
 # place a job can run (see legged_gym/control/backends/__init__.py). These
 # names are re-exported here because they were part of this module's public
@@ -959,6 +961,7 @@ class TrainingManager:
             train_checkpoint=str(dest_train_checkpoint) if dest_train_checkpoint else None,
             simulator=meta["simulator"],
         )
+        push_after_save(name, policies_dir=POLICIES_DIR)
         return str(dest_checkpoint)
 
     def fuse_policies(self, names: Sequence[str], out_name: str,
@@ -1110,6 +1113,7 @@ class TrainingManager:
             out_name, task=export_task, checkpoint=str(dest_checkpoint),
             train_checkpoint=str(dest_train_checkpoint), simulator=meta["simulator"],
         )
+        push_after_save(out_name, policies_dir=POLICIES_DIR)
         return {"name": out_name, "checkpoint_path": str(dest_checkpoint), "warnings": warnings}
 
     def discover_local_policies(self, exclude: Sequence[str] = ()) -> Dict[str, dict]:

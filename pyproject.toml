@@ -56,6 +56,9 @@ isaaclab = [
 cloud = [
     "kaggle",
 ]
+hub = [
+    "huggingface_hub>=0.24",
+]
 mcp = [
     "mcp>=1.0.0",
     "websockets>=12.0",
