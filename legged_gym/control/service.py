@@ -365,39 +365,50 @@ class ControlService:
             },
         }
 
-    def get_odometry(self) -> Optional[dict]:
-        """Cumulative distance traveled, elapsed time, and average speed
-        since the first call (or since the last detected reset) — computed
-        from simulator ground-truth base position deltas (RobotState's
-        `base_pos_xy`, see its own docstring). Returns None on a backend
-        where that's not available (real hardware — nothing directly senses
-        world-frame position there), same "None means genuinely unavailable,
-        not zero" rule as `base_height`/`base_lin_vel` above. Primarily for
-        an external agent (e.g. rugiar_mcp) to answer "how far have I
-        moved?" without integrating velocity itself tick by tick."""
-        state = self.adapter.get_state()
+    def _update_odometry(self, state) -> None:
+        """Integrates base_pos_xy deltas once per control tick (called from
+        tick()). It has to be per TICK, not per get_odometry() call: the
+        teleport check below compares consecutive samples, and between two
+        calls seconds apart a walking robot easily covers more than the
+        threshold. That made every second call look like a reset, so the
+        reported distance stayed at 0 (seen 2026-11-17 on the mjlab G1-EDU
+        session)."""
         pos = getattr(state, "base_pos_xy", None)
         if pos is None:
-            return None
+            return
         now = time.time()
-        if self._odometry_start_time is None:
+        if self._odometry_start_time is None or self._last_odometry_pos is None:
             self._odometry_start_time = now
             self._last_odometry_pos = pos.clone()
             self._odometry_distance = 0.0
-            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
-        delta = pos[0] - self._last_odometry_pos[0]
-        step_dist = float(torch.norm(delta))
-        # A jump this large in one tick means a reset/teleport happened
+            return
+        step_dist = float(torch.norm(pos[0] - self._last_odometry_pos[0]))
+        # A jump this large in ONE tick means a reset/teleport happened
         # underneath us (restart(), family switch, episode reset) rather
         # than real motion — re-baseline instead of counting it as travel.
         if step_dist > 1.0:
             self._odometry_start_time = now
-            self._last_odometry_pos = pos.clone()
             self._odometry_distance = 0.0
-            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
-        self._odometry_distance += step_dist
+        else:
+            self._odometry_distance += step_dist
         self._last_odometry_pos = pos.clone()
-        elapsed = now - self._odometry_start_time
+
+    def get_odometry(self) -> Optional[dict]:
+        """Cumulative distance traveled, elapsed time, and average speed
+        since tracking started (the first tick) or since the last detected
+        reset — integrated every tick by _update_odometry() from simulator
+        ground-truth base position (RobotState's `base_pos_xy`). Returns
+        None on a backend where that's not available (real hardware —
+        nothing directly senses world-frame position there), same "None
+        means genuinely unavailable, not zero" rule as `base_height`/
+        `base_lin_vel` above. Primarily for an external agent (e.g.
+        rugiar_mcp) to answer "how far have I moved?"."""
+        state = self.adapter.get_state()
+        if getattr(state, "base_pos_xy", None) is None:
+            return None
+        if self._odometry_start_time is None:
+            return {"distance_traveled": 0.0, "time_elapsed": 0.0, "average_speed": 0.0}
+        elapsed = time.time() - self._odometry_start_time
         avg_speed = self._odometry_distance / elapsed if elapsed > 0 else 0.0
         return {
             "distance_traveled": round(self._odometry_distance, 3),
@@ -900,6 +911,7 @@ class ControlService:
 
         state = self.adapter.get_state()
         state = self.safety.tick(state)
+        self._update_odometry(state)
 
         if not self.safety.tripped and self.selector is not None:
             proposed = self.selector.propose(state)

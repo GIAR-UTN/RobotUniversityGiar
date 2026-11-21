@@ -12,3 +12,4 @@ is literally named `src`, which is part of why it isn't pip-installable
 (see docs/mjlab_migration.md §0). Don't repeat that mistake here.
 """
 from . import tracking  # noqa: F401
+from . import velocity  # noqa: F401
