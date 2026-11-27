@@ -84,6 +84,14 @@ const hudYaw = $('.hud-yaw');
 const speedLimitSlider = $('#speed-limit-slider');
 const speedLimitVal = $('#speed-limit-val');
 const speedLimitWarning = $('#speed-limit-warning');
+const heightCommandRow = $('#height-command-row');
+const heightSlider = $('#height-slider');
+const heightVal = $('#val-height');
+// Fourth command channel (target base height, m). null on tasks whose
+// command term has no height channel (every Genesis task, mjlab tracking,
+// and the plain velocity tasks) — the slider row stays hidden and
+// set_command is sent with the original three fields.
+let commandHeight = null;
 
 // ---- transition overlay: family switch / fresh local training start ----
 // Both can make viser stall or drop its WS connection for several seconds
@@ -248,6 +256,25 @@ function applyRuntimeConfig(config) {
   // — see SimAdapter.set_command), not an arbitrary UI guess.
   if (config.command_ranges) {
     commandRanges = config.command_ranges;
+  }
+
+  // Height is optional even within a velocity-command task: only the
+  // height-capable env publishes a `height` range (see
+  // _command_ranges() in rugiar_driver_mjlab.py). Hide the slider row
+  // rather than showing a control the server would reject.
+  const heightRange = config.command_ranges?.height || null;
+  heightCommandRow.hidden = !heightRange;
+  if (heightRange) {
+    heightSlider.min = heightRange[0];
+    heightSlider.max = heightRange[1];
+    if (commandHeight == null) commandHeight = heightRange[1];
+    commandHeight = Math.max(heightRange[0], Math.min(heightRange[1], commandHeight));
+    if (document.activeElement !== heightSlider) {
+      heightSlider.value = commandHeight;
+      heightVal.textContent = commandHeight.toFixed(2);
+    }
+  } else {
+    commandHeight = null;
   }
 
   const cameraSection = $('#camera-section');
@@ -923,6 +950,13 @@ function applyStatus(status) {
     cruiseVx = status.command.vx;
     cruiseVy = status.command.vy;
     cruiseYaw = status.command.yaw;
+    if (status.command.height != null) {
+      commandHeight = status.command.height;
+      if (document.activeElement !== heightSlider) {
+        heightSlider.value = commandHeight;
+        heightVal.textContent = commandHeight.toFixed(2);
+      }
+    }
     updateCommandUI();
   }
 
@@ -1888,6 +1922,7 @@ function updateCommandUI() {
   $('#val-vx').textContent = cruiseVx.toFixed(2);
   $('#val-vy').textContent = cruiseVy.toFixed(2);
   $('#val-yaw').textContent = cruiseYaw.toFixed(2);
+  if (commandHeight != null) heightVal.textContent = commandHeight.toFixed(2);
 }
 
 // ---- tabs ----
@@ -1968,6 +2003,22 @@ speedLimitSlider.addEventListener('change', () => {
   send('set_operator_speed_limit', { fraction: Number(speedLimitSlider.value) / 100 });
 });
 
+// ---- height command (Command panel) ----
+// Only visible on tasks whose command term has a height channel (see
+// applyRuntimeConfig). 'input' updates the local label immediately; 'change'
+// sends the new command once, mirroring the speed-limit slider's throttle.
+heightSlider.addEventListener('input', () => {
+  if (commandHeight == null) return;
+  commandHeight = Number(heightSlider.value);
+  heightVal.textContent = commandHeight.toFixed(2);
+});
+heightSlider.addEventListener('change', () => {
+  if (commandHeight == null) return;
+  commandHeight = Number(heightSlider.value);
+  heightVal.textContent = commandHeight.toFixed(2);
+  sendCruiseCommand();
+});
+
 // ---- stimuli: random events + manual velocity command ----
 
 function clampToRange(v, range) {
@@ -1983,7 +2034,11 @@ function sendCruiseCommand() {
   // keyboard bindings are global, so this is the one gate that catches
   // W/A/S/D too.
   if (!commandSupported) return;
-  send('set_command', { vx: cruiseVx, vy: cruiseVy, yaw: cruiseYaw });
+  const params = { vx: cruiseVx, vy: cruiseVy, yaw: cruiseYaw };
+  // Only include height when this task has a height channel; older
+  // servers/adapters would reject an unexpected parameter.
+  if (commandHeight != null) params.height = commandHeight;
+  send('set_command', params);
 }
 
 function engageManualIfNeeded() {

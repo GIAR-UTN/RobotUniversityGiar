@@ -209,6 +209,13 @@ class MjlabVelocityAdapter(MjlabAdapter):
         super().__init__(env, robot_name)
         self._manual_command = (0.0, 0.0, 0.0)
         self._operator_speed_limit = 1.0
+        term = self._term()
+        # A height-capable command term (UniformVelocityHeightCommand) adds a
+        # fourth `height_command` channel. Keep None for plain velocity tasks
+        # so `command` stays the 3-tuple everything above this layer expects.
+        self._manual_height = (
+            float(term.cfg.default_height) if hasattr(term, "height_command") else None
+        )
         self.set_operator_speed_limit(operator_speed_limit)
         self._pin_command()
 
@@ -226,6 +233,8 @@ class MjlabVelocityAdapter(MjlabAdapter):
         term.vel_command_b[:, 0] = vx
         term.vel_command_b[:, 1] = vy
         term.vel_command_b[:, 2] = yaw
+        if self._manual_height is not None:
+            term.height_command[:] = self._manual_height
 
     def _clamp_command(self, vx: float, vy: float, yaw: float) -> tuple:
         ranges = self._term().cfg.ranges
@@ -235,10 +244,21 @@ class MjlabVelocityAdapter(MjlabAdapter):
         yaw = max(min(yaw, ranges.ang_vel_z[1] * limit), ranges.ang_vel_z[0] * limit)
         return (float(vx), float(vy), float(yaw))
 
+    def _clamp_height(self, height: float) -> float:
+        lo, hi = self._term().cfg.height_range
+        return float(max(min(height, hi), lo))
+
     # ---- command surface (same names/semantics as SimAdapter) ----
 
-    def set_command(self, vx: float, vy: float, yaw: float) -> None:
+    def set_command(self, vx: float, vy: float, yaw: float,
+                    height: float | None = None) -> None:
         self._manual_command = self._clamp_command(vx, vy, yaw)
+        if height is not None:
+            if self._manual_height is None:
+                raise NotImplementedError(
+                    f"{type(self).__name__}'s command term has no height channel"
+                )
+            self._manual_height = self._clamp_height(height)
         self._pin_command()
 
     def set_operator_speed_limit(self, fraction: float) -> None:
@@ -254,7 +274,9 @@ class MjlabVelocityAdapter(MjlabAdapter):
 
     @property
     def command(self) -> tuple:
-        return self._manual_command
+        if self._manual_height is None:
+            return self._manual_command
+        return (*self._manual_command, self._manual_height)
 
     # ---- RobotAdapter overrides: keep the command pinned ----
 
@@ -273,9 +295,22 @@ class MjlabVelocityAdapter(MjlabAdapter):
     def get_state(self):
         state = super().get_state()
         vx, vy, yaw = self._manual_command
-        state.commands[:, 0] = vx
-        state.commands[:, 1] = vy
-        state.commands[:, 2] = yaw
+        if self._manual_height is None:
+            state.commands[:, 0] = vx
+            state.commands[:, 1] = vy
+            state.commands[:, 2] = yaw
+        else:
+            # The web UI/telemetry/recorder treat commands as one flat vector;
+            # a height-capable task gets the fourth slot instead of dropping
+            # the height on the floor.
+            commands = torch.zeros(
+                self.num_envs, 4, device=state.commands.device, dtype=state.commands.dtype
+            )
+            commands[:, 0] = vx
+            commands[:, 1] = vy
+            commands[:, 2] = yaw
+            commands[:, 3] = self._manual_height
+            state.commands = commands
         return state
 
 

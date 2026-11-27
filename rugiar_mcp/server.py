@@ -132,9 +132,11 @@ async def get_command_limits() -> dict:
     cfg = await _fetch_config()
     ranges = cfg.get("command_ranges", {})
     limit = status.get("operator_speed_limit", 1.0)
-    def scale(r):
-        return [r[0]*limit, r[1]*limit]
-    effective = {k: scale(v) for k, v in ranges.items()}
+    def scale(key, r):
+        # Height is a target, not a speed: the operator speed limit caps
+        # velocities only, so leave a `height` range untouched.
+        return r if key == "height" else [r[0]*limit, r[1]*limit]
+    effective = {k: scale(k, v) for k, v in ranges.items()}
     return {
         "trained_ranges": ranges,
         "operator_speed_limit": limit,
@@ -145,11 +147,15 @@ async def get_command_limits() -> dict:
     }
 
 @mcp.tool()
-async def set_velocity(vx: float, vy: float, yaw: float, accel: Optional[float] = None) -> dict:
+async def set_velocity(vx: float, vy: float, yaw: float, accel: Optional[float] = None,
+                       height: Optional[float] = None) -> dict:
     """Tell the robot to move at a specific forward, sideways, and turning speed.
     If accel is provided, the command ramps smoothly from the current speed to the target
-    over time = |delta| / accel. If accel is omitted, the command takes effect immediately."""
-    logging.info(f"[MCP] set_velocity called with vx={vx}, vy={vy}, yaw={yaw}, accel={accel}")
+    over time = |delta| / accel. If accel is omitted, the command takes effect immediately.
+    `height` (meters) is only accepted by height-capable tasks (e.g.
+    Rugiar-G1Edu-Velocity-Height); omit it to leave the current height unchanged."""
+    logging.info(f"[MCP] set_velocity called with vx={vx}, vy={vy}, yaw={yaw}, "
+                 f"height={height}, accel={accel}")
     await _ensure_connected()
     status = await client.get_status()
     if not status:
@@ -157,9 +163,12 @@ async def set_velocity(vx: float, vy: float, yaw: float, accel: Optional[float] 
     cur = status.get("command", {"vx":0.0,"vy":0.0,"yaw":0.0})
     cur_vx, cur_vy, cur_yaw = float(cur.get("vx",0)), float(cur.get("vy",0)), float(cur.get("yaw",0))
     target_vx, target_vy, target_yaw = float(vx), float(vy), float(yaw)
+    cmd = {"vx": target_vx, "vy": target_vy, "yaw": target_yaw}
+    if height is not None:
+        cmd["height"] = float(height)
     if accel is None:
-        await client.call("set_command", {"vx": target_vx, "vy": target_vy, "yaw": target_yaw})
-        return {"mode":"immediate","target":{"vx":target_vx,"vy":target_vy,"yaw":target_yaw}}
+        await client.call("set_command", cmd)
+        return {"mode":"immediate","target":cmd}
     accel = float(accel)
     if accel <= 0:
         raise ValueError("accel must be > 0")
@@ -175,7 +184,7 @@ async def set_velocity(vx: float, vy: float, yaw: float, accel: Optional[float] 
             dy = target_vy - cur_y
             dz = target_yaw - cur_z
             if abs(dx) < 1e-3 and abs(dy) < 1e-3 and abs(dz) < 1e-3:
-                await client.call("set_command", {"vx": target_vx, "vy": target_vy, "yaw": target_yaw})
+                await client.call("set_command", cmd)
                 break
             step_x = max(-accel*dt, min(accel*dt, dx))
             step_y = max(-accel*dt, min(accel*dt, dy))
@@ -183,12 +192,15 @@ async def set_velocity(vx: float, vy: float, yaw: float, accel: Optional[float] 
             cur_x += step_x
             cur_y += step_y
             cur_z += step_z
-            await client.call("set_command", {"vx": cur_x, "vy": cur_y, "yaw": cur_z})
+            step_cmd = {"vx": cur_x, "vy": cur_y, "yaw": cur_z}
+            if height is not None:
+                step_cmd["height"] = float(height)
+            await client.call("set_command", step_cmd)
             await asyncio.sleep(dt)
     task = asyncio.create_task(ramp())
     _ramp_tasks[key] = task
     est = max(abs(target_vx-cur_vx), abs(target_vy-cur_vy), abs(target_yaw-cur_yaw))/accel
-    return {"mode":"ramped","target":{"vx":target_vx,"vy":target_vy,"yaw":target_yaw},"accel":accel,"time_estimate_s": est}
+    return {"mode":"ramped","target":cmd,"accel":accel,"time_estimate_s": est}
 
 @mcp.tool()
 async def get_camera_frame_base64() -> dict:

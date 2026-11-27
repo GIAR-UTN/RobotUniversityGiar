@@ -1,0 +1,27 @@
+# Runtime contract for legged_gym/control/policy.py's LeappHistoryObsPolicy.
+#
+# The checkpoint is agile's LEAPP export
+# (agile/data/policy/velocity_height_g1/leapp/Velocity-Height-G1-History-v0).
+# The full LEAPP graph description is preserved next to this file as
+# leapp.yaml; only the pieces the mjlab wrapper needs are repeated here.
+#
+# observation_terms is the CURRENT actor observation layout produced by
+# Rugiar-G1Edu-Velocity-Height, in order:
+#   command(4) + base_ang_vel(3) + root_quat_w(4) + joint_pos(29) + joint_vel(29)
+# joint_ids_map is policy joint index -> mjlab/SDK joint index (a
+# permutation of 0..28). action_joint_ids_map is policy action index ->
+# mjlab/SDK action index; the env's action term controls the 12 leg joints
+# in SDK order. default_joint_pos is in policy joint order and is what the
+# ONNX graph subtracts internally to form joint_pos_rel.
+leapp:
+  history_length: 5
+  observation_terms:
+    - [command, 4]
+    - [base_ang_vel, 3]
+    - [root_quat_w, 4]
+    - [joint_pos, 29]
+    - [joint_vel, 29]
+  joint_vel_scale: 0.1
+  joint_ids_map: [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
+  action_joint_ids_map: [0, 6, 1, 7, 2, 8, 3, 9, 4, 10, 5, 11]
+  default_joint_pos: [-0.1, -0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.3, 0.0, 0.0, -0.2, -0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
