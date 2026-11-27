@@ -1186,6 +1186,11 @@
             <span class="hud-end">RIGHT &#9654;</span>
           </div>
         </div>
+        <div class="field-row" id="height-command-row" hidden>
+          <label for="height-slider">Target height <span class="hud-val" id="val-height">0.72</span> m</label>
+          <input type="range" id="height-slider" min="0.40" max="0.72" step="0.01" value="0.72">
+          <p class="field-hint">Base-height command for height-capable policies (e.g. Rugiar-G1Edu-Velocity-Height). Shown only when the running task's command term has a height channel; sent with every <code>set_command</code> call and clamped server-side to the trained range.</p>
+        </div>
         <div id="look-pad">click + drag to turn <span class="hint-inline">(yaw, same as &#8592;/&#8594;)</span></div>
         <label class="toggle-row"><input type="checkbox" id="chk-local-control" checked> Keyboard/mouse control on this page</label>
         <p class="field-hint">Turn off if another client (a gamepad, the MCP server, a home-made controller) is

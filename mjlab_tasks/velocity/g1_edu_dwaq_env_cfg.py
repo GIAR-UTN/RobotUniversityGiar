@@ -36,6 +36,8 @@ the rest of the project already uses, not mjlab's random terrain
 generator. The policy is blind (no height scan), so `terrain_scan` /
 `height_scan` are not part of the actor.
 """
+import copy
+
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.asset_zoo.robots import get_g1_robot_cfg
 from mjlab.asset_zoo.robots.unitree_g1.g1_constants import (
@@ -136,6 +138,9 @@ def rugiar_g1_edu_dwaq_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     robot.articulation = EntityArticulationInfoCfg(
         actuators=_dwaq_actuators(), soft_joint_pos_limit_factor=0.9
     )
+    # get_g1_robot_cfg() shares its init_state object across calls; copy it
+    # before overriding the pose or the last-registered G1 task would win.
+    robot.init_state = copy.deepcopy(robot.init_state)
     robot.init_state.joint_pos = dict(DWAQ_HOME_POSE)
     cfg.scene.entities["robot"] = robot
 

@@ -269,6 +269,130 @@ def history_obs_spec_from_deploy_yaml(path: str) -> Optional[HistoryObsSpec]:
     )
 
 
+_LEAPP_OBS_TERM_ORDER = ("command", "base_ang_vel", "root_quat_w", "joint_pos", "joint_vel")
+_LEAPP_HISTORY_PREFIXES = (
+    "h_policy_velocity_height_commands",
+    "h_policy_base_ang_vel",
+    "h_policy_projected_gravity",
+    "h_policy_joint_pos",
+    "h_policy_joint_vel",
+    "h_policy_actions",
+)
+
+
+@dataclasses.dataclass
+class LeappHistorySpec:
+    """The I/O contract of an Isaac Lab LEAPP export that carries its own
+    observation history (e.g. agile's Velocity-Height-G1-History-v0).
+
+    Unlike the DWAQ `HistoryObsSpec`, the LEAPP graph does NOT take a single
+    flattened `history` tensor: it has one explicit `h_policy_<term>_in`
+    input per term, each shaped ``[history_length, 1, term_dim]``, and
+    returns the rolled buffers as matching ``_out`` tensors. The wrapper
+    feeds the previous step's outputs straight back in (the graph's own
+    feedback flow), so the only thing the env must supply is the current
+    raw state.
+
+    ``term_sizes`` is the current observation layout in
+    ``_LEAPP_OBS_TERM_ORDER``: command, base_ang_vel, root_quat_w (wxyz from
+    mjlab), joint_pos, joint_vel. ``joint_ids_map`` is policy joint order ->
+    env joint order (a permutation); ``action_joint_ids_map`` is policy
+    action order -> env action order. ``default_joint_pos`` is in policy
+    joint order and is what the graph subtracts internally to form
+    ``joint_pos_rel``; it is used here only to seed the first history frame.
+    """
+
+    term_sizes: tuple[int, ...]
+    history_length: int
+    joint_ids_map: tuple[int, ...]
+    action_joint_ids_map: tuple[int, ...]
+    default_joint_pos: tuple[float, ...]
+    joint_vel_scale: float = 0.1
+
+    @property
+    def num_obs(self) -> int:
+        return sum(self.term_sizes)
+
+    @property
+    def action_size(self) -> int:
+        return len(self.action_joint_ids_map)
+
+
+def leapp_history_spec_from_deploy_yaml(path: str) -> Optional[LeappHistorySpec]:
+    """Read the LEAPP contract out of the `leapp:` block of a policy's
+    deploy.yaml. Returns None if the file is missing, unreadable or not a
+    LEAPP contract — callers turn that into a clear "this checkpoint needs
+    its deploy.yaml" error instead of guessing."""
+    try:
+        import yaml
+    except ImportError:
+        return None
+    try:
+        with open(path) as f:
+            cfg = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    leapp = cfg.get("leapp")
+    if not isinstance(leapp, dict):
+        return None
+
+    raw_terms = leapp.get("observation_terms")
+    if not isinstance(raw_terms, (list, tuple)):
+        return None
+    by_name = {}
+    for entry in raw_terms:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            return None
+        name, size = entry
+        by_name[str(name)] = int(size)
+    if set(by_name) != set(_LEAPP_OBS_TERM_ORDER):
+        return None
+    term_sizes = tuple(by_name[name] for name in _LEAPP_OBS_TERM_ORDER)
+
+    try:
+        history_length = int(leapp["history_length"])
+        joint_ids_map = tuple(int(i) for i in leapp["joint_ids_map"])
+        action_joint_ids_map = tuple(int(i) for i in leapp["action_joint_ids_map"])
+        default_joint_pos = tuple(float(x) for x in leapp["default_joint_pos"])
+        joint_vel_scale = float(leapp.get("joint_vel_scale", 0.1))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    n_joints = by_name["joint_pos"]
+    if history_length < 1:
+        return None
+    if len(joint_ids_map) != n_joints or sorted(joint_ids_map) != list(range(n_joints)):
+        return None
+    if len(default_joint_pos) != n_joints:
+        return None
+    if not action_joint_ids_map:
+        return None
+    if sorted(action_joint_ids_map) != list(range(len(action_joint_ids_map))):
+        return None
+
+    return LeappHistorySpec(
+        term_sizes=term_sizes,
+        history_length=history_length,
+        joint_ids_map=joint_ids_map,
+        action_joint_ids_map=action_joint_ids_map,
+        default_joint_pos=default_joint_pos,
+        joint_vel_scale=joint_vel_scale,
+    )
+
+
+def _leapp_projected_gravity(quat_xyzw: np.ndarray) -> np.ndarray:
+    """Same math as the LEAPP graph's projected-gravity node: gravity in the
+    body frame from an xyzw quaternion. Used only to seed the first history
+    frame; every later frame comes from the graph's own feedback output."""
+    qv = quat_xyzw[:, :3]
+    qw = quat_xyzw[:, 3:4]
+    g = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+    cross = np.cross(qv, g)
+    return (g - 2.0 * qw * cross + 2.0 * np.cross(qv, cross)).astype(np.float32)
+
+
 class OnnxStatelessPolicy:
     """Single input (obs) -> single output (action). No hidden state to
     carry, so reset() is a no-op — this is the common shape for MLP (non-
@@ -418,7 +542,148 @@ class OnnxHistoryObsPolicy:
         self._frames = []
 
 
-def load_onnx_backend(path: str, num_envs: int, num_obs: Optional[int] = None) -> PolicyBackend:
+class LeappHistoryObsPolicy:
+    """LEAPP export whose ONNX graph owns the observation history.
+
+    Inputs are the current raw state (``base_velocity``,
+    ``robot_root_ang_vel_b``, ``robot_root_quat_w`` [xyzw],
+    ``robot_joint_pos``, ``robot_joint_vel``, ``last_action_in``) plus six
+    ``h_policy_*_in`` buffers. The graph rolls each buffer forward and
+    returns the updated ``_out`` tensors, so this wrapper simply feeds the
+    previous step's outputs back in — no separate history bookkeeping after
+    the first step.
+
+    On reset the buffers are seeded with ``history_length`` copies of the
+    current observation (the same convention OnnxHistoryObsPolicy uses for
+    DWAQ), and ``last_action_in`` starts at zero. The action output is
+    ``joint_pos``: already ``raw_action * action_scale + default_pos`` and
+    clipped by the graph, so it is an absolute joint-target vector. It is
+    remapped from the policy's joint order into the env's action order.
+    """
+
+    REQUIRED_INPUTS = (
+        "base_velocity",
+        "robot_root_ang_vel_b",
+        "robot_root_quat_w",
+        "robot_joint_pos",
+        "robot_joint_vel",
+        "last_action_in",
+    )
+
+    def __init__(self, session, spec: LeappHistorySpec):
+        self.session = session
+        self.spec = spec
+        inputs = session.get_inputs()
+        outputs = session.get_outputs()
+        self.input_names = [i.name for i in inputs]
+        self.output_names = [o.name for o in outputs]
+        missing = [n for n in self.REQUIRED_INPUTS if n not in self.input_names]
+        if missing:
+            raise ValueError(
+                f"LEAPP history ONNX is missing required inputs {missing}; got {self.input_names}"
+            )
+        self.action_name = "joint_pos" if "joint_pos" in self.output_names else self.output_names[0]
+        self._history_shapes: dict[str, tuple] = {}
+        for prefix in _LEAPP_HISTORY_PREFIXES:
+            in_name = prefix + "_in"
+            out_name = prefix + "_out"
+            if in_name in self.input_names:
+                if out_name not in self.output_names:
+                    raise ValueError(
+                        f"LEAPP history ONNX has '{in_name}' but no matching '{out_name}'"
+                    )
+                self._history_shapes[in_name] = tuple(
+                    next(i.shape for i in inputs if i.name == in_name)
+                )
+        self._history: dict[str, np.ndarray] = {}
+        self._last_action: Optional[np.ndarray] = None
+        self.joint_ids_map = np.asarray(spec.joint_ids_map, dtype=np.int64)
+        self.action_joint_ids_map = np.asarray(spec.action_joint_ids_map, dtype=np.int64)
+        self.default_joint_pos = np.asarray(spec.default_joint_pos, dtype=np.float32)
+
+    def _seed_history(self, values: dict[str, np.ndarray]) -> None:
+        self._history = {}
+        for prefix, value in values.items():
+            in_name = prefix + "_in"
+            if in_name not in self._history_shapes:
+                continue
+            shape = self._history_shapes[in_name]
+            frames = shape[0] if isinstance(shape[0], int) else self.spec.history_length
+            dim = shape[-1] if isinstance(shape[-1], int) else value.shape[-1]
+            if dim != value.shape[-1]:
+                raise ValueError(
+                    f"LEAPP history input '{in_name}' expects {dim} values per frame, "
+                    f"but the observation term supplies {value.shape[-1]}"
+                )
+            self._history[in_name] = np.repeat(value[None, :, :], frames, axis=0).astype(
+                np.float32
+            )
+
+    def step(self, obs: torch.Tensor) -> torch.Tensor:
+        obs_np = obs.detach().cpu().numpy().astype(np.float32)
+        if obs_np.ndim != 2 or obs_np.shape[0] != 1:
+            raise ValueError(
+                f"LeappHistoryObsPolicy runs one env at a time (ONNX history is [H,1,D]); "
+                f"got observation shape {tuple(obs_np.shape)}"
+            )
+        if obs_np.shape[1] != self.spec.num_obs:
+            raise ValueError(
+                f"LeappHistoryObsPolicy expects {self.spec.num_obs} current observation "
+                f"values, got {obs_np.shape[1]}"
+            )
+
+        parts = []
+        offset = 0
+        for size in self.spec.term_sizes:
+            parts.append(obs_np[:, offset:offset + size])
+            offset += size
+        command, ang_vel, quat_wxyz, joint_pos, joint_vel = parts
+
+        # mjlab stores quaternions wxyz; the LEAPP graph's element order is
+        # xyzw (it slices [0:3] as the vector part).
+        quat_xyzw = quat_wxyz[:, [1, 2, 3, 0]]
+        policy_joint_pos = joint_pos[:, self.joint_ids_map]
+        policy_joint_vel = joint_vel[:, self.joint_ids_map]
+
+        if self._last_action is None:
+            self._seed_history({
+                "h_policy_velocity_height_commands": command,
+                "h_policy_base_ang_vel": ang_vel,
+                "h_policy_projected_gravity": _leapp_projected_gravity(quat_xyzw),
+                "h_policy_joint_pos": policy_joint_pos - self.default_joint_pos[None, :],
+                "h_policy_joint_vel": policy_joint_vel * self.spec.joint_vel_scale,
+                "h_policy_actions": np.zeros((1, self.spec.action_size), dtype=np.float32),
+            })
+            self._last_action = np.zeros((1, self.spec.action_size), dtype=np.float32)
+
+        feeds = {
+            "base_velocity": command,
+            "robot_root_ang_vel_b": ang_vel,
+            "robot_root_quat_w": quat_xyzw,
+            "robot_joint_pos": policy_joint_pos,
+            "robot_joint_vel": policy_joint_vel,
+            "last_action_in": self._last_action,
+        }
+        feeds.update(self._history)
+        outputs = self.session.run(self.output_names, feeds)
+        result = dict(zip(self.output_names, outputs))
+        for in_name in self._history:
+            self._history[in_name] = result[in_name[:-3] + "_out"]
+        if "last_action_out" in result:
+            self._last_action = result["last_action_out"]
+
+        action = torch.from_numpy(result[self.action_name]).to(obs.device)
+        env_action = torch.empty_like(action)
+        env_action[:, self.action_joint_ids_map] = action
+        return env_action
+
+    def reset(self) -> None:
+        self._history = {}
+        self._last_action = None
+
+
+def load_onnx_backend(path: str, num_envs: int, num_obs: Optional[int] = None,
+                      num_actions: Optional[int] = None) -> PolicyBackend:
     if not HAS_ONNXRUNTIME:
         raise RuntimeError(
             f"Cannot load '{path}': onnx checkpoints require the 'onnxruntime' package "
@@ -428,6 +693,32 @@ def load_onnx_backend(path: str, num_envs: int, num_obs: Optional[int] = None) -
     if len(session.get_inputs()) == 1:
         return OnnxStatelessPolicy(session)
     input_names = [i.name for i in session.get_inputs()]
+    if all(n in input_names for n in LeappHistoryObsPolicy.REQUIRED_INPUTS):
+        deploy_yaml = os.path.join(os.path.dirname(os.path.abspath(path)), "deploy.yaml")
+        spec = leapp_history_spec_from_deploy_yaml(deploy_yaml)
+        if spec is None:
+            raise RuntimeError(
+                f"Cannot load '{path}': this is a LEAPP history export, so the wrapper "
+                f"needs the observation/joint contract from {deploy_yaml} (a 'leapp:' "
+                f"block — see policies/unitree_g1_velocity_height_history/deploy.yaml)."
+            )
+        if num_obs is not None and spec.num_obs != num_obs:
+            raise RuntimeError(
+                f"Cannot load '{path}': deploy.yaml describes {spec.num_obs}-dim current "
+                f"observations but this task produces {num_obs}. Run "
+                f"Rugiar-G1Edu-Velocity-Height (or the task matching this contract)."
+            )
+        if num_actions is not None and spec.action_size != num_actions:
+            raise RuntimeError(
+                f"Cannot load '{path}': deploy.yaml describes {spec.action_size} actions "
+                f"but this task exposes {num_actions}."
+            )
+        if num_envs != 1:
+            raise RuntimeError(
+                f"Cannot load '{path}': the LEAPP export bakes a batch size of 1 into its "
+                f"history tensors ([H,1,D]); it cannot drive {num_envs} envs at once."
+            )
+        return LeappHistoryObsPolicy(session, spec)
     if "history" in input_names and "obs" in input_names:
         deploy_yaml = os.path.join(os.path.dirname(os.path.abspath(path)), "deploy.yaml")
         spec = history_obs_spec_from_deploy_yaml(deploy_yaml)
@@ -478,9 +769,10 @@ def damping_policy(num_envs: int, num_actions: int, device: str = "cpu") -> Poli
 
 
 def load_policy_backend(path: str, hidden_size: int, num_envs: int, device: str = "cpu",
-                        num_obs: Optional[int] = None) -> PolicyBackend:
+                        num_obs: Optional[int] = None,
+                        num_actions: Optional[int] = None) -> PolicyBackend:
     if path.endswith(".onnx"):
-        return load_onnx_backend(path, num_envs, num_obs=num_obs)
+        return load_onnx_backend(path, num_envs, num_obs=num_obs, num_actions=num_actions)
     module = torch.jit.load(path, map_location=device)
     # forward()'s own declared arg count is what actually distinguishes the
     # three jit shapes — hidden_state/cell_state hasattr() alone isn't
@@ -518,8 +810,10 @@ class Policy:
 
 
 def load_policy(name: str, path: str, num_obs: int, hidden_size: int, num_envs: int,
-                 description: str = "", device: str = "cpu") -> Policy:
-    backend = load_policy_backend(path, hidden_size, num_envs, device=device, num_obs=num_obs)
+                 description: str = "", device: str = "cpu",
+                 num_actions: Optional[int] = None) -> Policy:
+    backend = load_policy_backend(path, hidden_size, num_envs, device=device, num_obs=num_obs,
+                                  num_actions=num_actions)
     return Policy(name=name, backend=backend, obs_spec=ObsSpec(num_obs, hidden_size), description=description)
 
 

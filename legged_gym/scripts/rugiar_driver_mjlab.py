@@ -336,7 +336,8 @@ def _load_policies(cli: argparse.Namespace, adapter, num_obs: int, num_actions: 
         # signature wants one; 0 keeps it honest rather than pretending
         # there's an LSTM here.
         policies[name] = load_policy(name, path, num_obs=num_obs, hidden_size=0,
-                                     num_envs=adapter.num_envs, device=device)
+                                     num_envs=adapter.num_envs, device=device,
+                                     num_actions=num_actions)
         print(f"  '{name}' <- {path}")
     policies["damping"] = damping_policy(adapter.num_envs, num_actions, device=device)
     if not policy_paths:
@@ -422,11 +423,16 @@ def _resolve_device(requested: Optional[str]) -> str:
 
 def _command_ranges(adapter) -> Optional[dict]:
     """The trained velocity-command envelope for the web panel's sliders,
+    plus a height range when the task has one (Rugiar-G1Edu-Velocity-Height),
     or None for a task without a velocity command (tracking)."""
     if not isinstance(adapter, MjlabVelocityAdapter):
         return None
-    r = adapter._term().cfg.ranges
-    return {"vx": list(r.lin_vel_x), "vy": list(r.lin_vel_y), "yaw": list(r.ang_vel_z)}
+    term = adapter._term()
+    ranges = term.cfg.ranges
+    out = {"vx": list(ranges.lin_vel_x), "vy": list(ranges.lin_vel_y), "yaw": list(ranges.ang_vel_z)}
+    if hasattr(term, "height_command"):
+        out["height"] = list(term.cfg.height_range)
+    return out
 
 
 def build_env(task: str, motion_file: Optional[str], device: str, debug_vis: bool,
@@ -538,13 +544,14 @@ def main():
         if task != cli.task:
             raise ValueError(f"'{name}' is task '{task}', this server is running '{cli.task}'")
         return load_policy(name, path, num_obs=num_obs, hidden_size=0, num_envs=adapter.num_envs,
-                           description="Rediscovered from disk (refresh)", device=device)
+                           description="Rediscovered from disk (refresh)", device=device,
+                           num_actions=num_actions)
 
     def _load_trained_policy(job, checkpoint_path):
         """A just-finished job's export, loaded against THIS session's
         obs/action space — see drain_finished_training() above."""
         return load_policy(job.policy_name, checkpoint_path, num_obs=num_obs, hidden_size=0,
-                           num_envs=adapter.num_envs, device=device,
+                           num_envs=adapter.num_envs, device=device, num_actions=num_actions,
                            description=f"Trained via the control web ({job.command})")
 
     service = ControlService(adapter, supervisor, safety, selector=None, training=training,

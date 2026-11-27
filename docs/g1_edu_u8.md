@@ -63,11 +63,13 @@ They do not drive the EDU's waist or arms.
 | `Rugiar-G1Edu-Velocity` | 96 = ang_vel 3, gravity 3, joint_pos 29, joint_vel 29, last_action 29, command 3. No `base_lin_vel`, because the real robot can't measure it. | Training our own walking policies |
 | `Rugiar-G1Edu-Velocity-UnitreeObs` | 98 = unitree_rl_mjlab's contract: ang_vel, gravity, command, gait phase (0.6 s), joint_pos, joint_vel, last_action. Uses Unitree's home pose. | Running Unitree's published G1 policy, unmodified |
 | `Rugiar-G1Edu-Velocity-DWAQ` | 100 = ang_vel, gravity, command, joint_pos, joint_vel, last_action, gait phase (4-dim, 0.8 s). The policy also takes a 5-frame term-major history (500) as a second ONNX input; the wrapper owns that buffer. Isaac Lab joint order, DWAQ home pose/gains, no height scan. Its PLAY default scenario is `obstacle_course` (the 10-obstacle event) on a flat base plane. | Running the DWAQ blind-stairs policy |
+| `Rugiar-G1Edu-Velocity-Height` | 69 = command 4 (vx, vy, wz, height), ang_vel 3, root quat 4 (wxyz), joint_pos 29, joint_vel 29. 12 leg actions; the upper body holds zero. LEAPP home pose and PD gains. The LEAPP ONNX owns the 5-frame history and projected gravity (`LeappHistoryObsPolicy`). | Running agile's velocity-height policy with live height control; also trainable |
 
-All three tasks are registered in `mjlab_tasks/velocity/`. The driver picks
+All four tasks are registered in `mjlab_tasks/velocity/`. The driver picks
 `MjlabVelocityAdapter` (`legged_gym/control/mjlab_adapter.py`) for any task that has a
-`twist` command. That adapter gives the web UI a working Command panel: manual vx/vy/yaw,
-clamped to the trained envelope, and pinned against mjlab's own resampling.
+`twist` command. That adapter gives the web UI a working Command panel: manual vx/vy/yaw
+(plus a height slider on `...-Height`), clamped to the trained envelope, and pinned against
+mjlab's own resampling.
 
 ```bash
 export SIMULATOR=genesis
@@ -75,6 +77,8 @@ rugiar train --task Rugiar-G1Edu-Velocity --name <name> --max_minutes 600
 # then drive it from the control web (rugiar_driver_mjlab.py --task Rugiar-G1Edu-Velocity-UnitreeObs)
 # DWAQ blind-stairs policy (defaults to --scenario obstacle_course):
 #   rugiar_driver_mjlab.py --task Rugiar-G1Edu-Velocity-DWAQ
+# agile velocity-height policy (height is the fourth Command-panel slider):
+#   rugiar_driver_mjlab.py --task Rugiar-G1Edu-Velocity-Height
 ```
 
 ## Policies
@@ -83,6 +87,7 @@ rugiar train --task Rugiar-G1Edu-Velocity --name <name> --max_minutes 600
 |---|---|---|
 | `unitree_g1_29dof_velocity_v0` | `...-UnitreeObs` | **Walks.** Unitree's own policy (unitree_rl_mjlab `velocity/v0`, Apache-2.0). 0 falls at standing, 0.5 and 1.0 m/s forward, 0.4 m/s lateral and 0.8 rad/s turning, over 15–20 s each (2026-11-17, CPU). Heading drifts at speed. |
 | `unitree_g1_29dof_velocity_stairs` | `...-DWAQ` | **Walks and climbs.** DWAQ blind-stairs policy imported from GIAR's deploy_mujoco2026. 2026-11-21, CPU: 0 falls and ~4.4 m of forward progress over 5 s at 0.9 m/s on the flat base plane; a forced mjlab `moderate_stairs` patch was also climbed for 12 s with base height rising 0.79 -> 1.31 m and no fall. The policy only climbs while a forward velocity is commanded; keep vx <= 1.0 m/s. Its default arena is the project's `obstacle_course`. |
+| `unitree_g1_velocity_height_history` | `...-Height` | **Walks and tracks height.** agile's `Velocity-Height-G1-History-v0` LEAPP export (`agile/data/policy/velocity_height_g1/leapp`). 2026-11-27, CPU: 0 falls and ~4.95 m forward over 10 s at 0.5 m/s; standing height responds monotonically to 0.55/0.65/0.72 m commands. The original LEAPP bundle is kept as `leapp.yaml` next to `deploy.yaml`. Height is the fourth slider in the Command panel. |
 | `g1edu_walk_smoke` | `Rugiar-G1Edu-Velocity` | Pipeline smoke only: 230 iterations, 10 min of CPU, 64 envs. It stands but does not walk yet. A real run needs hours. |
 
 Other external candidates, best first (the survey was done 2026-11-17):

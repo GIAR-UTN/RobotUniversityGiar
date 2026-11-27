@@ -18,6 +18,8 @@ Contract, from that policy's params/deploy.yaml:
                 arms 0.35/±0.18/0/0.87/0/0/0
   command ranges: vx [-0.5, 1.0], vy [-0.5, 0.5], yaw [-1.0, 1.0]
 """
+import copy
+
 from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnvCfg
 from mjlab.managers.observation_manager import ObservationTermCfg
 from mjlab.tasks.velocity.config.g1.env_cfgs import unitree_g1_flat_env_cfg
@@ -37,6 +39,11 @@ UNITREE_HOME_POSE = {
 
 def rugiar_g1_edu_unitree_obs_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg = unitree_g1_flat_env_cfg(play=play)
+    # get_g1_robot_cfg() shares its init_state object across calls; copy it
+    # before overriding the pose or the last-registered G1 task would win.
+    cfg.scene.entities["robot"].init_state = copy.deepcopy(
+        cfg.scene.entities["robot"].init_state
+    )
     cfg.scene.entities["robot"].init_state.joint_pos = dict(UNITREE_HOME_POSE)
 
     old = cfg.observations["actor"].terms

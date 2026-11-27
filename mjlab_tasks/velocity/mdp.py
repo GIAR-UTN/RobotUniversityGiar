@@ -35,3 +35,47 @@ def gait_phase(env, period: float, offset: float = 0.5) -> torch.Tensor:
     out[:, 2] = torch.cos(phase_left * torch.pi * 2.0)
     out[:, 3] = torch.cos(phase_right * torch.pi * 2.0)
     return out
+
+
+def joint_pos(env, asset_cfg) -> torch.Tensor:
+    """Absolute joint positions (no default-pose subtraction).
+
+    mjlab's own `joint_pos_rel` subtracts the entity's default pose, but the
+    LEAPP velocity-height policy (Rugiar-G1Edu-Velocity-Height) does that
+    subtraction *inside its own ONNX graph* from a fixed training default.
+    Feeding it raw positions keeps the env's own reset pose free to differ
+    without silently shifting the policy's observation."""
+    asset = env.scene[asset_cfg.name]
+    return asset.data.joint_pos[:, asset_cfg.joint_ids]
+
+
+def joint_vel(env, asset_cfg) -> torch.Tensor:
+    """Absolute joint velocities (default joint velocity is zero, so this is
+    numerically identical to `joint_vel_rel` today, but explicit for the same
+    reason as `joint_pos` above)."""
+    asset = env.scene[asset_cfg.name]
+    return asset.data.joint_vel[:, asset_cfg.joint_ids]
+
+
+def root_quat_w(env, asset_cfg) -> torch.Tensor:
+    """Root orientation quaternion in world frame, wxyz (mjlab's convention).
+
+    The LEAPP graph needs the quaternion itself (it computes projected
+    gravity internally), so the actor observation carries it instead of the
+    derived projected-gravity vector."""
+    asset = env.scene[asset_cfg.name]
+    return asset.data.root_link_quat_w
+
+
+def track_base_height(env, command_name: str, std: float = 0.2) -> torch.Tensor:
+    """Exponential reward for tracking the command term's target base height.
+
+    The mjlab-native counterpart of agile's `track_base_height_exp_smooth`:
+    same exp(-error^2 / std^2) shape, but reads the height command straight
+    from our `UniformVelocityHeightCommand` and the simulated root height
+    (no low-pass filtering — mjlab's command is already smooth while
+    standing/walking)."""
+    term = env.command_manager.get_term(command_name)
+    target = term.height_command
+    actual = env.scene["robot"].data.root_link_pos_w[:, 2]
+    return torch.exp(-torch.square(target - actual) / std**2)

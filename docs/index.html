@@ -6119,7 +6119,11 @@ def step(self, obs):
 // vx, vy in m/s, yaw in rad/s — clamped server-side to the exact envelope
 // the active policy was trained across (out-of-range values are silently
 // clamped, not rejected). Call this at whatever rate your controller polls
-// (e.g. every gamepad tick) — there's no need to throttle it yourself.</code></pre>
+// (e.g. every gamepad tick) — there's no need to throttle it yourself.
+//
+// Height-capable tasks (e.g. Rugiar-G1Edu-Velocity-Height) also accept
+// "height": 0.60 — target base height in meters, clamped to that task's
+// trained height range. Omit it to leave the current height unchanged.</code></pre>
         </details>
 
         <p>The rest of the surface — every method <code>ControlServer</code> will dispatch:</p>
@@ -6127,7 +6131,7 @@ def step(self, obs):
           <thead><tr><th>method</th><th>params</th><th>what it does</th></tr></thead>
           <tbody>
             <tr><td><code>status</code></td><td>—</td><td>one-shot snapshot of everything the ~10Hz broadcast (below) already pushes you</td></tr>
-            <tr><td><code>set_command</code></td><td><code>vx, vy, yaw</code></td><td>manual walking velocity — see above</td></tr>
+            <tr><td><code>set_command</code></td><td><code>vx, vy, yaw[, height]</code></td><td>manual walking velocity — see above. <code>height</code> is optional and only meaningful on height-capable tasks.</td></tr>
             <tr><td><code>request_switch</code></td><td><code>name</code></td><td>cross-fade to a different loaded policy (§12)</td></tr>
             <tr><td><code>pause</code> / <code>resume</code></td><td>—</td><td>hold position / resume the policy loop</td></tr>
             <tr><td><code>restart</code></td><td>—</td><td>sim: instant reset. Real: NOT instant — re-runs the zero-torque → move-to-default → hold sequence from §9, gated by the physical remote. Grayed out entirely when <code>status().capabilities.restart</code> is <code>false</code>.</td></tr>

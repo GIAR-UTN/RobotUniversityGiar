@@ -1,0 +1,8 @@
+{
+ "task": "Rugiar-G1Edu-Velocity-Height",
+ "created_at": 1795800000.0,
+ "trained_via": "external-import",
+ "simulator": "mjlab",
+ "category": "g1edu-mjlab-velocity",
+ "note": "agile's Velocity-Height-G1-History-v0 LEAPP export (G1 29-DOF, 5-frame history), from agile/data/policy/velocity_height_g1/leapp. Command is 4-wide [vx, vy, wz, height]; the ONNX graph owns the observation history and computes projected gravity from the root quaternion, so legged_gym/control/policy.py's LeappHistoryObsPolicy only supplies the current raw state. deploy.yaml carries the observation layout, joint order maps and training default pose; leapp.yaml is the original LEAPP bundle description. Runs on Rugiar-G1Edu-Velocity-Height (69-dim actor obs, 12 leg actions, LEAPP PD gains/pose)."
+}

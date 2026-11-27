@@ -298,8 +298,13 @@ class ControlService:
         # command/random_events properties). Absent entirely for adapters
         # that don't support manual velocity/stimulus control.
         if hasattr(self.adapter, "command"):
-            vx, vy, yaw = self.adapter.command
-            s["command"] = {"vx": vx, "vy": vy, "yaw": yaw}
+            command = self.adapter.command
+            s["command"] = {"vx": command[0], "vy": command[1], "yaw": command[2]}
+            if len(command) > 3:
+                # Height-capable tasks (MjlabVelocityAdapter over
+                # UniformVelocityHeightCommand) append the 4th channel; the
+                # web UI shows its height slider only when this key exists.
+                s["command"]["height"] = command[3]
         if hasattr(self.adapter, "random_events"):
             s["random_events"] = self.adapter.random_events
         if hasattr(self.adapter, "episode_timeout_s"):
@@ -854,16 +859,28 @@ class ControlService:
             raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_operator_speed_limit")
         fn(fraction)
 
-    def set_command(self, vx: float, vy: float, yaw: float) -> None:
-        """Directly commands a target walking velocity (m/s, m/s, rad/s),
-        overriding whatever domain-randomization command resampling would
-        otherwise pick — see SimAdapter.set_command for the clamping and
-        heading_command interaction. Raises if the current adapter doesn't
-        support manual commands (e.g. a not-yet-built RealAdapter path)."""
+    def set_command(self, vx: float, vy: float, yaw: float,
+                    height: Optional[float] = None) -> None:
+        """Directly commands a target walking velocity (m/s, m/s, rad/s) and,
+        on height-capable tasks, a target base height (m), overriding
+        whatever domain-randomization command resampling would otherwise
+        pick — see SimAdapter/MjlabVelocityAdapter.set_command for the
+        clamping and heading_command interaction. Raises if the current
+        adapter doesn't support manual commands (e.g. a not-yet-built
+        RealAdapter path), or if `height` is given to an adapter whose
+        command term has no height channel."""
         set_command_fn = getattr(self.adapter, "set_command", None)
         if set_command_fn is None:
             raise NotImplementedError(f"{type(self.adapter).__name__} does not support set_command")
-        set_command_fn(vx, vy, yaw)
+        supports_height = len(getattr(self.adapter, "command", ())) > 3
+        if height is not None and not supports_height:
+            raise NotImplementedError(
+                f"{type(self.adapter).__name__} does not support a height command"
+            )
+        if supports_height:
+            set_command_fn(vx, vy, yaw, height=height)
+        else:
+            set_command_fn(vx, vy, yaw)
 
     def set_random_events(self, push_robots: bool, auto_commands: bool,
                            push_dir: Optional[str] = None) -> None:
